@@ -12,21 +12,19 @@ Goal: make the project concrete enough that a first benchmark and baseline imple
 
 ### M0: Repo and Document Setup
 
-**Target**: 2026-05-15  
-**Status**: in progress
+**Target**: 2026-05-15**Status**: in progress
 
-- [x] Add `docs/` structure.
-- [x] Add proposal.
-- [x] Add kickoff / direction-setting meeting note.
-- [x] Add roadmap, decisions, and open questions.
-- [ ] Add first daily progress note after the student starts reading / setup.
+- [X] Add `docs/` structure.
+- [X] Add proposal.
+- [X] Add kickoff / direction-setting meeting note.
+- [X] Add roadmap, decisions, and open questions.
+- [X] Add first daily progress note after the student starts reading / setup.
 
 ### M1: Problem Understanding
 
-**Target**: 2026-05-18  
-**Status**: not started
+**Target**: 2026-05-18**Status**:  started
 
-- [ ] Write 2-3 toy examples showing the reveal process step by step.
+- [X] Write 2-3 toy examples showing the reveal process step by step.
 - [ ] Define what is visible in `G_0`.
 - [ ] Define candidate reveal actions: node, edge, neighborhood, feature, or evidence unit.
 - [ ] Define budget `B` and what counts as one unit of cost.
@@ -34,8 +32,7 @@ Goal: make the project concrete enough that a first benchmark and baseline imple
 
 ### M2: Related-work Map
 
-**Target**: 2026-05-20  
-**Status**: not started
+**Target**: 2026-05-20**Status**: not started
 
 - [ ] List closest papers in graph classification.
 - [ ] List closest papers in active learning on graphs.
@@ -45,8 +42,7 @@ Goal: make the project concrete enough that a first benchmark and baseline imple
 
 ### M3: First Benchmark Protocol
 
-**Target**: late May 2026  
-**Status**: pending M1 / M2
+**Target**: late May 2026**Status**: pending M1 / M2
 
 - [ ] Choose first dataset, likely OGBG-PPA or another convenient OGBG graph-classification dataset.
 - [ ] Implement data loading and full-graph classifier baseline.
@@ -56,8 +52,7 @@ Goal: make the project concrete enough that a first benchmark and baseline imple
 
 ### M4: Teacher / Trajectory Baselines
 
-**Target**: after first benchmark protocol works  
-**Status**: not started
+**Target**: after first benchmark protocol works**Status**: not started
 
 - [ ] Generate trajectories from random, BFS, degree / centrality, and heuristic policies.
 - [ ] Score trajectories by final prediction quality or information gain.
@@ -66,8 +61,7 @@ Goal: make the project concrete enough that a first benchmark and baseline imple
 
 ### M5: First Learned Reading Policy
 
-**Target**: after M4 shows headroom  
-**Status**: not started
+**Target**: after M4 shows headroom**Status**: not started
 
 - [ ] Train a policy to imitate useful reading trajectories.
 - [ ] Compare learned reading against random / heuristic baselines under matched budget.
