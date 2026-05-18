@@ -44,11 +44,16 @@ Goal: make the project concrete enough that a first benchmark and baseline imple
 
 **Target**: late May 2026**Status**: pending M1 / M2
 
-- [ ]  Choose first dataset, likely OGBG-PPA or another convenient OGBG graph-classification dataset.
-- [ ]  Implement data loading and full-graph classifier baseline.
+- [ ]  Confirm benchmark dataset: OGBG-PPA (graph classification, hundreds of nodes per graph). Substitute only if blocked, and only with a dataset of comparable per-graph scale (graph classification, not node classification — so not PPI).
+- [ ]  Document per-graph node / edge distributions, node / edge feature availability, label setup, and train/val/test split sizes; explicitly confirm that OGBG-PPA has edge features and whether node features are absent.
+- [ ]  Explicitly keep MUTAG / molecular graphs as toy illustrations only, not the main benchmark.
+- [ ]  Implement data loading and full-graph classifier baseline (GIN or GCN) — this is the upper-bound number every later curve is read against.
+- [ ]  Freeze v0 protocol: `G_0` = Plan D with k=1 random seed (incident edge list / neighbor IDs visible; no raw node-feature assumption); action = `reveal_node(v)` revealing v as observed, edge features to already-revealed nodes, and incident edge list / neighbor IDs so the frontier can expand; unit cost; budget = number of revealed nodes, reported also as fraction of total nodes per graph.
 - [ ]  Implement reveal process and partial-graph representation.
-- [ ]  Implement random reveal and BFS / neighborhood expansion baselines.
-- [ ]  Plot budget-performance curves.
+- [ ]  Implement three policies under the v0 action: uniform random over frontier; BFS from seed; max known-frontier degree (edges from a frontier node back into the revealed subgraph, not true graph degree).
+- [ ]  Average each policy over multiple random seeds per graph.
+- [ ]  Plot budget-performance curves vs. the full-graph upper bound.
+- [ ]  Kill-criterion check: if BFS-from-seed reaches ~90% of full-graph accuracy at <10% reveal ratio, the dataset is too easy — switch dataset or harden `G_0` before M4.
 
 ### M4: Teacher / Trajectory Baselines
 
