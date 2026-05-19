@@ -12,7 +12,7 @@ Goal: make the project concrete enough that a first benchmark and baseline imple
 
 ### M0: Repo and Document Setup
 
-**Target**: 2026-05-15**Status**: in progress
+**Target**: 2026-05-15 **Status**: in progress
 
 - [X]  Add `docs/` structure.
 - [X]  Add proposal.
@@ -22,7 +22,7 @@ Goal: make the project concrete enough that a first benchmark and baseline imple
 
 ### M1: Problem Understanding
 
-**Target**: 2026-05-18**Status**:  started
+**Target**: 2026-05-18 **Status**:  started
 
 - [X]  Write 2-3 toy examples showing the reveal process step by step.
 - [X]  Define what is visible in `G_0`.
@@ -32,21 +32,21 @@ Goal: make the project concrete enough that a first benchmark and baseline imple
 
 ### M2: Related-work Map
 
-**Target**: 2026-05-20**Status**: not started
+**Target**: 2026-05-20 **Status**: started
 
-- [ ]  List closest papers in graph classification.
-- [ ]  List closest papers in active learning on graphs.
-- [ ]  List closest papers in subgraph sampling / partial graph observation.
-- [ ]  List closest papers in graph explainability / rationale extraction.
-- [ ]  For each category, write how this project is different.
+- [X]  List closest papers in graph classification.
+- [X]  List closest papers in active learning on graphs.
+- [X]  List closest papers in subgraph sampling / partial graph observation.
+- [X]  List closest papers in graph explainability / rationale extraction.
+- [X]  For each category, write how this project is different.
 
 ### M3: First Benchmark Protocol
 
-**Target**: late May 2026**Status**: pending M1 / M2
+**Target**: late May 2026 **Status**: pending M1 / M2
 
-- [ ]  Confirm benchmark dataset: OGBG-PPA (graph classification, hundreds of nodes per graph). Substitute only if blocked, and only with a dataset of comparable per-graph scale (graph classification, not node classification — so not PPI).
-- [ ]  Document per-graph node / edge distributions, node / edge feature availability, label setup, and train/val/test split sizes; explicitly confirm that OGBG-PPA has edge features and whether node features are absent.
-- [ ]  Explicitly keep MUTAG / molecular graphs as toy illustrations only, not the main benchmark.
+- [X]  Confirm benchmark dataset: OGBG-PPA (graph classification, hundreds of nodes per graph). Substitute only if blocked, and only with a dataset of comparable per-graph scale (graph classification, not node classification — so not PPI).
+- [X]  Document per-graph node / edge distributions, node / edge feature availability, label setup, and train/val/test split sizes; explicitly confirm that OGBG-PPA has edge features and whether node features are absent.
+- [X]  Explicitly keep MUTAG / molecular graphs as toy illustrations only, not the main benchmark.
 - [ ]  Implement data loading and full-graph classifier baseline (GIN or GCN) — this is the upper-bound number every later curve is read against.
 - [ ]  Freeze v0 protocol: `G_0` = Plan D with k=1 random seed (incident edge list / neighbor IDs visible; no raw node-feature assumption); action = `reveal_node(v)` revealing v as observed, edge features to already-revealed nodes, and incident edge list / neighbor IDs so the frontier can expand; unit cost; budget = number of revealed nodes, reported also as fraction of total nodes per graph.
 - [ ]  Implement reveal process and partial-graph representation.
