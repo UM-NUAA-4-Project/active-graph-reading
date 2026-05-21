@@ -165,10 +165,10 @@ GraphClassifier:
 **核心原则：尺子是中立的。它不能偏袒任何一种 Reader 策略。**
 
 
-| 阶段     | 数据     | 策略                       | 预算     | 目的                         |
-| -------- | -------- | -------------------------- | -------- | ---------------------------- |
-| **训练** | trainset | **random**（唯一无偏策略） | 混合预算 | 让尺子见过各种"部分观测"模式 |
-| **评估** | testset  | random / bfs / max-degree  | 固定网格 | 用尺子度量每种 Reader 的质量 |
+| 阶段     | 数据     | 策略                       | 预算 | 目的                         |
+| -------- | -------- | -------------------------- | ---- | ---------------------------- |
+| **训练** | trainset | **random**（唯一无偏策略） | B    | 让尺子见过各种"部分观测"模式 |
+| **评估** | testset  | random / bfs / max-degree  | B    | 用尺子度量每种 Reader 的质量 |
 
 训练细节：
 
@@ -255,7 +255,7 @@ active_graph_reader/
 M3: 固定策略 + 尺子度量          →  回答"哪个方向有空间？"
 M4: 轨迹收集 + 质量评分          →  回答"好的阅读轨迹长什么样？"
 M5: 策略模仿学习                  →  回答"能不能学会像好轨迹那样读？"
-                          
+                      
   Reader 策略
   ┌──────────────────────────────────────────────┐
   │ M3: random / bfs / max-degree (固定规则)      │
@@ -272,10 +272,10 @@ M5: 策略模仿学习                  →  回答"能不能学会像好轨迹�
 
 ### Phase 1: 尺子搭建（1 天）
 
-- [ ]  `subgraph_builder.py`：GraphState → DGLGraph
-- [ ]  `gin_encoder.py`：GINEConv × 5 + node_emb + edge_encoder
-- [ ]  `classifier.py`：encoder + MLP head
-- [ ]  冒烟测试：随机部分图可前向通过，无 shape 错误
+- [X]  `subgraph_builder.py`：GraphState → DGLGraph
+- [X]  `gin_encoder.py`：GINEConv × 5 + node_emb + edge_encoder
+- [X]  `classifier.py`：encoder + MLP head
+- [X]  冒烟测试：随机部分图可前向通过，无 shape 错误
 
 ### Phase 2: 训练尺子（1 天）
 
