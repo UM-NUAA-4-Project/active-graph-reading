@@ -143,7 +143,7 @@ for each v in frontier:
 | 动作空间  | $\text{frontier}_t$，大小动态变化                                                       |
 | 状态转移  | 确定性：$s_{t+1} = \psi(s_t, a_t)$                                                      |
 | 奖励$R$   | 延迟奖励：$\mathbb{1}(\hat{y} = y)$ 或预测置信度                                        |
-| 视野      | 固定预算$B$（5~15 步）                                                                  |
+| 视野      | 固定预算$B$                                                                             |
 
 #### REINFORCE 核心公式
 
@@ -249,31 +249,19 @@ $$
 | 多样性正则 | $\mathcal{L}_{\text{div}} = \sum_t \sum_{s<t} \text{sim}(h_{v_t}, h_{v_s})$                   | 防止重复选择同类节点                   |
 | BC 辅助    | $\mathcal{L}_{\text{BC}} = -\frac{1}{B}\sum_t \log \pi_\theta(a_t^{\text{teacher}} \mid s_t)$ | 保留 teacher 知识                      |
 
-### 3.4 训练阶段划分
-
-```
-Phase A: 预训练 Encoder-Classifier（M3 尺子）
-─────────────────────────────────────────────
-  用 random 策略生成 G_B → 训练 φ → 冻结为 φ_frozen
-
-Phase B: 训练 Reader 策略网络
-─────────────────────────────────────────────
-  冻结 φ_frozen
-  可选方案:
-    B1: 纯 BC（模块一）
-    B2: BC + Gumbel-Softmax 联合（推荐）
-    B3: Gumbel-Softmax 从头训练
-    B4: REINFORCE（模块三）
-
-```
-
-### 3.5 梯度流分析
+### 3.4 梯度流分析
 
 ```
 L_task (CrossEntropy)
   │
   ▼
 φ_frozen（冻结 → 梯度穿过但不更新参数）
+  │
+  ▼
+FrontierScorer MLP（通过 Gumbel-Softmax straight-through）
+  │
+  ▼
+每步的 scores[t] ← 仅选中节点的位置有非零梯度
   │
   ▼
 最终子图 G_B 的节点嵌入（来自 SubgraphGNN）
@@ -288,43 +276,11 @@ FrontierScorer MLP（通过 Gumbel-Softmax straight-through）
 每步的 scores[t] ← 仅选中节点的位置有非零梯度
 ```
 
-**潜在问题与缓解**：
-
-
-| 问题                                | 缓解                                      |
-| ----------------------------------- | ----------------------------------------- |
-| B 步展开导致梯度消失/爆炸           | B ≤ 15；BatchNorm；梯度裁剪 max_norm=1.0 |
-| 冻结尺子对 Reader 子图 domain shift | Phase C 交替微调                          |
-| 梯度通过 ST estimator 有偏差        | 结合 REINFORCE 做无偏校正（见 §4.2）     |
-
 ---
 
 ## 四、组合方案与执行路线
 
-### 4.1 推荐执行策略：三阶段分层推进
-
-```
-╔═══════════════════════════════════════════════════════════════╗
-║          Reader 学习策略：推荐执行顺序                         ║
-╠═══════════════════════════════════════════════════════════════╣
-║                                                               ║
-║  Stage 1 (M3)  ──→ 拿到基线：random / BFS / maxdeg           ║
-║       │            Kill criterion 检查 → headroom 确认         ║
-║       │                                                       ║
-║       ▼                                                       ║
-║  Stage 2 (M4)  ──→ Teacher 轨迹生成 + 评分                   ║
-║       │            （回答"好轨迹长什么样"）                  ║
-║       │                                                       ║
-║       ├──────────→ Stage 3a (M5a)：BC 预训练                 ║
-║       │            （最稳定信号，最小可交付成果）              ║
-║       │                                                       ║
-║       └──────────→ Stage 3b (M5b)：端到端微调               ║
-║                    C+A 联合训练（BC + Gumbel-Softmax）        ║
-║                    （从 BC 权重出发，追求更高性能）            ║
-╚═══════════════════════════════════════════════════════════════╝
-```
-
-### 4.2 四种推荐结合方案
+### 4.1  四种推荐结合方案
 
 #### 思路
 

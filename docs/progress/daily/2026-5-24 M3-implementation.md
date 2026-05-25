@@ -230,7 +230,7 @@ python train_full_graph.py --eval-only --load best_model.pt --root dataset
 
 ---
 
-## 五、Reader 子图微调
+## 五、可选项：Reader 子图微调
 
 ### 5.1 finetune_reader.py
 
