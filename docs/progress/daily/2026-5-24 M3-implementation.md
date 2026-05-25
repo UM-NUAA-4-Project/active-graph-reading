@@ -88,10 +88,11 @@ while budget > 0:
 
 ### 2.4 三种策略
 
-| 策略 | 选择逻辑 | 训练使用 |
-|------|---------|---------|
-| random | 从前沿边中均匀随机选 | 是（唯一无偏） |
-| bfs | 优先最早加入前沿的边 | 否（评估对比） |
+
+| 策略                | 选择逻辑                       | 训练使用       |
+| ------------------- | ------------------------------ | -------------- |
+| random              | 从前沿边中均匀随机选           | 是（唯一无偏） |
+| bfs                 | 优先最早加入前沿的边           | 否（评估对比） |
 | max-frontier-degree | 前沿节点在已揭示子图中的度最大 | 否（评估对比） |
 
 ---
@@ -102,18 +103,19 @@ while budget > 0:
 
 编码器严格对齐 OGB 官方 `examples/graphproppred/ppa/conv.py` 中的 GINConv，逐项对比如下：
 
-| 组件 | OGB 官方 (PyG) | 本实现 (DGL) | 一致 |
-|------|---------------|-------------|------|
-| 节点嵌入 | `Embedding(1, 300)` 全图共享 | `Embedding(1, hidden_dim)` | ✓ |
-| 边编码器 | 每层独立 `Linear(7, 300)` | 每层独立 `Linear(edge_feat_dim, hidden_dim)` | ✓ |
-| GIN MLP | `Linear(d→2d) → BN → ReLU → Linear(2d→d)` （无最终激活） | 同 | ✓ |
-| 消息函数 | `ReLU(src_h + edge_emb)` | 同 | ✓ |
-| 聚合 | sum | `fn.sum` | ✓ |
-| eps | 可学习，初始化为 0 | 同 | ✓ |
-| 残差连接 | 无 | 无 | ✓ |
-| 末层 ReLU | 跳过 | 跳过 | ✓ |
-| 图读出 | mean pooling | `dglnn.AvgPooling` | ✓ |
-| 分类头 | `Linear(300, num_classes)` | `nn.Linear(hidden_dim, n_classes)` | ✓ |
+
+| 组件      | OGB 官方 (PyG)                                                | 本实现 (DGL)                                | 一致 |
+| --------- | ------------------------------------------------------------- | ------------------------------------------- | ---- |
+| 节点嵌入  | `Embedding(1, 300)` 全图共享                                  | `Embedding(1, hidden_dim)`                  | ✓   |
+| 边编码器  | 每层独立`Linear(7, 300)`                                      | 每层独立`Linear(edge_feat_dim, hidden_dim)` | ✓   |
+| GIN MLP   | `Linear(d→2d) → BN → ReLU → Linear(2d→d)` （无最终激活） | 同                                          | ✓   |
+| 消息函数  | `ReLU(src_h + edge_emb)`                                      | 同                                          | ✓   |
+| 聚合      | sum                                                           | `fn.sum`                                    | ✓   |
+| eps       | 可学习，初始化为 0                                            | 同                                          | ✓   |
+| 残差连接  | 无                                                            | 无                                          | ✓   |
+| 末层 ReLU | 跳过                                                          | 跳过                                        | ✓   |
+| 图读出    | mean pooling                                                  | `dglnn.AvgPooling`                          | ✓   |
+| 分类头    | `Linear(300, num_classes)`                                    | `nn.Linear(hidden_dim, n_classes)`          | ✓   |
 
 **参考超参**（OGBG-PPA leaderboard）：hidden_dim=300, n_layers=5, dropout=0.5
 
@@ -198,23 +200,25 @@ python train_full_graph.py --eval-only --load best_model.pt --root dataset
 
 **训练参数**（对齐 OGB 参考配置）：
 
-| 参数 | 值 |
-|------|----|
-| hidden_dim | 300 |
-| n_layers | 5 |
-| dropout | 0.5 |
-| batch_size | 32 |
-| epochs | 100 |
-| lr | 0.001 |
-| optimizer | Adam |
+
+| 参数       | 值    |
+| ---------- | ----- |
+| hidden_dim | 300   |
+| n_layers   | 5     |
+| dropout    | 0.5   |
+| batch_size | 32    |
+| epochs     | 100   |
+| lr         | 0.001 |
+| optimizer  | Adam  |
 
 **输出文件**（默认保存到脚本所在目录）：
 
-| 文件 | 说明 |
-|------|------|
-| `checkpoint.pt` | 每 5 epoch 覆盖保存（含 optimizer state） |
+
+| 文件            | 说明                                                  |
+| --------------- | ----------------------------------------------------- |
+| `checkpoint.pt` | 每 5 epoch 覆盖保存（含 optimizer state）             |
 | `best_model.pt` | 最佳验证准确率时保存（仅 model_state_dict + val_acc） |
-| `curves.pt` | 训练/验证/测试准确率曲线 |
+| `curves.pt`     | 训练/验证/测试准确率曲线                              |
 
 **训练流程**：
 
@@ -274,15 +278,16 @@ python finetune_reader.py --strategy A+B1 --pretrained best_model.pt --root data
 
 **微调训练细节**：
 
-| 参数 | 值 |
-|------|----|
-| 训练 Reader 策略 | random（唯一无偏） |
-| 预算分布 | Uniform{1%, 2%, 5%, 10%, 20%, 50%} × |V| |
-| lr | 1e-4（低于全图训练的 1e-3） |
-| epochs | 20（默认） |
-| inner_batch | 8（子图 mini-batch） |
-| 验证预算 | {5%, 10%, 20%, 50%} |
-| 适配器瓶颈比 | 16（默认，即 300→18） |
+
+| 参数             | 值                                    |
+| ---------------- | ------------------------------------- |
+| 训练 Reader 策略 | random（唯一无偏）                    |
+| 预算分布         | Uniform{1%, 2%, 5%, 10%, 20%, 50%} × |
+| lr               | 1e-4（低于全图训练的 1e-3）           |
+| epochs           | 20（默认）                            |
+| inner_batch      | 8（子图 mini-batch）                  |
+| 验证预算         | {5%, 10%, 20%, 50%}                   |
+| 适配器瓶颈比     | 16（默认，即 300→18）                |
 
 **参数加载顺序是关键**：
 
@@ -299,31 +304,32 @@ python finetune_reader.py --strategy A+B1 --pretrained best_model.pt --root data
 
 `smoke_test_phase1.py` 验证全链路前向通过、无 shape 错误：
 
+额外测试：batch 多图（2 张不同预算子图）、无边子图（budget=0）边界情况。
+
 ```
 Reader(BFS, B=10) → SubgraphBuilder → GINEEncoder → GraphClassifier
                                                       ↓
                                               logits shape: (1, 37) ✓
 ```
 
-额外测试：batch 多图（2 张不同预算子图）、无边子图（budget=0）边界情况。
-
 ---
 
 ## 七、与 M3 Roadmap 的对照
 
-| Roadmap Item | 状态 |
-|-------------|------|
-| 确认数据集 OGBG-PPA | ✓ |
-| 全图分类器基线 GIN | ✓ (train_full_graph.py) |
-| v0 协议实现 | ✓ (engine/) |
-| 部分图表示 | ✓ (GraphState + SubgraphBuilder) |
-| 三种固定策略 | ✓ (random/bfs/max-frontier-degree) |
-| 编码器-分类器（尺子） | ✓ (encoder/) |
-| 全图上界训练 | ✓ (train_full_graph.py) |
-| 预训练 + 微调管线 | ✓ (finetune_reader.py) |
-| 多种子平均评估 | 待运行 |
-| 预算-性能曲线绘制 | 待运行 |
-| Kill criterion 检查 | 待运行 |
+
+| Roadmap Item          | 状态                                |
+| --------------------- | ----------------------------------- |
+| 确认数据集 OGBG-PPA   | ✓                                  |
+| 全图分类器基线 GIN    | ✓ (train_full_graph.py)            |
+| v0 协议实现           | ✓ (engine/)                        |
+| 部分图表示            | ✓ (GraphState + SubgraphBuilder)   |
+| 三种固定策略          | ✓ (random/bfs/max-frontier-degree) |
+| 编码器-分类器（尺子） | ✓ (encoder/)                       |
+| 全图上界训练          | ✓ (train_full_graph.py)            |
+| 预训练 + 微调管线     | ✓ (finetune_reader.py)             |
+| 多种子平均评估        | 待运行                              |
+| 预算-性能曲线绘制     | 待运行                              |
+| Kill criterion 检查   | 待运行                              |
 
 ---
 

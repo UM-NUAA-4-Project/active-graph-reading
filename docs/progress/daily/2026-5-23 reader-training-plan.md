@@ -116,15 +116,16 @@ G_t → SubgraphGNN → H_t → FrontierScorer → scores
 
 ```
 for each v in frontier:
-    revealed_neighbors = {u | (u,v) ∈ E_known, u ∈ V_revealed}
-    agg_v = mean(H_t[u] for u in revealed_neighbors)     # 邻居嵌入聚合
-    score_v = MLP(concat(agg_v, deg_known_embed))         # d→d→1
-return stack([score_v for v in frontier])
+    1. 找到已揭示邻居: N(v) ∩ V_revealed
+       (至少 1 个——正是这个邻居的 reveal 将 v 加入 frontier)
+    2. 聚合邻居嵌入: agg_v = mean(H_t[u] for u in revealed_neighbors)
+    3. 获取边特征:    edge_v = mean(edge_feat(u,v) for u in revealed_neighbors)← 改进：frontier 边特征已在 reveal 时暴露
+    4. 拼接:          z_v = concat(agg_v, edge_v, deg_known_embed)
+       deg_known:     v 在已揭示子图中的已知度（1~|N(v)∩V_rev|）
+    5. MLP 打分:      score_v = Linear→ReLU→Linear→scalar
+
+输出: scores ∈ R^{|frontier|}
 ```
-
-**信息瓶颈**：frontier 节点揭示前无节点特征，仅能通过已揭示邻居的嵌入间接推断价值。
-
-缓解方案：允许 Reader 在决策前获取 frontier 边特征（`reveal_edge_f` 动作，已在 v0 协议附录 B 预留）。
 
 ### 模块三：强化学习训练（REINFORCE / Actor-Critic）
 
@@ -264,10 +265,6 @@ Phase B: 训练 Reader 策略网络
     B3: Gumbel-Softmax 从头训练
     B4: REINFORCE（模块三）
 
-Phase C: 交替微调（可选）
-─────────────────────────────────────────────
-  用 Reader 生成的子图微调 φ → 冻结 φ → 继续训练 π_θ
-  目的：修复 domain shift（Reader 子图分布 ≠ random 子图分布）
 ```
 
 ### 3.5 梯度流分析
@@ -324,8 +321,6 @@ FrontierScorer MLP（通过 Gumbel-Softmax straight-through）
 ║       └──────────→ Stage 3b (M5b)：端到端微调               ║
 ║                    C+A 联合训练（BC + Gumbel-Softmax）        ║
 ║                    （从 BC 权重出发，追求更高性能）            ║
-║                    （若不稳定 → REINFORCE 备选）              ║
-║                                                               ║
 ╚═══════════════════════════════════════════════════════════════╝
 ```
 
@@ -481,9 +476,11 @@ FrontierScorer:
   输入: H_t（已揭示节点嵌入）, frontier_set, edge_known
   对每个 v ∈ frontier:
     1. 找到已揭示邻居: N(v) ∩ V_revealed
-    2. 聚合邻居嵌入: mean(H_t[u] for u in revealed_neighbors)
-    3. 拼接辅助特征: concat(agg, deg_known_embed)
-    4. MLP 打分: Linear→ReLU→Linear→scalar
+    2. 聚合邻居嵌入: agg_v = mean(H_t[u] for u in revealed_neighbors)
+    3. 获取边特征:    edge_v = mean(edge_feat(u,v) for u in revealed_neighbors)
+    4. 拼接:          z_v = concat(agg_v, edge_v, deg_known_embed)
+       deg_known:     v 在已揭示子图中的已知度：1~|N(v)∩V_rev|（被揭示的邻居数量）
+    5. MLP 打分: Linear→ReLU→Linear→scalar
   输出: scores ∈ R^{|frontier|}
 ```
 
@@ -534,37 +531,16 @@ FrontierScorer:
 | M5b 完成   | C+A Reader Accuracy > BC Reader           | 检查梯度冲突，调整$\lambda$ 调度    |
 | M5c 触发   | GS val accuracy 停滞 > 10 epochs          | 启动 REINFORCE 精修                 |
 
----
-
-## 附录 A：关键超参速查
+## 附录 A：文档依据索引
 
 
-| 超参                     | 值                                                     | 适用模块  |
-| ------------------------ | ------------------------------------------------------ | --------- |
-| $d_{\text{hidden}}$      | 128                                                    | 全部      |
-| $L$（GNN 层数）          | 2                                                      | 全部      |
-| $B$（预算）              | 5~15（端到端），10~20（BC）                            | 全部      |
-| Gumbel$\tau$ 初始        | 1.0                                                    | 模块二    |
-| Gumbel$\tau$ 退火        | $\tau \leftarrow \max(0.1, \tau \times 0.995)$ / epoch | 模块二    |
-| BC 学习率                | 1e-3                                                   | 模块一    |
-| 端到端学习率             | 1e-3（Reader 从头），1e-4（微调）                      | 模块二    |
-| REINFORCE 学习率         | 1e-3                                                   | 模块三    |
-| 梯度裁剪                 | max_norm=1.0                                           | 全部      |
-| 每图 rollout 数 K        | 2~3（Gumbel-Softmax），5~10（REINFORCE）               | 模块二/三 |
-| Label smoothing          | 0.1                                                    | 模块一    |
-| Entropy bonus$\lambda$   | -0.01                                                  | 全部      |
-| BC → Task warmup epochs | 20                                                     | C+A 联合  |
-
-## 附录 B：文档依据索引
-
-
-| 引用内容                                | 来源文档                            |
-| --------------------------------------- | ----------------------------------- |
-| 问题定义、动机、研究目标                | `proposal.md`                       |
-| M0-M5 里程碑规划                        | `roadmap.md`                        |
-| 开放问题（联合训练 vs 分阶段）          | `open-questions.md`                 |
-| v0 协议：$G_0$、frontier、reveal_node   | `base-protocol-v0.md`               |
-| PPA 数据集特征（无节点特征、7维边特征） | `ppa_analysis_report.txt`           |
-| M3 尺子设计、反馈循环图                 | `reader-encoder-classifier-plan.md` |
-| M4+ 动作扩展框架                        | `base-protocol-v0.md` 附录 B        |
-| Policy-Learn 架构、端到端训练、对比分析 | `policy-learn-deep-read.md`         |
+| 引用内容                                | 来源文档                     |
+| --------------------------------------- | ---------------------------- |
+| 问题定义、动机、研究目标                | `proposal.md`                |
+| M0-M5 里程碑规划                        | `roadmap.md`                 |
+| 开放问题（联合训练 vs 分阶段）          | `open-questions.md`          |
+| v0 协议：$G_0$、frontier、reveal_node   | `base-protocol-v0.md`        |
+| PPA 数据集特征（无节点特征、7维边特征） | `ppa_analysis_report.txt`    |
+|                                         |                              |
+| M4+ 动作扩展框架                        | `base-protocol-v0.md` 附录 B |
+| Policy-Learn 架构、端到端训练、对比分析 | `policy-learn-deep-read.md`  |
