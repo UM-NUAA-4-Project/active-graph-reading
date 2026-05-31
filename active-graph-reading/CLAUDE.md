@@ -23,7 +23,7 @@ Reward:  R = Accuracy(classifier(sub_G))  — episode-level
 
 - **WSL2**：Windows conda 通过 `/mnt/d/anoconda/` 访问
 - **Conda 环境**：`gnn`（Python 3.10, PyTorch 2.3.0+cu121, DGL 2.2.1）
-- **Shell 命令**：直接使用 `python`、`conda`
+- **Python 路径**：`/mnt/d/anoconda/envs/gnn/python.exe`——直接从 WSL 调用 Windows Python，**禁止使用 `conda run`**（会弹窗、编码报错、不支持多行脚本）
 - **OGB 数据根目录**：`D:\ogb-master\dataset`（Python 是 Windows 版，需用 Windows 路径格式）
 
 ## 目录结构
