@@ -1,0 +1,150 @@
+{
+  "timestamp": "2026-05-27 19:00:41",
+  "config": {
+    "pretrained": "myworkplace\\code\\small_checkpoints\\best_model.pt",
+    "k_per_class": 10,
+    "n_graphs": 370,
+    "seeds_per_graph": 10,
+    "budgets_rel": [
+      0.01,
+      0.02,
+      0.05,
+      0.1,
+      0.2,
+      0.5
+    ],
+    "strategies": [
+      "random",
+      "bfs",
+      "max-frontier-degree"
+    ]
+  },
+  "has_model": true,
+  "full_graph_accuracy": 0.726,
+  "results": {
+    "random": {
+      "0.01": {
+        "mean": 0.0357,
+        "std": 0.1175,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "0.02": {
+        "mean": 0.0511,
+        "std": 0.124,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "0.05": {
+        "mean": 0.1003,
+        "std": 0.1502,
+        "min": 0.0,
+        "max": 0.9
+      },
+      "0.10": {
+        "mean": 0.1832,
+        "std": 0.2181,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "0.20": {
+        "mean": 0.3386,
+        "std": 0.3178,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "0.50": {
+        "mean": 0.593,
+        "std": 0.4096,
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "bfs": {
+      "0.01": {
+        "mean": 0.0465,
+        "std": 0.1256,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "0.02": {
+        "mean": 0.0746,
+        "std": 0.135,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "0.05": {
+        "mean": 0.147,
+        "std": 0.186,
+        "min": 0.0,
+        "max": 0.9
+      },
+      "0.10": {
+        "mean": 0.2241,
+        "std": 0.2427,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "0.20": {
+        "mean": 0.3497,
+        "std": 0.3243,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "0.50": {
+        "mean": 0.5703,
+        "std": 0.4057,
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "max-frontier-degree": {
+      "0.01": {
+        "mean": 0.0478,
+        "std": 0.1204,
+        "min": 0.0,
+        "max": 0.9
+      },
+      "0.02": {
+        "mean": 0.0768,
+        "std": 0.1301,
+        "min": 0.0,
+        "max": 0.9
+      },
+      "0.05": {
+        "mean": 0.1524,
+        "std": 0.1857,
+        "min": 0.0,
+        "max": 0.9
+      },
+      "0.10": {
+        "mean": 0.2157,
+        "std": 0.2534,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "0.20": {
+        "mean": 0.3332,
+        "std": 0.371,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "0.50": {
+        "mean": 0.5838,
+        "std": 0.4632,
+        "min": 0.0,
+        "max": 1.0
+      }
+    }
+  },
+  "kill_criterion": {
+    "triggered": false,
+    "verdict": "PASS",
+    "bfs_accuracy": 0.2241,
+    "full_graph_accuracy": 0.726,
+    "bfs_reveal_ratio": 0.1,
+    "accuracy_ratio": 0.3086,
+    "threshold_ratio": 0.9,
+    "detail": "BFS@10% reveal: 0.2241 vs full-graph: 0.7260 (30.9% of upper bound)"
+  }
+}

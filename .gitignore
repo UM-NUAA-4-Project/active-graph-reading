@@ -1,1 +1,13 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+.DS_Store
+
+# Project-level config (user-specific, should not be committed)
+CLAUDE.md
+../.claude/
 .claude/settings.local.json
