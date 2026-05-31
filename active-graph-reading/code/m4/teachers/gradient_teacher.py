@@ -69,7 +69,7 @@ class GradientTeacher(Teacher):
         self._register_hooks(encoder)
 
         # 2. Forward pass on full graph
-        node_ids = torch.zeros(n_nodes, dtype=torch.long)
+        node_ids = torch.zeros(n_nodes, dtype=torch.long, device=graph.device)
         logits = classifier(graph, node_ids)
 
         if label is None:

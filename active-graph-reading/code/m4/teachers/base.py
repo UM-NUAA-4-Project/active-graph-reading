@@ -139,7 +139,7 @@ class Teacher(ABC):
                 break
 
             # Pick frontier node with highest pre-computed score
-            next_node = self._pick_best_frontier(state.frontier_edges, node_scores)
+            next_node = self._pick_best_frontier(state, node_scores)
             if next_node is None:
                 break
 
@@ -171,33 +171,33 @@ class Teacher(ABC):
 
     @staticmethod
     def _pick_best_frontier(
-        frontier_edges,
+        state: 'GraphState',
         node_scores: torch.Tensor,
     ) -> Optional[int]:
-        """Select the frontier node with highest score.
+        """Select the frontier node with highest score (vectorized).
 
         Parameters
         ----------
-        frontier_edges : set of (revealed, unrevealed) tuples.
+        state : GraphState
+            Current reveal state; uses get_frontier_nodes() for unique frontier.
         node_scores : tensor of shape (|V|,).
 
         Returns
         -------
         int or None
         """
-        best_node = None
-        best_score = float('-inf')
-        for (_ru, rv) in frontier_edges:
-            s = float(node_scores[rv].item())
-            if s > best_score:
-                best_score = s
-                best_node = rv
-        return best_node
+        frontier_nodes = state.get_frontier_nodes()
+        if not frontier_nodes:
+            return None
+        frontier_t = torch.tensor(frontier_nodes, dtype=torch.long)
+        scores = node_scores[frontier_t]
+        best_idx = int(scores.argmax().item())
+        return frontier_nodes[best_idx]
 
     @staticmethod
     def _classifier_forward(classifier, sub_g, original_ids):
         """Run classifier on subgraph, return (confidence, entropy)."""
-        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long)
+        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=sub_g.device)
         with torch.no_grad():
             logits = classifier(sub_g, node_ids)
             probs = F.softmax(logits, dim=1)
@@ -208,10 +208,74 @@ class Teacher(ABC):
     @staticmethod
     def _predict(classifier, sub_g, original_ids) -> int:
         """Return predicted class index."""
-        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long)
+        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=sub_g.device)
         with torch.no_grad():
             logits = classifier(sub_g, node_ids)
             return int(logits.argmax(dim=1).item())
+
+    def generate_trajectory_from_cache(
+        self,
+        meta: 'GraphMeta',
+        graph: dgl.DGLGraph,
+        scores: torch.Tensor,
+        seed_node: int,
+        budget: int,
+        subgraph_builder,
+        teacher_name: str,
+    ):
+        """Generate trajectory using pre-computed scores. No GNN calls.
+
+        Parameters
+        ----------
+        meta : GraphMeta
+            Pre-computed graph metadata (label, edge_key_to_id, etc.).
+        graph : dgl.DGLGraph
+            Full graph with self-loops added.
+        scores : torch.Tensor
+            Per-node importance scores, shape (n_nodes,).
+        seed_node : int
+            Starting seed node ID.
+        budget : int
+            Max number of nodes to reveal (excluding seed).
+        subgraph_builder : SubgraphBuilder
+        teacher_name : str
+            Teacher identifier for bookkeeping.
+
+        Returns
+        -------
+        (Trajectory, sub_g) — trajectory without final_pred/is_correct yet,
+        and the final DGL subgraph for batched classifier evaluation.
+        """
+        from m4.trajectory import Trajectory
+
+        state = GraphState(
+            graph,
+            seed_node=seed_node,
+            edge_key_to_id=meta.edge_key_to_id,
+        )
+
+        reveal_order = []
+        for _ in range(budget):
+            if state.is_frontier_empty:
+                break
+            next_node = self._pick_best_frontier(state, scores)
+            if next_node is None:
+                break
+            reveal_node(state, next_node)
+            reveal_order.append(next_node)
+
+        sub_g, _ = subgraph_builder.build(state)
+
+        traj = Trajectory(
+            graph_idx=meta.graph_idx,
+            seed_node=seed_node,
+            budget_used=len(reveal_order),
+            reveal_order=reveal_order,
+            teacher_type=teacher_name,
+            teacher_params={},
+            label=meta.label,
+        )
+        return traj, sub_g
 
     def _params_dict(self) -> dict:
         """Return teacher-specific parameters for bookkeeping."""

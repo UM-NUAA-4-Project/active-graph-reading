@@ -26,7 +26,7 @@ class TrajectoryFilter:
         teacher_type is retained (up to top_k limit).
     """
 
-    def __init__(self, top_k: int = 3, require_diversity: bool = True):
+    def __init__(self, top_k: int = 3, require_diversity: bool = False):
         self.top_k = top_k
         self.require_diversity = require_diversity
 

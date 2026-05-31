@@ -83,23 +83,31 @@ def parse_args():
 
     # Generation params
     p.add_argument('--budgets', type=int, nargs='+', default=[5, 10, 15, 20],
-                   help='Budget values')
-    p.add_argument('--seeds-per-graph', type=int, default=3,
+                   help='Budget values (legacy mode; use --budget-ratio for phased mode)')
+    p.add_argument('--budget-ratio', type=float, default=None,
+                   help='Budget as fraction of |V| (enables phased pipeline, e.g. 0.15)')
+    p.add_argument('--seeds-per-graph', type=int, default=5,
                    help='Random seeds per graph')
     p.add_argument('--skip-t2', action='store_true',
                    help='Skip T2 (info-gain) teacher — expensive')
     p.add_argument('--top-k', type=int, default=3,
                    help='Max trajectories per graph after filtering')
+    p.add_argument('--chunk-size', type=int, default=500,
+                   help='Graphs per chunk for GPU batch eval (phased mode only)')
 
     # Output
     p.add_argument('--output-dir', type=str, default=None,
                    help='Output directory (default: m4_output/)')
     p.add_argument('--save-interval', type=int, default=500,
                    help='Save checkpoint every N trajectories')
+    p.add_argument('--cache-dir', type=str, default=None,
+                   help='Directory for GraphMeta cache persistence')
 
     # Modes
     p.add_argument('--quick', action='store_true',
                    help='Quick mode: 200 valid graphs, budgets=[5,10], 1 seed, skip T2')
+    p.add_argument('--phased', action='store_true', default=None,
+                   help='Use optimized phased pipeline (auto-enabled with --budget-ratio)')
     p.add_argument('--seed', type=int, default=42,
                    help='Global random seed')
 
@@ -145,7 +153,9 @@ def compute_baseline_acc(
                 loop.run(budget=budget)
 
                 sub_g, orig_ids = subgraph_builder.build(state)
-                node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long)
+                cls_device = next(classifier.parameters()).device
+                sub_g = sub_g.to(cls_device)
+                node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=cls_device)
                 logits = classifier(sub_g, node_ids)
                 pred = int(logits.argmax(dim=1).item())
                 results[budget].append(1.0 if pred == label else 0.0)
@@ -166,6 +176,13 @@ def main():
         args.seeds_per_graph = 1
         args.skip_t2 = True
         args.train_graphs = 0
+
+    # Detect phased mode: explicit --phased flag or --budget-ratio provided
+    use_phased = args.phased or (args.budget_ratio is not None)
+    if args.phased is None:
+        use_phased = args.budget_ratio is not None
+    if use_phased and args.budget_ratio is None:
+        args.budget_ratio = 0.15  # default ratio for phased mode
 
     torch.manual_seed(args.seed)
     random.seed(args.seed)
@@ -255,6 +272,10 @@ def main():
     )
 
     all_trajs = []
+    filtered_trajs = []
+
+    cache_dir = args.cache_dir if args.cache_dir else str(output_dir / 'cache')
+
     for split_name, split_indices in [
         ('train', train_indices),
         ('valid', valid_indices),
@@ -263,115 +284,166 @@ def main():
         if not split_indices:
             continue
 
-        logger.info("Generating %s trajectories (%d graphs)...", split_name, len(split_indices))
-        trajs = generator.generate_all(
-            indices=split_indices,
-            budgets=args.budgets,
-            seeds_per_graph=args.seeds_per_graph,
-            output_dir=str(output_dir / 'raw'),
-            checkpoint_file=str(output_dir / f'checkpoint_{split_name}.json'),
-            save_interval=args.save_interval,
-            seed_offset={'train': 0, 'valid': 1000, 'test': 2000}[split_name],
-        )
-        all_trajs.extend(trajs)
-
-    if not all_trajs:
-        logger.error("No trajectories generated. Check dataset indices and budgets.")
-        sys.exit(1)
-
-    logger.info("Total raw trajectories: %d", len(all_trajs))
-
-    # ------------------------------------------------------------------
-    # 6. Score trajectories
-    # ------------------------------------------------------------------
-    logger.info("Scoring trajectories...")
-    scorer = TrajectoryScorer(w_be=0.5, w_ig=0.3, w_stability=0.2)
-
-    # Collect graph sizes for budget efficiency normalization
-    graph_sizes = {}
-    for traj in all_trajs:
-        if traj.graph_idx not in graph_sizes:
-            g_raw, _ = dataset[traj.graph_idx]
-            graph_sizes[traj.graph_idx] = g_raw.num_nodes()
-
-    scored = scorer.score_all(all_trajs, graph_sizes=graph_sizes)
-    logger.info("Scored %d trajectories", len(scored))
-
-    # Save scored trajectories
-    scored_dir = output_dir / 'scored'
-    scored_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(scored, scored_dir / 'scored_trajectories.pt')
+        if use_phased:
+            logger.info(
+                "[PHASED] Generating %s trajectories (%d graphs, ratio=%.2f, seeds=%d)...",
+                split_name, len(split_indices), args.budget_ratio, args.seeds_per_graph,
+            )
+            split_filtered = generator.generate_all_phased(
+                indices=list(split_indices),
+                budget_ratio=args.budget_ratio,
+                seeds_per_graph=args.seeds_per_graph,
+                top_k=args.top_k,
+                output_dir=str(output_dir),
+                checkpoint_file=str(output_dir / f'checkpoint_{split_name}.json'),
+                chunk_size=args.chunk_size,
+                skip_t2=args.skip_t2,
+                cache_dir=cache_dir,
+            )
+            filtered_trajs.extend(split_filtered)
+            logger.info(
+                "[PHASED] %s: %d filtered trajectories", split_name, len(split_filtered),
+            )
+        else:
+            logger.info(
+                "Generating %s trajectories (%d graphs)...", split_name, len(split_indices),
+            )
+            trajs = generator.generate_all(
+                indices=split_indices,
+                budgets=args.budgets,
+                seeds_per_graph=args.seeds_per_graph,
+                output_dir=str(output_dir / 'raw'),
+                checkpoint_file=str(output_dir / f'checkpoint_{split_name}.json'),
+                save_interval=args.save_interval,
+                seed_offset={'train': 0, 'valid': 1000, 'test': 2000}[split_name],
+            )
+            all_trajs.extend(trajs)
 
     # ------------------------------------------------------------------
-    # 7. Filter trajectories
+    # 6. Score & Filter (legacy mode only; phased mode already filters)
     # ------------------------------------------------------------------
-    logger.info("Filtering trajectories (top_k=%d)...", args.top_k)
-    traj_filter = TrajectoryFilter(top_k=args.top_k, require_diversity=True)
-    filtered_trajs = traj_filter.filter(scored)
+    if not use_phased:
+        if not all_trajs:
+            logger.error("No trajectories generated. Check dataset indices and budgets.")
+            sys.exit(1)
 
-    filtered_dir = output_dir / 'filtered'
-    filtered_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(filtered_trajs, filtered_dir / 'filtered_trajectories.pt')
-    logger.info("Filtered trajectories saved: %d", len(filtered_trajs))
+        logger.info("Total raw trajectories: %d", len(all_trajs))
+
+        logger.info("Scoring trajectories...")
+        scorer = TrajectoryScorer(w_be=0.5, w_ig=0.3, w_stability=0.2)
+
+        graph_sizes = {}
+        for traj in all_trajs:
+            if traj.graph_idx not in graph_sizes:
+                g_raw, _ = dataset[traj.graph_idx]
+                graph_sizes[traj.graph_idx] = g_raw.num_nodes()
+
+        scored = scorer.score_all(all_trajs, graph_sizes=graph_sizes)
+        logger.info("Scored %d trajectories", len(scored))
+
+        scored_dir = output_dir / 'scored'
+        scored_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(scored, scored_dir / 'scored_trajectories.pt')
+
+        logger.info("Filtering trajectories (top_k=%d)...", args.top_k)
+        traj_filter = TrajectoryFilter(top_k=args.top_k, require_diversity=True)
+        filtered_trajs = traj_filter.filter(scored)
+
+        filtered_dir = output_dir / 'filtered'
+        filtered_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(filtered_trajs, filtered_dir / 'filtered_trajectories.pt')
+        logger.info("Filtered trajectories saved: %d", len(filtered_trajs))
+    else:
+        # In phased mode, all_trajs from legacy path is empty; use filtered
+        # from phased pipeline as the canonical list for reporting
+        all_trajs = filtered_trajs
+        if not all_trajs:
+            logger.error("No trajectories generated. Check dataset indices and budgets.")
+            sys.exit(1)
 
     # ------------------------------------------------------------------
     # 8. Oracle upper-bound estimation
     # ------------------------------------------------------------------
-    logger.info("Estimating oracle upper bounds...")
-    oracle = OracleEstimator(classifier, subgraph_builder, device=str(device))
+    if not use_phased:
+        logger.info("Estimating oracle upper bounds...")
+        oracle = OracleEstimator(classifier, subgraph_builder, device=str(device))
 
-    # Type II: from gradient teacher trajectories
-    oracle_type2 = oracle.estimate_type2(all_trajs, teacher_name='gradient')
-    logger.info("Oracle Type II (gradient): %s", {b: f'{v:.4f}' for b, v in oracle_type2.items()})
+        oracle_type2 = oracle.estimate_type2(all_trajs, teacher_name='gradient')
+        logger.info("Oracle Type II (gradient): %s", {b: f'{v:.4f}' for b, v in oracle_type2.items()})
 
-    # Type I: on a small subset (expensive)
-    oracle_type1_subset = eval_indices[:50]
-    type1_by_budget = defaultdict(list)
-    for idx in oracle_type1_subset:
-        g_raw, label = dataset[idx]
-        g = dgl.add_self_loop(g_raw)
-        n_nodes = g.num_nodes()
-        seed_node = random.randint(0, max(n_nodes - 1, 0))
-        for budget in args.budgets:
-            is_correct, _ = oracle.estimate_type1(g, label, seed_node, budget)
-            type1_by_budget[budget].append(1.0 if is_correct else 0.0)
+        oracle_type1_subset = eval_indices[:50]
+        type1_by_budget = defaultdict(list)
+        for idx in oracle_type1_subset:
+            g_raw, label = dataset[idx]
+            g = dgl.add_self_loop(g_raw)
+            n_nodes = g.num_nodes()
+            seed_node = random.randint(0, max(n_nodes - 1, 0))
+            for budget in args.budgets:
+                is_correct, _ = oracle.estimate_type1(g, label, seed_node, budget)
+                type1_by_budget[budget].append(1.0 if is_correct else 0.0)
 
-    oracle_type1 = {b: np.mean(accs) for b, accs in sorted(type1_by_budget.items())}
-    logger.info("Oracle Type I (label-aware, %d graphs): %s",
-                len(oracle_type1_subset), {b: f'{v:.4f}' for b, v in oracle_type1.items()})
+        oracle_type1 = {b: np.mean(accs) for b, accs in sorted(type1_by_budget.items())}
+        logger.info("Oracle Type I (label-aware, %d graphs): %s",
+                    len(oracle_type1_subset), {b: f'{v:.4f}' for b, v in oracle_type1.items()})
 
-    # Headroom
-    headroom = oracle.headroom_analysis(oracle_type2, bfs_acc, random_acc)
-    logger.info("Headroom (oracle vs BFS): max=%.4f, verdict=%s",
-                headroom['max_headroom_bfs'], headroom['verdict'])
+        headroom = oracle.headroom_analysis(oracle_type2, bfs_acc, random_acc)
+        logger.info("Headroom (oracle vs BFS): max=%.4f, verdict=%s",
+                    headroom['max_headroom_bfs'], headroom['verdict'])
 
-    # ------------------------------------------------------------------
-    # 9. Feasibility analysis
-    # ------------------------------------------------------------------
-    logger.info("Running feasibility analysis...")
-    analyzer = FeasibilityAnalyzer(dfi_threshold_high=0.5, dfi_threshold_low=0.3)
-    dfi_result = analyzer.analyze(
-        oracle_acc=oracle_type2,
-        bfs_acc=bfs_acc,
-        scored_trajectories=scored,
-        trajectories=all_trajs,
-    )
+        logger.info("Running feasibility analysis...")
+        analyzer = FeasibilityAnalyzer(dfi_threshold_high=0.5, dfi_threshold_low=0.3)
+        dfi_result = analyzer.analyze(
+            oracle_acc=oracle_type2,
+            bfs_acc=bfs_acc,
+            scored_trajectories=scored,
+            trajectories=all_trajs,
+        )
+    else:
+        # Phased mode: simplified oracle/feasibility
+        # Compute accuracy per teacher from filtered trajectories
+        from collections import Counter
+        teacher_stats = defaultdict(lambda: {'correct': 0, 'total': 0})
+        for t in filtered_trajs:
+            teacher_stats[t.teacher_type]['total'] += 1
+            if t.is_correct:
+                teacher_stats[t.teacher_type]['correct'] += 1
+
+        oracle_type1 = {}
+        oracle_type2 = {}
+        for name, stats in sorted(teacher_stats.items()):
+            acc = stats['correct'] / max(stats['total'], 1)
+            oracle_type2[name] = acc
+            logger.info("Teacher %s: %.4f (%d/%d)", name, acc, stats['correct'], stats['total'])
+
+        headroom = {'max_headroom_bfs': 0.0, 'max_headroom_random': 0.0, 'verdict': 'phased_mode'}
+        dfi_result = {
+            'dfi': 0.0,
+            'recommendation': 'Phased mode — run legacy pipeline for full feasibility analysis.',
+            'components': {},
+        }
 
     # ------------------------------------------------------------------
     # 10. Save report
     # ------------------------------------------------------------------
+    config_info = {
+        'pretrained': args.pretrained,
+        'n_train_graphs': len(train_indices),
+        'n_valid_graphs': len(valid_indices),
+        'n_test_graphs': len(test_indices),
+        'seeds_per_graph': args.seeds_per_graph,
+        'top_k': args.top_k,
+        'teachers': [t.name for t in teachers],
+    }
+    if use_phased:
+        config_info['budget_ratio'] = args.budget_ratio
+        config_info['mode'] = 'phased'
+    else:
+        config_info['budgets'] = args.budgets
+        config_info['mode'] = 'legacy'
+
     report = {
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'config': {
-            'pretrained': args.pretrained,
-            'n_train_graphs': len(train_indices),
-            'n_valid_graphs': len(valid_indices),
-            'n_test_graphs': len(test_indices),
-            'budgets': args.budgets,
-            'seeds_per_graph': args.seeds_per_graph,
-            'top_k': args.top_k,
-            'teachers': [t.name for t in teachers],
-        },
+        'config': config_info,
         'baselines': {
             'random': {str(b): round(v, 4) for b, v in random_acc.items()},
             'bfs': {str(b): round(v, 4) for b, v in bfs_acc.items()},
@@ -381,18 +453,17 @@ def main():
             'type2_gradient': {str(b): round(v, 4) for b, v in oracle_type2.items()},
         },
         'headroom': {
-            'max_headroom_bfs': round(headroom['max_headroom_bfs'], 4),
-            'max_headroom_random': round(headroom['max_headroom_random'], 4),
-            'verdict': headroom['verdict'],
+            'max_headroom_bfs': round(headroom.get('max_headroom_bfs', 0), 4),
+            'max_headroom_random': round(headroom.get('max_headroom_random', 0), 4),
+            'verdict': headroom.get('verdict', ''),
         },
         'feasibility': {
-            'dfi': dfi_result['dfi'],
-            'recommendation': dfi_result['recommendation'],
-            'components': dfi_result['components'],
+            'dfi': dfi_result.get('dfi', 0),
+            'recommendation': dfi_result.get('recommendation', ''),
+            'components': dfi_result.get('components', {}),
         },
         'statistics': {
             'n_raw_trajectories': len(all_trajs),
-            'n_scored': len(scored),
             'n_filtered': len(filtered_trajs),
             'pct_correct': round(
                 100.0 * sum(1 for t in all_trajs if t.is_correct) / max(len(all_trajs), 1), 1
@@ -409,18 +480,26 @@ def main():
     print("\n" + "=" * 60)
     print("M4 Complete — Summary")
     print("=" * 60)
+    print(f"  Mode: {'PHASED' if use_phased else 'LEGACY'}")
     print(f"  Raw trajectories:     {len(all_trajs)}")
     print(f"  Filtered trajectories: {len(filtered_trajs)}")
     print(f"  % Correct:             {report['statistics']['pct_correct']:.1f}%")
-    print(f"\n  Budget → Accuracy:")
-    for b in args.budgets:
-        r = random_acc.get(b, 0)
-        bf = bfs_acc.get(b, 0)
-        o2 = oracle_type2.get(b, 0)
-        o1 = oracle_type1.get(b, 0)
-        print(f"    B={b:2d}: random={r:.4f}  bfs={bf:.4f}  oracle-T2={o2:.4f}  oracle-T1={o1:.4f}")
-    print(f"\n  DFI: {dfi_result['dfi']:.4f}")
-    print(f"  Verdict: {dfi_result['recommendation']}")
+    if use_phased:
+        print(f"  Budget ratio: {args.budget_ratio}")
+        print(f"\n  Teacher Accuracy (filtered):")
+        for name in sorted(oracle_type2):
+            if oracle_type2[name]:
+                print(f"    {name}: {oracle_type2[name]:.4f}")
+    else:
+        print(f"\n  Budget → Accuracy:")
+        for b in args.budgets:
+            r = random_acc.get(b, 0)
+            bf = bfs_acc.get(b, 0)
+            o2 = oracle_type2.get(b, 0)
+            o1 = oracle_type1.get(b, 0)
+            print(f"    B={b:2d}: random={r:.4f}  bfs={bf:.4f}  oracle-T2={o2:.4f}  oracle-T1={o1:.4f}")
+    print(f"\n  DFI: {dfi_result.get('dfi', 0):.4f}" if 'dfi' in dfi_result else "")
+    print(f"  Verdict: {dfi_result.get('recommendation', 'N/A')}")
     print(f"\n  Report: {report_path}")
     print("=" * 60)
 

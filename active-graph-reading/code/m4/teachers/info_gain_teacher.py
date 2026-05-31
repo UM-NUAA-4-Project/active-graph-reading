@@ -84,9 +84,10 @@ class InfoGainTeacher(Teacher):
         seed_node: int,
         budget: int,
         subgraph_builder: SubgraphBuilder,
+        edge_key_to_id: Optional[dict] = None,
     ) -> Trajectory:
         """Generate trajectory using per-step information gain selection."""
-        state = GraphState(graph, seed_node=seed_node)
+        state = GraphState(graph, seed_node=seed_node, edge_key_to_id=edge_key_to_id)
         n_nodes = graph.num_nodes()
 
         # Record G_0
@@ -127,7 +128,7 @@ class InfoGainTeacher(Teacher):
 
             # Batch forward
             batch_g = dgl.batch(candidate_subs)
-            batch_node_ids = torch.zeros(batch_g.num_nodes(), dtype=torch.long)
+            batch_node_ids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=batch_g.device)
             with torch.no_grad():
                 batch_logits = classifier(batch_g, batch_node_ids)
             entropies = self._batched_entropy(batch_logits)  # (K,)
@@ -162,7 +163,7 @@ class InfoGainTeacher(Teacher):
 
         # Final prediction
         sub_g, orig_ids = subgraph_builder.build(state)
-        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long)
+        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=sub_g.device)
         with torch.no_grad():
             logits = classifier(sub_g, node_ids)
             pred = int(logits.argmax(dim=1).item())
@@ -178,7 +179,7 @@ class InfoGainTeacher(Teacher):
     @staticmethod
     def _entropy_and_conf(classifier, sub_g):
         """Return (entropy, confidence) for a single subgraph."""
-        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long)
+        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=sub_g.device)
         with torch.no_grad():
             logits = classifier(sub_g, node_ids)
             probs = F.softmax(logits, dim=1)

@@ -1,17 +1,20 @@
 """Batch trajectory generator with checkpoint/resume support.
 
-Orchestrates multiple teachers across many graphs to produce raw
-reading trajectories for M4 analysis and M5 training.
+Provides two generation modes:
+1. generate_all() — legacy: per-trajectory teacher calls with per-step GNN
+2. generate_all_phased() — optimized 3-phase pipeline with score caching
 """
 
 import json
 import logging
 import random
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 import torch
+import torch.nn.functional as F
 import dgl
 from tqdm import tqdm
 
@@ -53,9 +56,9 @@ class TrajectoryGenerator:
         self.dataset = dataset
         self.device = device
 
-    # ------------------------------------------------------------------
-    # Main generation loop
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Legacy: per-trajectory generation (backward compatible)
+    # ==================================================================
 
     def generate_all(
         self,
@@ -67,14 +70,14 @@ class TrajectoryGenerator:
         save_interval: int = 500,
         seed_offset: int = 0,
     ) -> List[Trajectory]:
-        """Generate trajectories for a set of graphs.
+        """Generate trajectories for a set of graphs (legacy mode).
 
         Parameters
         ----------
         indices : sequence of int
             Dataset graph indices to process.
         budgets : sequence of int
-            Budget values to use (each teacher × each budget).
+            Budget values to use (each teacher x each budget).
         seeds_per_graph : int
             Number of random seed nodes per graph.
         output_dir : str or None
@@ -90,7 +93,6 @@ class TrajectoryGenerator:
         -------
         list of Trajectory
         """
-        # Resume from checkpoint if available
         completed = _load_checkpoint(checkpoint_file) if checkpoint_file else set()
         all_trajs: List[Trajectory] = []
 
@@ -100,8 +102,8 @@ class TrajectoryGenerator:
         est_total = n_total * n_teachers * n_budgets * seeds_per_graph
 
         logger.info(
-            "Generating trajectories: %d graphs × %d teachers × %d budgets × %d seeds "
-            "≈ %d total (resuming from %d completed)",
+            "Generating trajectories: %d graphs x %d teachers x %d budgets x %d seeds "
+            "= %d total (resuming from %d completed)",
             n_total, n_teachers, n_budgets, seeds_per_graph,
             est_total, len(completed),
         )
@@ -111,7 +113,6 @@ class TrajectoryGenerator:
         last_save = 0
 
         for graph_idx in indices:
-            # Add self-loops (matching full-graph training convention)
             g_raw, label = self.dataset[graph_idx]
             g = dgl.add_self_loop(g_raw)
 
@@ -154,7 +155,6 @@ class TrajectoryGenerator:
                         generated += 1
                         pbar.update(1)
 
-                        # Incremental save
                         if output_dir and generated - last_save >= save_interval:
                             _save_trajs(all_trajs, output_dir)
                             if checkpoint_file:
@@ -163,7 +163,6 @@ class TrajectoryGenerator:
 
         pbar.close()
 
-        # Final save
         if output_dir:
             _save_trajs(all_trajs, output_dir)
             if checkpoint_file:
@@ -172,34 +171,351 @@ class TrajectoryGenerator:
         logger.info("Generated %d trajectories total", len(all_trajs))
         return all_trajs
 
+    # ==================================================================
+    # Phased pipeline (optimized)
+    # ==================================================================
 
-# ------------------------------------------------------------------
+    def generate_all_phased(
+        self,
+        indices: List[int],
+        budget_ratio: float = 0.15,
+        seeds_per_graph: int = 5,
+        top_k: int = 3,
+        output_dir: Optional[str] = None,
+        checkpoint_file: Optional[str] = None,
+        chunk_size: int = 500,
+        skip_t2: bool = True,
+        resume_from_cache: Optional[str] = None,
+        cache_dir: Optional[str] = None,
+    ) -> List[Trajectory]:
+        """Generate trajectories using the 3-phase optimized pipeline.
+
+        Phase 1: Pre-compute GraphMeta (T1 gradient + T3 structural scores).
+        Phase 2: Generate + batch-evaluate trajectories in chunks.
+        Phase 3: Filter top-k per graph by CrossEntropy.
+
+        Parameters
+        ----------
+        indices : list of int
+            Dataset graph indices to process.
+        budget_ratio : float
+            Budget as fraction of |V| (e.g. 0.15 = 15% of nodes).
+        seeds_per_graph : int
+            Number of random seed nodes per graph.
+        top_k : int
+            Max trajectories per graph after filtering.
+        output_dir : str or None
+            Directory for saving raw/filtered trajectories.
+        checkpoint_file : str or None
+            JSON manifest for resume support.
+        chunk_size : int
+            Graphs per chunk for batched GPU classifier evaluation.
+        skip_t2 : bool
+            Skip T2 (info-gain) teacher.
+        resume_from_cache : str or None
+            Path to saved GraphMeta cache.pt for resuming pre-computation.
+        cache_dir : str or None
+            Directory for saving/loading GraphMeta cache.
+
+        Returns
+        -------
+        list of Trajectory (filtered top-k per graph).
+        """
+        from m4.graph_meta import GraphMetaCache
+        from m4.teachers.info_gain_teacher import InfoGainTeacher
+
+        # ------------------------------------------------------------------
+        # Phase 1: Pre-compute GraphMeta
+        # ------------------------------------------------------------------
+        logger.info("=" * 60)
+        logger.info("Phase 1: Pre-computing GraphMeta for %d graphs", len(indices))
+        logger.info("=" * 60)
+
+        cache = GraphMetaCache(self.dataset, self.classifier, self.device)
+
+        # Resume from saved cache if available
+        resume_metas = None
+        if resume_from_cache:
+            try:
+                resume_metas = cache.load(resume_from_cache)
+                logger.info("Resumed %d metas from %s", len(resume_metas), resume_from_cache)
+            except FileNotFoundError:
+                logger.warning("Cache file not found: %s, starting fresh", resume_from_cache)
+
+        # Determine which scores to compute based on teachers
+        teacher_names = {t.name for t in self.teachers}
+        need_t1 = 'gradient' in teacher_names or 'hybrid' in teacher_names
+        need_t3_degree = 'structural-degree' in teacher_names or 'hybrid' in teacher_names
+        need_t3_pagerank = 'structural-pagerank' in teacher_names
+
+        metas = cache.precompute(
+            indices,
+            skip_t1=not need_t1,
+            skip_t3_degree=not need_t3_degree,
+            skip_t3_pagerank=not need_t3_pagerank,
+            resume_from=resume_metas,
+        )
+
+        # Save cache for future resume
+        if cache_dir:
+            cache_path = Path(cache_dir) / 'graph_meta_cache.pt'
+            cache.save(str(cache_path))
+
+        # ------------------------------------------------------------------
+        # Phase 2: Generate + batch-evaluate in chunks
+        # ------------------------------------------------------------------
+        logger.info("=" * 60)
+        logger.info("Phase 2: Generating trajectories (chunk_size=%d)", chunk_size)
+        logger.info("=" * 60)
+
+        completed = _load_checkpoint(checkpoint_file) if checkpoint_file else set()
+
+        all_trajs: List[Trajectory] = []
+        chunk_files: List[str] = []
+
+        # Chunk indices for memory management
+        chunk_indices_list = [
+            indices[i:i + chunk_size]
+            for i in range(0, len(indices), chunk_size)
+        ]
+
+        for chunk_i, chunk_indices in enumerate(tqdm(chunk_indices_list, desc="chunks", unit="chunk")):
+            # Skip completed graphs in checkpoint
+            remaining = [
+                idx for idx in chunk_indices
+                if idx not in completed
+            ]
+            if not remaining:
+                continue
+
+            try:
+                chunk_trajs = self._process_chunk(
+                    chunk_indices=remaining,
+                    metas=metas,
+                    budget_ratio=budget_ratio,
+                    seeds_per_graph=seeds_per_graph,
+                    skip_t2=skip_t2,
+                )
+            except Exception as e:
+                logger.error("Chunk %d failed: %s", chunk_i, e)
+                continue
+
+            all_trajs.extend(chunk_trajs)
+
+            # Mark graphs as completed
+            for idx in remaining:
+                completed.add(idx)
+
+            # Incremental save: raw chunk
+            if output_dir and chunk_trajs:
+                raw_dir = Path(output_dir) / 'raw'
+                raw_dir.mkdir(parents=True, exist_ok=True)
+                chunk_path = raw_dir / f'chunk_{chunk_i:04d}.pt'
+                torch.save(chunk_trajs, chunk_path)
+                chunk_files.append(str(chunk_path))
+
+                if checkpoint_file:
+                    _save_checkpoint(completed, checkpoint_file)
+
+        logger.info("Phase 2 complete: %d raw trajectories", len(all_trajs))
+
+        # ------------------------------------------------------------------
+        # Phase 3: Filter top-k per graph
+        # ------------------------------------------------------------------
+        logger.info("=" * 60)
+        logger.info("Phase 3: Filtering top-%d per graph", top_k)
+        logger.info("=" * 60)
+
+        filtered = _filter_top_k(all_trajs, top_k)
+
+        pct_correct = (
+            100.0 * sum(1 for t in all_trajs if t.is_correct) / max(len(all_trajs), 1)
+        )
+        logger.info(
+            "Filtered: %d trajectories from %d graphs (%.1f%% correct overall)",
+            len(filtered),
+            len(set(t.graph_idx for t in filtered)),
+            pct_correct,
+        )
+
+        # Save filtered
+        if output_dir:
+            filtered_dir = Path(output_dir) / 'filtered'
+            filtered_dir.mkdir(parents=True, exist_ok=True)
+            torch.save(filtered, filtered_dir / 'filtered_trajectories.pt')
+            logger.info("Filtered trajectories saved to %s", filtered_dir)
+
+        return filtered
+
+    # ------------------------------------------------------------------
+    # Chunk processing
+    # ------------------------------------------------------------------
+
+    def _process_chunk(
+        self,
+        chunk_indices: List[int],
+        metas: dict,
+        budget_ratio: float,
+        seeds_per_graph: int,
+        skip_t2: bool,
+    ) -> List[Trajectory]:
+        """Process one chunk: generate all trajectories, batch-evaluate on GPU.
+
+        Steps:
+        1. For each graph, generate trajectories using cached scores (no GNN).
+        2. Batch all final subgraphs into one classifier forward pass.
+        3. Fill in final_pred, is_correct, cross_entropy for each trajectory.
+        """
+        from m4.graph_meta import GraphMetaCache
+        from m4.teachers.info_gain_teacher import InfoGainTeacher
+
+        cache = GraphMetaCache(self.dataset, self.classifier, self.device)
+        cache._cache = metas  # share pre-computed metas
+
+        all_trajs: List[Trajectory] = []
+        all_subgraphs: List[dgl.DGLGraph] = []
+
+        for graph_idx in chunk_indices:
+            meta = metas.get(graph_idx)
+            if meta is None:
+                logger.warning("Graph %d: no meta, skipping", graph_idx)
+                continue
+
+            # Load full graph once per graph
+            g_raw, _ = self.dataset[graph_idx]
+            g = dgl.add_self_loop(g_raw)
+
+            budget = max(1, int(meta.n_nodes * budget_ratio))
+            teacher_scores = cache.get_teacher_scores(meta)
+
+            rng = random.Random(graph_idx * 31)
+            seed_nodes = [
+                rng.randint(0, max(meta.n_nodes - 1, 0))
+                for _ in range(seeds_per_graph)
+            ]
+
+            for seed_node in seed_nodes:
+                for teacher_name, scores in teacher_scores.items():
+                    try:
+                        base_teacher = self.teachers[0]  # any Teacher works for static method
+                        traj, sub_g = base_teacher.generate_trajectory_from_cache(
+                            meta=meta,
+                            graph=g,
+                            scores=scores,
+                            seed_node=seed_node,
+                            budget=budget,
+                            subgraph_builder=self.subgraph_builder,
+                            teacher_name=teacher_name,
+                        )
+                        all_trajs.append(traj)
+                        all_subgraphs.append(sub_g)
+                    except Exception as e:
+                        logger.warning(
+                            "Trajectory failed: graph=%d teacher=%s seed=%d: %s",
+                            graph_idx, teacher_name, seed_node, e,
+                        )
+
+            # T2 (info-gain): separate per-step path
+            if not skip_t2:
+                t2_teacher = None
+                for t in self.teachers:
+                    if isinstance(t, InfoGainTeacher):
+                        t2_teacher = t
+                        break
+
+                if t2_teacher is not None:
+                    g_raw, _ = self.dataset[graph_idx]
+                    g = dgl.add_self_loop(g_raw)
+                    for seed_node in seed_nodes:
+                        try:
+                            traj = t2_teacher.generate_trajectory(
+                                graph=g,
+                                classifier=self.classifier,
+                                graph_idx=graph_idx,
+                                label=meta.label,
+                                seed_node=seed_node,
+                                budget=budget,
+                                subgraph_builder=self.subgraph_builder,
+                                edge_key_to_id=meta.edge_key_to_id,
+                            )
+                            all_trajs.append(traj)
+                        except Exception as e:
+                            logger.debug(
+                                "T2 trajectory failed: graph=%d: %s",
+                                graph_idx, e,
+                            )
+
+        # Batch classifier evaluation on GPU
+        if all_subgraphs:
+            batch_g = dgl.batch(all_subgraphs).to(self.device)
+            node_ids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=self.device)
+            with torch.no_grad():
+                logits = self.classifier(batch_g, node_ids)
+            probs = F.softmax(logits, dim=1)
+
+            for i, traj in enumerate(all_trajs[:len(all_subgraphs)]):
+                traj.final_pred = int(logits[i].argmax(dim=0).item())
+                traj.is_correct = (traj.final_pred == traj.label)
+                traj.cross_entropy = float(
+                    -torch.log(probs[i, traj.label] + 1e-12).item()
+                )
+
+        return all_trajs
+
+
+# ======================================================================
+# Filtering
+# ======================================================================
+
+def _filter_top_k(trajectories: List[Trajectory], top_k: int) -> List[Trajectory]:
+    """Per graph: keep correctly classified, sort by CrossEntropy asc, take top-k."""
+    by_graph = defaultdict(list)
+    for t in trajectories:
+        if t.is_correct:
+            by_graph[t.graph_idx].append(t)
+
+    result = []
+    for graph_idx in sorted(by_graph):
+        trajs = by_graph[graph_idx]
+        trajs.sort(key=lambda t: t.cross_entropy)
+        result.extend(trajs[:top_k])
+
+    logger.info(
+        "Filtered to %d trajectories: %d graphs, top-%d each",
+        len(result), len(by_graph), top_k,
+    )
+    return result
+
+
+# ======================================================================
 # Checkpoint helpers
-# ------------------------------------------------------------------
+# ======================================================================
 
 def _load_checkpoint(path: str) -> set:
-    """Load set of completed trajectory keys from JSON manifest."""
+    """Load set of completed graph indices from JSON manifest."""
     if not path or not Path(path).exists():
         return set()
     try:
         with open(path, 'r') as f:
             data = json.load(f)
-        # Keys are stored as lists; convert to tuples
-        return {tuple(k) for k in data.get('completed', [])}
+        return set(data.get('completed', []))
     except (json.JSONDecodeError, KeyError):
         logger.warning("Corrupt checkpoint file, starting fresh")
         return set()
 
 
 def _save_checkpoint(completed: set, path: str):
-    """Save completed trajectory keys to JSON manifest."""
+    """Save completed graph indices to JSON manifest."""
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, 'w') as f:
-        json.dump({'completed': [list(k) for k in completed], 'count': len(completed)}, f)
+        json.dump({
+            'completed': sorted(list(completed)),
+            'count': len(completed),
+        }, f)
 
 
 def _save_trajs(trajs: List[Trajectory], output_dir: str):
-    """Save trajectories to disk as a .pt file."""
+    """Save trajectories to disk as a timestamped .pt file."""
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime('%Y%m%d_%H%M%S')

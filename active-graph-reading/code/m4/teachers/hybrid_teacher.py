@@ -110,6 +110,20 @@ class HybridTeacher(Teacher):
         return combined
 
     # ------------------------------------------------------------------
+    # Cache-based scoring (used by phased pipeline)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def compute_scores_from_cache(meta, alpha: float) -> torch.Tensor:
+        """Compute hybrid scores from pre-computed GraphMeta.
+
+        Uses t1_scores and t3_degree_scores from the cache.
+        """
+        t1_norm = HybridTeacher._minmax_norm(meta.t1_scores)
+        t3_norm = HybridTeacher._minmax_norm(meta.t3_degree_scores)
+        return alpha * t1_norm + (1.0 - alpha) * t3_norm
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 

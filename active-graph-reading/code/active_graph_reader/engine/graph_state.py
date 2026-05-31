@@ -29,7 +29,12 @@ class GraphState:
         '_sorted_revealed', '_sorted_frontier_nodes', '_revealed_edge_ids',
     )
 
-    def __init__(self, dgl_graph: dgl.DGLGraph, seed_node: int):
+    def __init__(
+        self,
+        dgl_graph: dgl.DGLGraph,
+        seed_node: int,
+        edge_key_to_id: Optional[Dict[Tuple[int, int], int]] = None,
+    ):
         self.g = dgl_graph
         self.seed_node = seed_node
         self.n_nodes_total = dgl_graph.num_nodes()
@@ -48,15 +53,19 @@ class GraphState:
         self.node_feat_dim = self.node_feat.shape[1] if self.has_node_feat else 0
 
         # 预计算 canonical key → edge_id 映射（O(1) 边特征查找）
-        self._edge_key_to_id: Dict[Tuple[int, int], int] = {}
-        if self.has_edge_feat:
-            src = dgl_graph.edges()[0]
-            dst = dgl_graph.edges()[1]
-            for eid in range(dgl_graph.num_edges()):
-                u, v = int(src[eid]), int(dst[eid])
-                key = (min(u, v), max(u, v))
-                if key not in self._edge_key_to_id:
-                    self._edge_key_to_id[key] = eid
+        # Accept pre-built dict for reuse across trajectories (M4 optimization)
+        if edge_key_to_id is not None:
+            self._edge_key_to_id = edge_key_to_id
+        else:
+            self._edge_key_to_id: Dict[Tuple[int, int], int] = {}
+            if self.has_edge_feat:
+                src = dgl_graph.edges()[0]
+                dst = dgl_graph.edges()[1]
+                for eid in range(dgl_graph.num_edges()):
+                    u, v = int(src[eid]), int(dst[eid])
+                    key = (min(u, v), max(u, v))
+                    if key not in self._edge_key_to_id:
+                        self._edge_key_to_id[key] = eid
 
         self.V_revealed: Set[int] = set()
         self.frontier_edges: Set[Tuple[int, int]] = set()

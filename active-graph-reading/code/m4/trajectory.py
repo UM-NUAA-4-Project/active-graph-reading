@@ -22,6 +22,7 @@ class Trajectory:
     entropy_per_step: List[float] = field(default_factory=list)
     final_pred: int = -1
     is_correct: bool = False
+    cross_entropy: float = float('inf')
     teacher_type: str = ""
     teacher_params: Dict[str, Any] = field(default_factory=dict)
     label: int = -1
