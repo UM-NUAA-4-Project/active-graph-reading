@@ -25,7 +25,7 @@ from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
 from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
 from m4.trajectory import Trajectory
-
+from m4.graph_meta import GraphMeta
 
 class Teacher(ABC):
     """Abstract teacher that generates graph reading trajectories.

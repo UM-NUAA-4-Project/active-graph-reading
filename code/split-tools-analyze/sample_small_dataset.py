@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-从 OGBG-PPA 全量数据集中分层抽样生成小数据集
+从 OGBG-PPA 官方训练集中分层抽样生成小数据集
 ================================================
 
-逐类别分层：每个类别独立随机抽取 sample_frac 比例, 再按 split_ratios
-划分 train/val/test。保证每个类别在三个子集中的比例一致。
+仅从 OGB train split（species split 的训练部分）抽样，遵守 OGB 的物种隔离
+约定。在 OGB 训练集内逐类别分层：每个类别独立随机抽取 sample_frac 比例，
+再按 split_ratios 划分 train/val/test。
 
 用法:
   python split-tools-analyze/sample_small_dataset.py
@@ -159,17 +160,27 @@ def main():
     n_total = len(dataset)
     n_classes = int(dataset.num_classes)
     all_labels = dataset.labels.numpy().ravel()
+    split = dataset.get_idx_split()
 
     # 打印类别分布概况
     _, full_counts = np.unique(all_labels, return_counts=True)
     print(f"  全量: {n_total:,} 图, {n_classes} 类")
     print(f"  每类样本数: min={full_counts.min()}, median={np.median(full_counts):.0f}, max={full_counts.max()}")
 
-    # ---- 逐类别分层抽样 + 划分 ----
-    print(f"\n[2/3] 逐类别分层抽样 {args.sample:.0%} + 划分 ...")
-    train_idx, val_idx, test_idx, class_stats = stratified_sample_and_split(
-        all_labels, args.sample, ratios, seed=args.seed
+    # ---- 逐类别分层抽样 + 划分（仅从 OGB 训练集） ----
+    print(f"\n[2/3] 逐类别分层抽样 {args.sample:.0%} + 划分")
+    print(f"  [仅从 OGB train split ({len(split['train']):,} 图) 中抽样，遵守 species split]")
+    ogb_train_idx = split['train'].numpy()
+    ogb_train_labels = all_labels[ogb_train_idx]
+
+    sampled_train_idx, val_idx, test_idx, class_stats = stratified_sample_and_split(
+        ogb_train_labels, args.sample, ratios, seed=args.seed
     )
+    # sampled_train_idx/val_idx/test_idx 是相对索引（在 ogb_train_labels 中的位置），
+    # 映射回全量数据集的绝对索引
+    train_idx = ogb_train_idx[sampled_train_idx]
+    val_idx = ogb_train_idx[val_idx]
+    test_idx = ogb_train_idx[test_idx]
 
     # 打印每个类别的抽样情况
     print(f"  {'class':>6s}  {'full':>7s}  {'sample':>7s}  {'train':>7s}  {'val':>7s}  {'test':>7s}")
@@ -204,6 +215,8 @@ def main():
         "test_size": int(n_test),
         "num_classes": n_classes,
         "seed": args.seed,
+        "source": "OGB train split only (species split respected)",
+        "ogb_train_size": int(len(ogb_train_idx)),
         "created": datetime.now().isoformat(),
     }
     with open(meta_path, "w") as f:
