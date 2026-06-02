@@ -236,24 +236,19 @@ def main():
     # Training loop
     # -----------------------------------------------------------------------
     best_val = -1.0
-    train_curve, valid_curve, test_curve = [], [], []
+    valid_curve = []
 
     for epoch in range(1, args.epochs + 1):
         logger.info("===== Epoch %d / %d =====", epoch, args.epochs)
 
         train_loss = train_one_epoch(model, loaders['train'], optimizer, device)
-        train_perf = evaluate(model, loaders['train'], evaluator, device)
         valid_perf = evaluate(model, loaders['valid'], evaluator, device)
-        test_perf = evaluate(model, loaders['test'], evaluator, device)
 
         metric = evaluator.eval_metric
-        logger.info("train_loss=%.4f | train_%s=%.4f | valid_%s=%.4f | test_%s=%.4f",
-                    train_loss, metric, train_perf[metric], metric,
-                    valid_perf[metric], metric, test_perf[metric])
+        logger.info("train_loss=%.4f | valid_%s=%.4f",
+                    train_loss, metric, valid_perf[metric])
 
-        train_curve.append(train_perf[metric])
         valid_curve.append(valid_perf[metric])
-        test_curve.append(test_perf[metric])
 
         # Checkpoint every 5 epochs
         if epoch % 5 == 0:
@@ -264,13 +259,21 @@ def main():
             best_val = valid_perf[metric]
             save_best_model(model, best_model_path, best_val)
 
+    # Final test evaluation — load best model and evaluate once
+    best_epoch = int(np.argmax(valid_curve)) + 1
+    ckpt = torch.load(best_model_path, map_location=device)
+    model.load_state_dict(ckpt['model_state_dict'])
+    test_perf = evaluate(model, loaders['test'], evaluator, device)
+    train_perf = evaluate(model, loaders['train'], evaluator, device)
+
     # Save curves
-    torch.save({'train': train_curve, 'valid': valid_curve, 'test': test_curve},
+    torch.save({'valid': valid_curve, 'train_final': train_perf[metric],
+                'test_final': test_perf[metric], 'best_epoch': best_epoch},
                output_dir / 'curves.pt')
 
-    best_epoch = int(np.argmax(valid_curve)) + 1
-    logger.info("Training finished. Best val: %.4f at epoch %d, Test: %.4f",
-                valid_curve[best_epoch - 1], best_epoch, test_curve[best_epoch - 1])
+    logger.info("Training finished. Best val: %.4f at epoch %d | Train: %.4f | Test: %.4f",
+                valid_curve[best_epoch - 1], best_epoch,
+                train_perf[metric], test_perf[metric])
 
 
 if __name__ == '__main__':
