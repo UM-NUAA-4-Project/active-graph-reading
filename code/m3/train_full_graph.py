@@ -14,6 +14,7 @@ Usage:
   python train_full_graph.py                          # defaults
   python train_full_graph.py --epochs 50 --device cuda:0
   python train_full_graph.py --eval-only --load best_model.pt
+  python train_full_graph.py --resume best_model.pt   # continue from best checkpoint
 """
 
 import argparse
@@ -53,6 +54,9 @@ DEFAULTS = dict(
     batch_size=32,
     epochs=100,
     lr=0.001,
+    weight_decay=5e-4,
+    scheduler_patience=10,
+    early_stop_patience=30,
     device='cuda:0',
     output_dir=None,       # defaults to script directory
 )
@@ -66,12 +70,17 @@ def parse_args():
     p.add_argument('--batch-size', type=int, default=DEFAULTS['batch_size'])
     p.add_argument('--epochs', type=int, default=DEFAULTS['epochs'])
     p.add_argument('--lr', type=float, default=DEFAULTS['lr'])
+    p.add_argument('--weight-decay', type=float, default=DEFAULTS['weight_decay'])
+    p.add_argument('--scheduler-patience', type=int, default=DEFAULTS['scheduler_patience'])
+    p.add_argument('--early-stop-patience', type=int, default=DEFAULTS['early_stop_patience'])
     p.add_argument('--device', type=str, default=DEFAULTS['device'])
     p.add_argument('--output-dir', type=str, default=DEFAULTS['output_dir'])
     p.add_argument('--eval-only', action='store_true',
                    help='Skip training, evaluate saved model only')
     p.add_argument('--load', type=str, default='',
                    help='Path to saved model for eval-only mode')
+    p.add_argument('--resume', type=str, default='',
+                   help='Resume training from best_model.pt checkpoint')
     p.add_argument('--root', type=str, default=r'D:\ogb-master\dataset',
                    help='OGB dataset root directory (default: /mnt/d/ogb-master/dataset)')
     return p.parse_args()
@@ -120,7 +129,7 @@ def prepare_data(batch_size: int, root: str):
 def train_one_epoch(model, loader, optimizer, device):
     model.train()
     total_loss = 0.0
-    total_graphs = 0
+    correct, total_graphs = 0, 0
 
     for batch_g, labels in tqdm(loader, desc="train", leave=False):
         batch_g = batch_g.to(device)
@@ -137,9 +146,11 @@ def train_one_epoch(model, loader, optimizer, device):
         optimizer.step()
 
         total_loss += loss.item() * labels.size(0)
+        preds = logits.argmax(dim=1)
+        correct += (preds == labels.view(-1)).sum().item()
         total_graphs += labels.size(0)
 
-    return total_loss / max(total_graphs, 1)
+    return total_loss / max(total_graphs, 1), correct / max(total_graphs, 1)
 
 
 @torch.no_grad()
@@ -175,9 +186,14 @@ def save_checkpoint(model, optimizer, epoch, path):
     logger.info("Checkpoint saved to %s (epoch %d)", path, epoch)
 
 
-def save_best_model(model, path, val_acc):
-    torch.save({'model_state_dict': model.state_dict(), 'val_acc': val_acc}, path)
-    logger.info("Best model saved to %s (val_acc=%.4f)", path, val_acc)
+def save_best_model(model, optimizer, epoch, path, val_acc):
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'epoch': epoch,
+        'val_acc': val_acc,
+    }, path)
+    logger.info("Best model saved to %s (epoch=%d, val_acc=%.4f)", path, epoch, val_acc)
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +230,11 @@ def main():
         dropout=args.dropout,
     ).to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='max', factor=0.5,
+        patience=args.scheduler_patience, min_lr=1e-6,
+    )
 
     # -----------------------------------------------------------------------
     # Eval-only mode
@@ -233,47 +253,84 @@ def main():
         return
 
     # -----------------------------------------------------------------------
+    # Resume from checkpoint
+    # -----------------------------------------------------------------------
+    start_epoch = 1
+    best_val = -1.0
+    if args.resume:
+        resume_path = Path(args.resume)
+        if not resume_path.exists():
+            logger.error("Resume checkpoint not found: %s", resume_path)
+            sys.exit(1)
+        ckpt = torch.load(resume_path, map_location=device)
+        model.load_state_dict(ckpt['model_state_dict'])
+        start_epoch = ckpt.get('epoch', 0) + 1
+        best_val = ckpt.get('val_acc', -1.0)
+        if 'optimizer_state_dict' in ckpt:
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        logger.info("Resumed from %s (epoch %d, best_val=%.4f)", resume_path, start_epoch - 1, best_val)
+
+    # -----------------------------------------------------------------------
     # Training loop
     # -----------------------------------------------------------------------
-    best_val = -1.0
+    metric = evaluator.eval_metric
     valid_curve = []
+    no_improve_steps = 0
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         logger.info("===== Epoch %d / %d =====", epoch, args.epochs)
 
-        train_loss = train_one_epoch(model, loaders['train'], optimizer, device)
+        train_loss, train_acc = train_one_epoch(model, loaders['train'], optimizer, device)
         valid_perf = evaluate(model, loaders['valid'], evaluator, device)
+        val_acc = valid_perf[metric]
 
-        metric = evaluator.eval_metric
-        logger.info("train_loss=%.4f | valid_%s=%.4f",
-                    train_loss, metric, valid_perf[metric])
+        logger.info("train_loss=%.4f train_acc=%.4f | valid_%s=%.4f | gap=%.4f",
+                    train_loss, train_acc, metric, val_acc, train_acc - val_acc)
 
-        valid_curve.append(valid_perf[metric])
+        valid_curve.append(val_acc)
 
-        # Checkpoint every 5 epochs
+        # Scheduler step
+        scheduler.step(val_acc)
+
+        # Checkpoint every 5 epochs (allow resume from non-best)
         if epoch % 5 == 0:
             save_checkpoint(model, optimizer, epoch, checkpoint_path)
 
         # Best model
-        if valid_perf[metric] > best_val:
-            best_val = valid_perf[metric]
-            save_best_model(model, best_model_path, best_val)
+        if val_acc > best_val:
+            best_val = val_acc
+            no_improve_steps = 0
+            save_best_model(model, optimizer, epoch, best_model_path, best_val)
+        else:
+            no_improve_steps += 1
 
-    # Final test evaluation — load best model and evaluate once
-    best_epoch = int(np.argmax(valid_curve)) + 1
+        # Early stopping
+        if no_improve_steps >= args.early_stop_patience:
+            logger.info("Early stopping at epoch %d — no improvement for %d epochs",
+                        epoch, args.early_stop_patience)
+            break
+
+    # Final evaluation — load best model and evaluate once
+    best_epoch = int(np.argmax(valid_curve)) + start_epoch
     ckpt = torch.load(best_model_path, map_location=device)
     model.load_state_dict(ckpt['model_state_dict'])
     test_perf = evaluate(model, loaders['test'], evaluator, device)
     train_perf = evaluate(model, loaders['train'], evaluator, device)
 
     # Save curves
-    torch.save({'valid': valid_curve, 'train_final': train_perf[metric],
-                'test_final': test_perf[metric], 'best_epoch': best_epoch},
-               output_dir / 'curves.pt')
+    torch.save({
+        'valid': valid_curve,
+        'train_final': train_perf[metric],
+        'test_final': test_perf[metric],
+        'best_epoch': best_epoch,
+        'best_val': best_val,
+        'start_epoch': start_epoch,
+    }, output_dir / 'curves.pt')
 
-    logger.info("Training finished. Best val: %.4f at epoch %d | Train: %.4f | Test: %.4f",
-                valid_curve[best_epoch - 1], best_epoch,
-                train_perf[metric], test_perf[metric])
+    logger.info("Training finished. Best val: %.4f at epoch %d | Train: %.4f | Test: %.4f | Gap: %.4f",
+                best_val, best_epoch,
+                train_perf[metric], test_perf[metric],
+                train_perf[metric] - test_perf[metric])
 
 
 if __name__ == '__main__':
