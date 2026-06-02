@@ -1,15 +1,15 @@
-"""M4 main script: generate, score, filter, and analyze teacher trajectories.
+"""M4 main script: generate and filter teacher trajectories for M5 BC training.
 
 End-to-end pipeline:
-  1. Load frozen classifier (clean full-graph GIN, no adapters)
-  2. Initialize teachers (T1 gradient, T2 info-gain, T3-degree, T3-pagerank)
-  3. Generate trajectories on train/valid sets
-  4. Score and filter
-  5. Oracle upper-bound estimation
-  6. Feasibility analysis → M5 route recommendation
+  1. Load frozen classifier
+  2. Initialize teachers (T1 gradient, T2 info-gain, T3 structural, T4 hybrid)
+  3. Generate trajectories (legacy per-budget or optimized 3-phase pipeline)
+  4. Filter top-k per graph by cross-entropy
+  5. Save filtered trajectories + report
 
 Usage:
   python -m m4.generate_trajectories --pretrained best_model.pt --device cuda:0
+  python -m m4.generate_trajectories --pretrained best_model.pt --budget-ratio 0.15
   python -m m4.generate_trajectories --pretrained best_model.pt --quick --device cpu
 """
 
@@ -21,7 +21,6 @@ import sys
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional
 
 import dgl
 import numpy as np
@@ -35,20 +34,12 @@ if str(_script_dir) not in sys.path:
 from active_graph_reader.dataloader.loader import PPADataset
 from active_graph_reader.encoder.classifier import GraphClassifier
 from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
-from active_graph_reader.engine.graph_state import GraphState
-from active_graph_reader.engine.reveal_loop import RevealLoop
-from active_graph_reader.strategies.registry import get_strategy
-from active_graph_reader.cost.registry import get_cost_model
 
 from m4.teachers.gradient_teacher import GradientTeacher
 from m4.teachers.structural_teacher import StructuralTeacher
 from m4.teachers.hybrid_teacher import HybridTeacher
 from m4.teachers.info_gain_teacher import InfoGainTeacher
-from m4.trajectory_generator import TrajectoryGenerator
-from m4.trajectory_scorer import TrajectoryScorer
-from m4.trajectory_filter import TrajectoryFilter
-from m4.oracle_estimator import OracleEstimator
-from m4.feasibility_analyzer import FeasibilityAnalyzer
+from m4.trajectory_generator import TrajectoryGenerator, filter_top_k
 
 logging.basicConfig(
     level=logging.INFO,
@@ -115,55 +106,6 @@ def parse_args():
 
 
 # ============================================================================
-# Baseline accuracy computation
-# ============================================================================
-
-@torch.no_grad()
-def compute_baseline_acc(
-    strategy_name: str,
-    dataset: PPADataset,
-    indices: List[int],
-    classifier,
-    subgraph_builder: SubgraphBuilder,
-    budgets: List[int],
-    seeds_per_graph: int = 3,
-    seed_offset: int = 0,
-) -> Dict[int, float]:
-    """Compute baseline accuracy for a fixed strategy (random, BFS, etc.).
-
-    Returns {budget: accuracy}.
-    """
-    strategy = get_strategy(strategy_name)
-    cost_model = get_cost_model('unit')
-
-    results = defaultdict(list)
-
-    for idx in indices:
-        g_raw, label = dataset[idx]
-        g = dgl.add_self_loop(g_raw)
-        n_nodes = g.num_nodes()
-        rng = random.Random(idx * 31 + seed_offset * 17)
-
-        for _ in range(seeds_per_graph):
-            seed_node = rng.randint(0, max(n_nodes - 1, 0))
-
-            for budget in budgets:
-                state = GraphState(g, seed_node=seed_node)
-                loop = RevealLoop(state, strategy, cost_model)
-                loop.run(budget=budget)
-
-                sub_g, orig_ids = subgraph_builder.build(state)
-                cls_device = next(classifier.parameters()).device
-                sub_g = sub_g.to(cls_device)
-                node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=cls_device)
-                logits = classifier(sub_g, node_ids)
-                pred = int(logits.argmax(dim=1).item())
-                results[budget].append(1.0 if pred == label else 0.0)
-
-    return {b: np.mean(accs) for b, accs in sorted(results.items())}
-
-
-# ============================================================================
 # Main
 # ============================================================================
 
@@ -223,25 +165,7 @@ def main():
     subgraph_builder = SubgraphBuilder()
 
     # ------------------------------------------------------------------
-    # 3. Compute baselines
-    # ------------------------------------------------------------------
-    logger.info("Computing baseline accuracies on %d validation graphs...", len(valid_indices))
-    all_indices = list(valid_indices) + list(train_indices) + list(test_indices)
-    eval_indices = valid_indices if valid_indices else all_indices[:100]
-
-    random_acc = compute_baseline_acc(
-        'random', dataset, eval_indices, classifier, subgraph_builder,
-        args.budgets, seeds_per_graph=args.seeds_per_graph, seed_offset=0,
-    )
-    bfs_acc = compute_baseline_acc(
-        'bfs', dataset, eval_indices, classifier, subgraph_builder,
-        args.budgets, seeds_per_graph=args.seeds_per_graph, seed_offset=0,
-    )
-    logger.info("Random baseline: %s", {b: f'{v:.4f}' for b, v in random_acc.items()})
-    logger.info("BFS baseline:     %s", {b: f'{v:.4f}' for b, v in bfs_acc.items()})
-
-    # ------------------------------------------------------------------
-    # 4. Initialize teachers
+    # 3. Initialize teachers
     # ------------------------------------------------------------------
     teachers = [
         GradientTeacher(aggregate='mean'),
@@ -261,7 +185,7 @@ def main():
     logger.info("Teachers: %s", [t.name for t in teachers])
 
     # ------------------------------------------------------------------
-    # 5. Generate trajectories
+    # 4. Generate trajectories
     # ------------------------------------------------------------------
     generator = TrajectoryGenerator(
         teachers=teachers,
@@ -315,12 +239,11 @@ def main():
                 output_dir=str(output_dir / 'raw'),
                 checkpoint_file=str(output_dir / f'checkpoint_{split_name}.json'),
                 save_interval=args.save_interval,
-                seed_offset={'train': 0, 'valid': 1000, 'test': 2000}[split_name],
             )
             all_trajs.extend(trajs)
 
     # ------------------------------------------------------------------
-    # 6. Score & Filter (legacy mode only; phased mode already filters)
+    # 5. Filter (unified: top-k per graph by cross_entropy)
     # ------------------------------------------------------------------
     if not use_phased:
         if not all_trajs:
@@ -328,102 +251,35 @@ def main():
             sys.exit(1)
 
         logger.info("Total raw trajectories: %d", len(all_trajs))
-
-        logger.info("Scoring trajectories...")
-        scorer = TrajectoryScorer(w_be=0.5, w_ig=0.3, w_stability=0.2)
-
-        graph_sizes = {}
-        for traj in all_trajs:
-            if traj.graph_idx not in graph_sizes:
-                g_raw, _ = dataset[traj.graph_idx]
-                graph_sizes[traj.graph_idx] = g_raw.num_nodes()
-
-        scored = scorer.score_all(all_trajs, graph_sizes=graph_sizes)
-        logger.info("Scored %d trajectories", len(scored))
-
-        scored_dir = output_dir / 'scored'
-        scored_dir.mkdir(parents=True, exist_ok=True)
-        torch.save(scored, scored_dir / 'scored_trajectories.pt')
-
-        logger.info("Filtering trajectories (top_k=%d)...", args.top_k)
-        traj_filter = TrajectoryFilter(top_k=args.top_k, require_diversity=True)
-        filtered_trajs = traj_filter.filter(scored)
+        filtered_trajs = filter_top_k(all_trajs, args.top_k)
+        logger.info("Filtered trajectories: %d (top_%d per graph)", len(filtered_trajs), args.top_k)
 
         filtered_dir = output_dir / 'filtered'
         filtered_dir.mkdir(parents=True, exist_ok=True)
         torch.save(filtered_trajs, filtered_dir / 'filtered_trajectories.pt')
-        logger.info("Filtered trajectories saved: %d", len(filtered_trajs))
     else:
-        # In phased mode, all_trajs from legacy path is empty; use filtered
-        # from phased pipeline as the canonical list for reporting
         all_trajs = filtered_trajs
         if not all_trajs:
             logger.error("No trajectories generated. Check dataset indices and budgets.")
             sys.exit(1)
 
     # ------------------------------------------------------------------
-    # 8. Oracle upper-bound estimation
+    # 6. Compute per-teacher accuracy (informational only)
     # ------------------------------------------------------------------
-    if not use_phased:
-        logger.info("Estimating oracle upper bounds...")
-        oracle = OracleEstimator(classifier, subgraph_builder, device=str(device))
+    teacher_stats = defaultdict(lambda: {'correct': 0, 'total': 0})
+    for t in all_trajs:
+        teacher_stats[t.teacher_type]['total'] += 1
+        if t.is_correct:
+            teacher_stats[t.teacher_type]['correct'] += 1
 
-        oracle_type2 = oracle.estimate_type2(all_trajs, teacher_name='gradient')
-        logger.info("Oracle Type II (gradient): %s", {b: f'{v:.4f}' for b, v in oracle_type2.items()})
-
-        oracle_type1_subset = eval_indices[:50]
-        type1_by_budget = defaultdict(list)
-        for idx in oracle_type1_subset:
-            g_raw, label = dataset[idx]
-            g = dgl.add_self_loop(g_raw)
-            n_nodes = g.num_nodes()
-            seed_node = random.randint(0, max(n_nodes - 1, 0))
-            for budget in args.budgets:
-                is_correct, _ = oracle.estimate_type1(g, label, seed_node, budget)
-                type1_by_budget[budget].append(1.0 if is_correct else 0.0)
-
-        oracle_type1 = {b: np.mean(accs) for b, accs in sorted(type1_by_budget.items())}
-        logger.info("Oracle Type I (label-aware, %d graphs): %s",
-                    len(oracle_type1_subset), {b: f'{v:.4f}' for b, v in oracle_type1.items()})
-
-        headroom = oracle.headroom_analysis(oracle_type2, bfs_acc, random_acc)
-        logger.info("Headroom (oracle vs BFS): max=%.4f, verdict=%s",
-                    headroom['max_headroom_bfs'], headroom['verdict'])
-
-        logger.info("Running feasibility analysis...")
-        analyzer = FeasibilityAnalyzer(dfi_threshold_high=0.5, dfi_threshold_low=0.3)
-        dfi_result = analyzer.analyze(
-            oracle_acc=oracle_type2,
-            bfs_acc=bfs_acc,
-            scored_trajectories=scored,
-            trajectories=all_trajs,
-        )
-    else:
-        # Phased mode: simplified oracle/feasibility
-        # Compute accuracy per teacher from filtered trajectories
-        from collections import Counter
-        teacher_stats = defaultdict(lambda: {'correct': 0, 'total': 0})
-        for t in filtered_trajs:
-            teacher_stats[t.teacher_type]['total'] += 1
-            if t.is_correct:
-                teacher_stats[t.teacher_type]['correct'] += 1
-
-        oracle_type1 = {}
-        oracle_type2 = {}
-        for name, stats in sorted(teacher_stats.items()):
-            acc = stats['correct'] / max(stats['total'], 1)
-            oracle_type2[name] = acc
-            logger.info("Teacher %s: %.4f (%d/%d)", name, acc, stats['correct'], stats['total'])
-
-        headroom = {'max_headroom_bfs': 0.0, 'max_headroom_random': 0.0, 'verdict': 'phased_mode'}
-        dfi_result = {
-            'dfi': 0.0,
-            'recommendation': 'Phased mode — run legacy pipeline for full feasibility analysis.',
-            'components': {},
-        }
+    teacher_acc = {}
+    for name, stats in sorted(teacher_stats.items()):
+        acc = stats['correct'] / max(stats['total'], 1)
+        teacher_acc[name] = acc
+        logger.info("Teacher %s: %.4f (%d/%d)", name, acc, stats['correct'], stats['total'])
 
     # ------------------------------------------------------------------
-    # 10. Save report
+    # 7. Save report
     # ------------------------------------------------------------------
     config_info = {
         'pretrained': args.pretrained,
@@ -444,24 +300,7 @@ def main():
     report = {
         'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
         'config': config_info,
-        'baselines': {
-            'random': {str(b): round(v, 4) for b, v in random_acc.items()},
-            'bfs': {str(b): round(v, 4) for b, v in bfs_acc.items()},
-        },
-        'oracle': {
-            'type1_label_aware': {str(b): round(v, 4) for b, v in oracle_type1.items()},
-            'type2_gradient': {str(b): round(v, 4) for b, v in oracle_type2.items()},
-        },
-        'headroom': {
-            'max_headroom_bfs': round(headroom.get('max_headroom_bfs', 0), 4),
-            'max_headroom_random': round(headroom.get('max_headroom_random', 0), 4),
-            'verdict': headroom.get('verdict', ''),
-        },
-        'feasibility': {
-            'dfi': dfi_result.get('dfi', 0),
-            'recommendation': dfi_result.get('recommendation', ''),
-            'components': dfi_result.get('components', {}),
-        },
+        'teacher_accuracy': {k: round(v, 4) for k, v in teacher_acc.items()},
         'statistics': {
             'n_raw_trajectories': len(all_trajs),
             'n_filtered': len(filtered_trajs),
@@ -481,25 +320,16 @@ def main():
     print("M4 Complete — Summary")
     print("=" * 60)
     print(f"  Mode: {'PHASED' if use_phased else 'LEGACY'}")
+    if use_phased:
+        print(f"  Budget ratio: {args.budget_ratio}")
+    else:
+        print(f"  Budgets: {args.budgets}")
     print(f"  Raw trajectories:     {len(all_trajs)}")
     print(f"  Filtered trajectories: {len(filtered_trajs)}")
     print(f"  % Correct:             {report['statistics']['pct_correct']:.1f}%")
-    if use_phased:
-        print(f"  Budget ratio: {args.budget_ratio}")
-        print(f"\n  Teacher Accuracy (filtered):")
-        for name in sorted(oracle_type2):
-            if oracle_type2[name]:
-                print(f"    {name}: {oracle_type2[name]:.4f}")
-    else:
-        print(f"\n  Budget → Accuracy:")
-        for b in args.budgets:
-            r = random_acc.get(b, 0)
-            bf = bfs_acc.get(b, 0)
-            o2 = oracle_type2.get(b, 0)
-            o1 = oracle_type1.get(b, 0)
-            print(f"    B={b:2d}: random={r:.4f}  bfs={bf:.4f}  oracle-T2={o2:.4f}  oracle-T1={o1:.4f}")
-    print(f"\n  DFI: {dfi_result.get('dfi', 0):.4f}" if 'dfi' in dfi_result else "")
-    print(f"  Verdict: {dfi_result.get('recommendation', 'N/A')}")
+    print(f"\n  Teacher Accuracy:")
+    for name in sorted(teacher_acc):
+        print(f"    {name}: {teacher_acc[name]:.4f}")
     print(f"\n  Report: {report_path}")
     print("=" * 60)
 

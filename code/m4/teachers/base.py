@@ -117,8 +117,8 @@ class Teacher(ABC):
         state = GraphState(graph, seed_node=seed_node)
 
         # Record G_0 classifier output
-        sub_g, original_ids = subgraph_builder.build(state)
-        conf, ent = self._classifier_forward(classifier, sub_g, original_ids)
+        sub_g, _ = subgraph_builder.build(state)
+        conf, ent = self._classifier_forward(classifier, sub_g)
 
         traj = Trajectory(
             graph_idx=graph_idx,
@@ -152,14 +152,14 @@ class Teacher(ABC):
             traj.scores_per_step.append(float(node_scores[next_node].item()))
 
             # Classifier forward on updated subgraph
-            sub_g, original_ids = subgraph_builder.build(state)
-            conf, ent = self._classifier_forward(classifier, sub_g, original_ids)
+            sub_g, _ = subgraph_builder.build(state)
+            conf, ent = self._classifier_forward(classifier, sub_g)
             traj.confidence_per_step.append(conf)
             traj.entropy_per_step.append(ent)
 
         # 4. Final prediction check
-        sub_g, original_ids = subgraph_builder.build(state)
-        pred = self._predict(classifier, sub_g, original_ids)
+        sub_g, _ = subgraph_builder.build(state)
+        pred = self._predict(classifier, sub_g)
         traj.final_pred = pred
         traj.is_correct = (pred == label)
 
@@ -195,7 +195,7 @@ class Teacher(ABC):
         return frontier_nodes[best_idx]
 
     @staticmethod
-    def _classifier_forward(classifier, sub_g, original_ids):
+    def _classifier_forward(classifier, sub_g):
         """Run classifier on subgraph, return (confidence, entropy)."""
         node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=sub_g.device)
         with torch.no_grad():
@@ -206,7 +206,7 @@ class Teacher(ABC):
         return conf, ent
 
     @staticmethod
-    def _predict(classifier, sub_g, original_ids) -> int:
+    def _predict(classifier, sub_g) -> int:
         """Return predicted class index."""
         node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=sub_g.device)
         with torch.no_grad():

@@ -1,6 +1,6 @@
-"""M4: Teacher / Trajectory baseline.
+"""M4: Teacher trajectory generation for M5 behavior cloning.
 
-Generates high-quality teacher reading trajectories for downstream M5
-behavior cloning training. Includes trajectory scoring, filtering,
-oracle upper-bound estimation, and distillation feasibility analysis.
+Produces teacher-guided graph reading trajectories. Supports two modes:
+- Legacy: per-budget generation with per-step GNN teacher guidance
+- Phased: 3-phase pipeline with pre-computed scores + batched classifier eval
 """

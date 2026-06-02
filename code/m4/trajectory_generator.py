@@ -68,7 +68,6 @@ class TrajectoryGenerator:
         output_dir: Optional[str] = None,
         checkpoint_file: Optional[str] = None,
         save_interval: int = 500,
-        seed_offset: int = 0,
     ) -> List[Trajectory]:
         """Generate trajectories for a set of graphs (legacy mode).
 
@@ -86,8 +85,6 @@ class TrajectoryGenerator:
             JSON manifest for resume support.
         save_interval : int
             Save checkpoint every N trajectories.
-        seed_offset : int
-            Offset added to random seed for determinism control.
 
         Returns
         -------
@@ -112,54 +109,72 @@ class TrajectoryGenerator:
         generated = 0
         last_save = 0
 
+        max_budget = max(budgets)
+
         for graph_idx in indices:
             g_raw, label = self.dataset[graph_idx]
             g = dgl.add_self_loop(g_raw)
 
             n_nodes = g.num_nodes()
-            rng = random.Random(graph_idx * 31 + seed_offset * 17)
+            rng = random.Random(graph_idx * 31)
 
             for seed_i in range(seeds_per_graph):
                 seed_node = rng.randint(0, max(n_nodes - 1, 0))
 
                 for teacher in self.teachers:
-                    for budget in budgets:
-                        traj_key = (
-                            graph_idx, seed_node, budget,
-                            teacher.name, str(teacher._params_dict())
-                        )
-                        if traj_key in completed:
-                            pbar.update(1)
-                            continue
+                    traj_key = (
+                        graph_idx, seed_node, max_budget,
+                        teacher.name, str(teacher._params_dict())
+                    )
+                    if traj_key in completed:
+                        pbar.update(len(budgets))
+                        continue
 
+                    try:
+                        full_traj = teacher.generate_trajectory(
+                            graph=g,
+                            classifier=self.classifier,
+                            graph_idx=graph_idx,
+                            label=label,
+                            seed_node=seed_node,
+                            budget=max_budget,
+                            subgraph_builder=self.subgraph_builder,
+                        )
+                    except Exception as e:
+                        logger.error(
+                            "Trajectory failed: graph=%d teacher=%s budget=%d: %s",
+                            graph_idx, teacher.name, max_budget, e,
+                        )
+                        pbar.update(len(budgets))
+                        continue
+
+                    all_trajs.append(full_traj)
+                    completed.add(traj_key)
+                    generated += 1
+                    pbar.update(1)
+
+                    for budget in budgets:
+                        if budget >= max_budget:
+                            continue
                         try:
-                            traj = teacher.generate_trajectory(
-                                graph=g,
-                                classifier=self.classifier,
-                                graph_idx=graph_idx,
-                                label=label,
-                                seed_node=seed_node,
-                                budget=budget,
-                                subgraph_builder=self.subgraph_builder,
+                            truncated = self._truncate_trajectory(
+                                full_traj, budget, g, seed_node,
                             )
+                            all_trajs.append(truncated)
+                            generated += 1
+                            pbar.update(1)
                         except Exception as e:
                             logger.error(
-                                "Trajectory failed: graph=%d teacher=%s budget=%d: %s",
+                                "Truncate failed: graph=%d teacher=%s budget=%d: %s",
                                 graph_idx, teacher.name, budget, e,
                             )
                             pbar.update(1)
-                            continue
 
-                        all_trajs.append(traj)
-                        completed.add(traj_key)
-                        generated += 1
-                        pbar.update(1)
-
-                        if output_dir and generated - last_save >= save_interval:
-                            _save_trajs(all_trajs, output_dir)
-                            if checkpoint_file:
-                                _save_checkpoint(completed, checkpoint_file)
-                            last_save = generated
+                    if output_dir and generated - last_save >= save_interval:
+                        _save_trajs(all_trajs, output_dir)
+                        if checkpoint_file:
+                            _save_checkpoint(completed, checkpoint_file)
+                        last_save = generated
 
         pbar.close()
 
@@ -170,6 +185,53 @@ class TrajectoryGenerator:
 
         logger.info("Generated %d trajectories total", len(all_trajs))
         return all_trajs
+
+    def _truncate_trajectory(
+        self,
+        full_traj: Trajectory,
+        budget: int,
+        graph: dgl.DGLGraph,
+        seed_node: int,
+    ) -> Trajectory:
+        """Truncate a max-budget trajectory to a smaller budget.
+
+        Replays the reveal sequence up to ``budget`` steps and runs one
+        classifier forward to get final_pred/is_correct/cross_entropy at
+        the intermediate state.
+        """
+        from active_graph_reader.engine.graph_state import GraphState
+        from active_graph_reader.engine.reveal_action import reveal_node
+
+        trimmed = full_traj.reveal_order[:budget]
+
+        state = GraphState(graph, seed_node=seed_node)
+        for v in trimmed:
+            reveal_node(state, v)
+
+        sub_g, _ = self.subgraph_builder.build(state)
+        sub_g = sub_g.to(self.device)
+        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=self.device)
+        with torch.no_grad():
+            logits = self.classifier(sub_g, node_ids)
+            probs = F.softmax(logits, dim=1)
+            pred = int(logits.argmax(dim=1).item())
+            ce = float(-torch.log(probs[0, full_traj.label] + 1e-12).item())
+
+        return Trajectory(
+            graph_idx=full_traj.graph_idx,
+            seed_node=seed_node,
+            budget_used=budget,
+            reveal_order=list(trimmed),
+            scores_per_step=full_traj.scores_per_step[:budget],
+            confidence_per_step=full_traj.confidence_per_step[:budget + 1],
+            entropy_per_step=full_traj.entropy_per_step[:budget + 1],
+            final_pred=pred,
+            is_correct=(pred == full_traj.label),
+            cross_entropy=ce,
+            teacher_type=full_traj.teacher_type,
+            teacher_params=full_traj.teacher_params,
+            label=full_traj.label,
+        )
 
     # ==================================================================
     # Phased pipeline (optimized)
@@ -326,7 +388,7 @@ class TrajectoryGenerator:
         logger.info("Phase 3: Filtering top-%d per graph", top_k)
         logger.info("=" * 60)
 
-        filtered = _filter_top_k(all_trajs, top_k)
+        filtered = filter_top_k(all_trajs, top_k)
 
         pct_correct = (
             100.0 * sum(1 for t in all_trajs if t.is_correct) / max(len(all_trajs), 1)
@@ -467,7 +529,7 @@ class TrajectoryGenerator:
 # Filtering
 # ======================================================================
 
-def _filter_top_k(trajectories: List[Trajectory], top_k: int) -> List[Trajectory]:
+def filter_top_k(trajectories: List[Trajectory], top_k: int) -> List[Trajectory]:
     """Per graph: keep correctly classified, sort by CrossEntropy asc, take top-k."""
     by_graph = defaultdict(list)
     for t in trajectories:

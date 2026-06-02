@@ -56,7 +56,7 @@ DEFAULTS = dict(
     lr=0.001,
     weight_decay=5e-4,
     scheduler_patience=10,
-    early_stop_patience=30,
+    early_stop_patience=15,
     device='cuda:0',
     output_dir=None,       # defaults to script directory
 )
@@ -177,19 +177,21 @@ def evaluate(model, loader, evaluator, device):
     return evaluator.eval({'y_true': y_true, 'y_pred': y_pred})
 
 
-def save_checkpoint(model, optimizer, epoch, path):
+def save_checkpoint(model, optimizer, scheduler, epoch, path):
     torch.save({
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
         'epoch': epoch,
     }, path)
     logger.info("Checkpoint saved to %s (epoch %d)", path, epoch)
 
 
-def save_best_model(model, optimizer, epoch, path, val_acc):
+def save_best_model(model, optimizer, scheduler, epoch, path, val_acc):
     torch.save({
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
         'epoch': epoch,
         'val_acc': val_acc,
     }, path)
@@ -268,6 +270,8 @@ def main():
         best_val = ckpt.get('val_acc', -1.0)
         if 'optimizer_state_dict' in ckpt:
             optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        if 'scheduler_state_dict' in ckpt:
+            scheduler.load_state_dict(ckpt['scheduler_state_dict'])
         logger.info("Resumed from %s (epoch %d, best_val=%.4f)", resume_path, start_epoch - 1, best_val)
 
     # -----------------------------------------------------------------------
@@ -294,13 +298,13 @@ def main():
 
         # Checkpoint every 5 epochs (allow resume from non-best)
         if epoch % 5 == 0:
-            save_checkpoint(model, optimizer, epoch, checkpoint_path)
+            save_checkpoint(model, optimizer, scheduler, epoch, checkpoint_path)
 
         # Best model
         if val_acc > best_val:
             best_val = val_acc
             no_improve_steps = 0
-            save_best_model(model, optimizer, epoch, best_model_path, best_val)
+            save_best_model(model, optimizer, scheduler, epoch, best_model_path, best_val)
         else:
             no_improve_steps += 1
 

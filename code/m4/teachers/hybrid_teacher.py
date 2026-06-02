@@ -21,6 +21,7 @@ import dgl
 from m4.teachers.base import Teacher
 from m4.teachers.gradient_teacher import GradientTeacher
 from m4.teachers.structural_teacher import StructuralTeacher
+from m4.graph_meta import minmax_norm
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +96,8 @@ class HybridTeacher(Teacher):
         struct_scores = self._struct_teacher.score_nodes(graph, classifier=None, label=None)
 
         # Normalize each to [0, 1] before combining (avoids scale mismatch)
-        grad_norm = self._minmax_norm(grad_scores)
-        struct_norm = self._minmax_norm(struct_scores)
+        grad_norm = minmax_norm(grad_scores)
+        struct_norm = minmax_norm(struct_scores)
 
         combined = alpha * grad_norm + (1.0 - alpha) * struct_norm
 
@@ -119,19 +120,6 @@ class HybridTeacher(Teacher):
 
         Uses t1_scores and t3_degree_scores from the cache.
         """
-        t1_norm = HybridTeacher._minmax_norm(meta.t1_scores)
-        t3_norm = HybridTeacher._minmax_norm(meta.t3_degree_scores)
+        t1_norm = minmax_norm(meta.t1_scores)
+        t3_norm = minmax_norm(meta.t3_degree_scores)
         return alpha * t1_norm + (1.0 - alpha) * t3_norm
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _minmax_norm(scores: torch.Tensor) -> torch.Tensor:
-        """Normalize scores to [0, 1] via min-max scaling."""
-        smin = scores.min()
-        smax = scores.max()
-        if smax - smin < 1e-8:
-            return torch.ones_like(scores) * 0.5
-        return (scores - smin) / (smax - smin)

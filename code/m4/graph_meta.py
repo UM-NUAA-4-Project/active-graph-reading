@@ -249,7 +249,8 @@ class GraphMetaCache:
             scores['structural-degree'] = meta.t3_degree_scores
         if meta.t3_pagerank_scores is not None:
             scores['structural-pagerank'] = meta.t3_pagerank_scores
-        # T4 hybrid variants
+        # T4 hybrid variants — alpha values MUST match teacher instances in
+        # generate_trajectories.py (see HybridTeacher constructors).
         if meta.t1_scores is not None and meta.t3_degree_scores is not None:
             scores['hybrid-0.3'] = _compute_hybrid_scores(
                 meta.t1_scores, meta.t3_degree_scores, alpha=0.3
@@ -294,7 +295,7 @@ def _build_edge_key_to_id(g: dgl.DGLGraph) -> Dict[Tuple[int, int], int]:
     return edge_key_to_id
 
 
-def _minmax_norm(scores: torch.Tensor) -> torch.Tensor:
+def minmax_norm(scores: torch.Tensor) -> torch.Tensor:
     """Normalize scores to [0, 1] via min-max scaling."""
     smin = scores.min()
     smax = scores.max()
@@ -309,6 +310,6 @@ def _compute_hybrid_scores(
     alpha: float,
 ) -> torch.Tensor:
     """Compute T4 hybrid scores: α × t1_norm + (1-α) × t3_norm."""
-    t1_norm = _minmax_norm(t1)
-    t3_norm = _minmax_norm(t3)
+    t1_norm = minmax_norm(t1)
+    t3_norm = minmax_norm(t3)
     return alpha * t1_norm + (1.0 - alpha) * t3_norm

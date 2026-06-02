@@ -166,7 +166,9 @@ class InfoGainTeacher(Teacher):
         node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=sub_g.device)
         with torch.no_grad():
             logits = classifier(sub_g, node_ids)
+            probs = F.softmax(logits, dim=1)
             pred = int(logits.argmax(dim=1).item())
+            traj.cross_entropy = float(-torch.log(probs[0, label] + 1e-12).item())
         traj.final_pred = pred
         traj.is_correct = (pred == label)
 
@@ -222,4 +224,8 @@ def _copy_state(state: GraphState) -> GraphState:
         k: set(v) for k, v in state._frontier_by_unrevealed.items()
     }
     new_state.reveal_history = list(state.reveal_history)
+    # 必须深拷贝排序列表——reveal_node 会就地修改它们
+    new_state._sorted_revealed = list(state._sorted_revealed)
+    new_state._sorted_frontier_nodes = list(state._sorted_frontier_nodes)
+    new_state._revealed_edge_ids = list(state._revealed_edge_ids)
     return new_state
