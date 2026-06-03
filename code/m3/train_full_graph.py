@@ -83,6 +83,10 @@ def parse_args():
                    help='Resume training from best_model.pt checkpoint')
     p.add_argument('--root', type=str, default=r'D:\ogb-master\dataset',
                    help='OGB dataset root directory (default: /mnt/d/ogb-master/dataset)')
+    p.add_argument('--label-smoothing', type=float, default=0.0,
+                   help='Label smoothing for CrossEntropyLoss (default: 0.0)')
+    p.add_argument('--class-weight', action=argparse.BooleanOptionalAction, default=True,
+                   help='Use inverse-frequency class weights (default: True)')
     return p.parse_args()
 
 
@@ -126,7 +130,7 @@ def prepare_data(batch_size: int, root: str):
 # Training / Evaluation
 # ---------------------------------------------------------------------------
 
-def train_one_epoch(model, loader, optimizer, device):
+def train_one_epoch(model, loader, optimizer, device, class_weights=None, label_smoothing=0.0):
     model.train()
     total_loss = 0.0
     correct, total_graphs = 0, 0
@@ -141,7 +145,9 @@ def train_one_epoch(model, loader, optimizer, device):
         node_ids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
         optimizer.zero_grad()
         logits = model(batch_g, node_ids)
-        loss = nn.functional.cross_entropy(logits, labels.view(-1))
+        loss = nn.functional.cross_entropy(logits, labels.view(-1),
+                                              label_smoothing=label_smoothing,
+                                              weight=class_weights)
         loss.backward()
         optimizer.step()
 
@@ -221,6 +227,22 @@ def main():
     loaders, n_classes, edge_feat_dim = prepare_data(args.batch_size, args.root)
     evaluator = Evaluator('ogbg-ppa')
 
+    # Compute class weights from training labels (inverse frequency)
+    if args.class_weight:
+        train_labels = []
+        for g, lbl in loaders['train'].dataset:
+            train_labels.append(lbl.item() if hasattr(lbl, 'item') else int(lbl))
+        label_counts = np.bincount(train_labels)
+        n_samples = len(train_labels)
+        n_classes = len(label_counts)
+        # inverse-frequency weight: tail classes get higher weight
+        class_weights = n_samples / (n_classes * np.maximum(label_counts, 1))
+        class_weights = torch.tensor(class_weights, dtype=torch.float, device=device)
+        logger.info("Class weights: min=%.3f max=%.3f",
+                    class_weights.min().item(), class_weights.max().item())
+    else:
+        class_weights = None
+
     # Model
     logger.info("Creating GraphClassifier (hidden=%d, layers=%d, dropout=%.1f)",
                 args.hidden_dim, args.n_layers, args.dropout)
@@ -284,7 +306,8 @@ def main():
     for epoch in range(start_epoch, args.epochs + 1):
         logger.info("===== Epoch %d / %d =====", epoch, args.epochs)
 
-        train_loss, train_acc = train_one_epoch(model, loaders['train'], optimizer, device)
+        train_loss, train_acc = train_one_epoch(
+            model, loaders['train'], optimizer, device, class_weights, args.label_smoothing)
         valid_perf = evaluate(model, loaders['valid'], evaluator, device)
         val_acc = valid_perf[metric]
 

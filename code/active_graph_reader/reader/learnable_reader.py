@@ -1,6 +1,7 @@
 """LearnableReader: 可学习的图阅读器。
 
-G_t → FrontierNodesEncoder → frontier_embeds → ReaderMLP → scores → softmax → argmax → action
+G_t → FrontierGraphBuilder → FrontierSubgraph → FrontierNodesEncoder → frontier_embeds
+     → ReaderMLP → scores → softmax → argmax → action
 """
 
 from typing import List, Optional, Tuple
@@ -10,6 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .base_reader import BaseReader
+from .frontier_graph_builder import FrontierGraphBuilder
 from .frontier_encoder import FrontierNodesEncoder
 from ..engine.graph_state import GraphState
 
@@ -17,11 +19,15 @@ from ..engine.graph_state import GraphState
 class ReaderMLP(nn.Module):
     """小型 MLP：将 frontier node embeddings 映射为标量 scores。"""
 
-    def __init__(self, hidden_dim: int):
+    def __init__(self, hidden_dim: int, dropout: float = 0.1):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
+            nn.Dropout(p=dropout),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(p=dropout),
             nn.Linear(hidden_dim, 1),
         )
 
@@ -50,19 +56,21 @@ class LearnableReader(BaseReader, nn.Module):
         BaseReader.__init__(self)
         nn.Module.__init__(self)
 
+        self.frontier_builder = FrontierGraphBuilder()
         self.frontier_encoder = FrontierNodesEncoder(
             edge_feat_dim=edge_feat_dim,
             hidden_dim=hidden_dim,
             n_layers=n_layers,
             dropout=dropout,
         )
-        self.reader_mlp = ReaderMLP(hidden_dim)
+        self.reader_mlp = ReaderMLP(hidden_dim, dropout=dropout)
 
     def forward(
         self, graph_state: GraphState
     ) -> Tuple[torch.Tensor, torch.Tensor, List[int]]:
         """核心可微管线。Returns: (scores, probs, frontier_nodes)."""
-        frontier_embeds, frontier_nodes = self.frontier_encoder(graph_state)
+        subgraph = self.frontier_builder.build(graph_state)
+        frontier_embeds, frontier_nodes = self.frontier_encoder(subgraph)
 
         if len(frontier_nodes) == 0:
             return torch.empty(0), torch.empty(0), []

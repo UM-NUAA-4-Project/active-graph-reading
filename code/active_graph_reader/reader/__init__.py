@@ -2,6 +2,7 @@
 
 from .base_reader import BaseReader
 from .learnable_reader import LearnableReader
+from .frontier_graph_builder import FrontierGraphBuilder, FrontierSubgraph
 from .frontier_encoder import FrontierNodesEncoder
 from .facade import reveal_one, reveal_batch, evaluate, create_dataloader
 
@@ -44,6 +45,8 @@ __all__ = [
     'BaseReader',
     'FixedStrategyReader',
     'LearnableReader',
+    'FrontierGraphBuilder',
+    'FrontierSubgraph',
     'FrontierNodesEncoder',
     'reveal_one',
     'reveal_batch',
