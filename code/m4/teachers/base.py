@@ -25,7 +25,6 @@ from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
 from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
 from m4.trajectory import Trajectory
-from m4.graph_meta import GraphMeta
 
 class Teacher(ABC):
     """Abstract teacher that generates graph reading trajectories.
@@ -159,7 +158,14 @@ class Teacher(ABC):
 
         # 4. Final prediction check
         sub_g, _ = subgraph_builder.build(state)
-        pred = self._predict(classifier, sub_g)
+        device = next(classifier.parameters()).device
+        sub_g = sub_g.to(device)
+        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=device)
+        with torch.no_grad():
+            logits = classifier(sub_g, node_ids)
+            probs = F.softmax(logits, dim=1)
+            pred = int(logits.argmax(dim=1).item())
+            traj.cross_entropy = float(-torch.log(probs[0, label] + 1e-12).item())
         traj.final_pred = pred
         traj.is_correct = (pred == label)
 
@@ -197,21 +203,15 @@ class Teacher(ABC):
     @staticmethod
     def _classifier_forward(classifier, sub_g):
         """Run classifier on subgraph, return (confidence, entropy)."""
-        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=sub_g.device)
+        device = next(classifier.parameters()).device
+        sub_g = sub_g.to(device)
+        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=device)
         with torch.no_grad():
             logits = classifier(sub_g, node_ids)
             probs = F.softmax(logits, dim=1)
             conf = float(probs.max(dim=1).values.item())
             ent = float(-(probs * probs.log()).sum(dim=1).item())
         return conf, ent
-
-    @staticmethod
-    def _predict(classifier, sub_g) -> int:
-        """Return predicted class index."""
-        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=sub_g.device)
-        with torch.no_grad():
-            logits = classifier(sub_g, node_ids)
-            return int(logits.argmax(dim=1).item())
 
     def generate_trajectory_from_cache(
         self,

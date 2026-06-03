@@ -12,7 +12,8 @@ Reference: BALD (Houlsby et al., NeurIPS 2011); Fuchsgruber et al.,
 """
 
 import logging
-from typing import List, Optional, Set
+from collections import defaultdict
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -127,7 +128,7 @@ class InfoGainTeacher(Teacher):
                 candidate_subs.append(sub_g)
 
             # Batch forward
-            batch_g = dgl.batch(candidate_subs)
+            batch_g = dgl.batch(candidate_subs).to(next(classifier.parameters()).device)
             batch_node_ids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=batch_g.device)
             with torch.no_grad():
                 batch_logits = classifier(batch_g, batch_node_ids)
@@ -163,7 +164,9 @@ class InfoGainTeacher(Teacher):
 
         # Final prediction
         sub_g, orig_ids = subgraph_builder.build(state)
-        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=sub_g.device)
+        device = next(classifier.parameters()).device
+        sub_g = sub_g.to(device)
+        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=device)
         with torch.no_grad():
             logits = classifier(sub_g, node_ids)
             probs = F.softmax(logits, dim=1)
@@ -181,7 +184,9 @@ class InfoGainTeacher(Teacher):
     @staticmethod
     def _entropy_and_conf(classifier, sub_g):
         """Return (entropy, confidence) for a single subgraph."""
-        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=sub_g.device)
+        device = next(classifier.parameters()).device
+        sub_g = sub_g.to(device)
+        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=device)
         with torch.no_grad():
             logits = classifier(sub_g, node_ids)
             probs = F.softmax(logits, dim=1)
@@ -219,10 +224,11 @@ def _copy_state(state: GraphState) -> GraphState:
     new_state.V_revealed = set(state.V_revealed)
     new_state.frontier_edges = set(state.frontier_edges)
     new_state.revealed_edge_keys = set(state.revealed_edge_keys)
-    new_state._frontier_degree = dict(state._frontier_degree)
-    new_state._frontier_by_unrevealed = {
-        k: set(v) for k, v in state._frontier_by_unrevealed.items()
-    }
+    new_state._frontier_degree = defaultdict(int, state._frontier_degree)
+    new_state._frontier_by_unrevealed = defaultdict(
+        set,
+        {k: set(v) for k, v in state._frontier_by_unrevealed.items()}
+    )
     new_state.reveal_history = list(state.reveal_history)
     # 必须深拷贝排序列表——reveal_node 会就地修改它们
     new_state._sorted_revealed = list(state._sorted_revealed)

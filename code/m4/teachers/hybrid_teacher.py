@@ -97,7 +97,7 @@ class HybridTeacher(Teacher):
 
         # Normalize each to [0, 1] before combining (avoids scale mismatch)
         grad_norm = minmax_norm(grad_scores)
-        struct_norm = minmax_norm(struct_scores)
+        struct_norm = minmax_norm(struct_scores).to(device=grad_norm.device)
 
         combined = alpha * grad_norm + (1.0 - alpha) * struct_norm
 

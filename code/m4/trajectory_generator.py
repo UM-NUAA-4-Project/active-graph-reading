@@ -2,7 +2,12 @@
 
 Provides two generation modes:
 1. generate_all() — legacy: per-trajectory teacher calls with per-step GNN
-2. generate_all_phased() — optimized 3-phase pipeline with score caching
+2. generate_all_phased() — optimized 3-phase pipeline with:
+   - Phase 1: Pre-compute GraphMeta (shared scores)
+   - Phase 2: Generate + batch-evaluate in chunks
+   - Phase 3: Filter top-k per graph
+   - Phase 3b: Retry deficient graphs (more seeds, larger budget) until
+     min_correct_per_graph is reached (padded with incorrect if exhausted)
 """
 
 import json
@@ -17,7 +22,7 @@ import torch
 import torch.nn.functional as F
 import dgl
 from tqdm import tqdm
-
+from m4.graph_meta import GraphMeta
 from m4.teachers.base import Teacher
 from m4.trajectory import Trajectory
 
@@ -243,18 +248,24 @@ class TrajectoryGenerator:
         budget_ratio: float = 0.15,
         seeds_per_graph: int = 5,
         top_k: int = 3,
+        min_correct_per_graph: Optional[int] = None,
+        max_retries: int = 3,
+        seeds_increment: int = 3,
         output_dir: Optional[str] = None,
         checkpoint_file: Optional[str] = None,
         chunk_size: int = 500,
         skip_t2: bool = True,
         resume_from_cache: Optional[str] = None,
         cache_dir: Optional[str] = None,
+        precomputed_metas: Optional[Dict[int, 'GraphMeta']] = None,
     ) -> List[Trajectory]:
         """Generate trajectories using the 3-phase optimized pipeline.
 
         Phase 1: Pre-compute GraphMeta (T1 gradient + T3 structural scores).
         Phase 2: Generate + batch-evaluate trajectories in chunks.
         Phase 3: Filter top-k per graph by CrossEntropy.
+        Phase 3b: Retry deficient graphs with more seeds/larger budget until
+                  min_correct_per_graph correct trajectories are obtained.
 
         Parameters
         ----------
@@ -263,9 +274,15 @@ class TrajectoryGenerator:
         budget_ratio : float
             Budget as fraction of |V| (e.g. 0.15 = 15% of nodes).
         seeds_per_graph : int
-            Number of random seed nodes per graph.
+            Number of random seed nodes per graph (initial round).
         top_k : int
             Max trajectories per graph after filtering.
+        min_correct_per_graph : int or None
+            Minimum correct trajectories required per graph. Default: top_k.
+        max_retries : int
+            Max retry rounds for graphs below min_correct_per_graph.
+        seeds_increment : int
+            Additional seeds per graph per retry round.
         output_dir : str or None
             Directory for saving raw/filtered trajectories.
         checkpoint_file : str or None
@@ -281,47 +298,51 @@ class TrajectoryGenerator:
 
         Returns
         -------
-        list of Trajectory (filtered top-k per graph).
+        list of Trajectory (filtered top-k per graph, padded with incorrect if needed).
         """
         from m4.graph_meta import GraphMetaCache
         from m4.teachers.info_gain_teacher import InfoGainTeacher
 
         # ------------------------------------------------------------------
-        # Phase 1: Pre-compute GraphMeta
+        # Phase 1: Pre-compute GraphMeta (or reuse precomputed_metas)
         # ------------------------------------------------------------------
-        logger.info("=" * 60)
-        logger.info("Phase 1: Pre-computing GraphMeta for %d graphs", len(indices))
-        logger.info("=" * 60)
+        if precomputed_metas is not None:
+            logger.info("Phase 1: Using %d pre-computed GraphMeta entries", len(precomputed_metas))
+            metas = precomputed_metas
+        else:
+            logger.info("=" * 60)
+            logger.info("Phase 1: Pre-computing GraphMeta for %d graphs", len(indices))
+            logger.info("=" * 60)
 
-        cache = GraphMetaCache(self.dataset, self.classifier, self.device)
+            cache = GraphMetaCache(self.dataset, self.classifier, self.device)
 
-        # Resume from saved cache if available
-        resume_metas = None
-        if resume_from_cache:
-            try:
-                resume_metas = cache.load(resume_from_cache)
-                logger.info("Resumed %d metas from %s", len(resume_metas), resume_from_cache)
-            except FileNotFoundError:
-                logger.warning("Cache file not found: %s, starting fresh", resume_from_cache)
+            # Resume from saved cache if available
+            resume_metas = None
+            if resume_from_cache:
+                try:
+                    resume_metas = cache.load(resume_from_cache)
+                    logger.info("Resumed %d metas from %s", len(resume_metas), resume_from_cache)
+                except FileNotFoundError:
+                    logger.warning("Cache file not found: %s, starting fresh", resume_from_cache)
 
-        # Determine which scores to compute based on teachers
-        teacher_names = {t.name for t in self.teachers}
-        need_t1 = 'gradient' in teacher_names or 'hybrid' in teacher_names
-        need_t3_degree = 'structural-degree' in teacher_names or 'hybrid' in teacher_names
-        need_t3_pagerank = 'structural-pagerank' in teacher_names
+            # Determine which scores to compute based on teachers
+            teacher_names = {t.name for t in self.teachers}
+            need_t1 = 'gradient' in teacher_names or 'hybrid' in teacher_names
+            need_t3_degree = 'structural-degree' in teacher_names or 'hybrid' in teacher_names
+            need_t3_pagerank = 'structural-pagerank' in teacher_names
 
-        metas = cache.precompute(
-            indices,
-            skip_t1=not need_t1,
-            skip_t3_degree=not need_t3_degree,
-            skip_t3_pagerank=not need_t3_pagerank,
-            resume_from=resume_metas,
-        )
+            metas = cache.precompute(
+                indices,
+                skip_t1=not need_t1,
+                skip_t3_degree=not need_t3_degree,
+                skip_t3_pagerank=not need_t3_pagerank,
+                resume_from=resume_metas,
+            )
 
-        # Save cache for future resume
-        if cache_dir:
-            cache_path = Path(cache_dir) / 'graph_meta_cache.pt'
-            cache.save(str(cache_path))
+            # Save cache for future resume
+            if cache_dir:
+                cache_path = Path(cache_dir) / 'graph_meta_cache.pt'
+                cache.save(str(cache_path))
 
         # ------------------------------------------------------------------
         # Phase 2: Generate + batch-evaluate in chunks
@@ -390,14 +411,82 @@ class TrajectoryGenerator:
 
         filtered = filter_top_k(all_trajs, top_k)
 
+        # ------------------------------------------------------------------
+        # Phase 3b: Retry deficient graphs until min_correct_per_graph reached
+        # ------------------------------------------------------------------
+        if min_correct_per_graph is None:
+            min_correct_per_graph = top_k
+
+        self._last_retry_stats: Dict[int, int] = {}  # graph_idx -> retry rounds needed
+
+        for retry_round in range(max_retries):
+            correct_per_graph = defaultdict(int)
+            for t in filtered:
+                if t.is_correct:
+                    correct_per_graph[t.graph_idx] += 1
+
+            deficient = [
+                idx for idx in indices
+                if idx in metas and correct_per_graph.get(idx, 0) < min_correct_per_graph
+            ]
+
+            if not deficient:
+                logger.info(
+                    "All %d graphs have >= %d correct trajectories",
+                    len(set(t.graph_idx for t in filtered)), min_correct_per_graph,
+                )
+                break
+
+            # Record retry stats: first time each graph needs a retry
+            for idx in deficient:
+                if idx not in self._last_retry_stats:
+                    self._last_retry_stats[idx] = retry_round + 1
+
+            logger.info(
+                "Retry %d/%d: %d graphs still below %d correct trajectories",
+                retry_round + 1, max_retries, len(deficient), min_correct_per_graph,
+            )
+
+            retry_seeds = seeds_increment
+            off = (retry_round + 1) * 10000
+
+            for i in range(0, len(deficient), chunk_size):
+                chunk = deficient[i:i + chunk_size]
+                try:
+                    chunk_trajs = self._process_chunk(
+                        chunk_indices=chunk,
+                        metas=metas,
+                        budget_ratio=budget_ratio,
+                        seeds_per_graph=retry_seeds,
+                        skip_t2=skip_t2,
+                        seed_offset=off,
+                    )
+                    all_trajs.extend(chunk_trajs)
+                except Exception as e:
+                    logger.error("Retry chunk [%d:%d] failed: %s", i, i + len(chunk), e)
+
+            # Re-filter with incorrect fallback to fill gaps
+            filtered = filter_top_k(all_trajs, top_k, allow_incorrect_fallback=True)
+
+            pct = 100.0 * sum(1 for t in all_trajs if t.is_correct) / max(len(all_trajs), 1)
+            logger.info(
+                "After retry %d: %d trajectories covering %d graphs (%.1f%% correct)",
+                retry_round + 1, len(filtered),
+                len(set(t.graph_idx for t in filtered)), pct,
+            )
+
         pct_correct = (
             100.0 * sum(1 for t in all_trajs if t.is_correct) / max(len(all_trajs), 1)
         )
+        n_correct = sum(1 for t in filtered if t.is_correct)
+        n_total = len(filtered)
         logger.info(
-            "Filtered: %d trajectories from %d graphs (%.1f%% correct overall)",
-            len(filtered),
+            "Filtered: %d trajectories from %d graphs (%.1f%% correct overall, %d/%d correct)",
+            n_total,
             len(set(t.graph_idx for t in filtered)),
             pct_correct,
+            n_correct,
+            n_total,
         )
 
         # Save filtered
@@ -420,6 +509,7 @@ class TrajectoryGenerator:
         budget_ratio: float,
         seeds_per_graph: int,
         skip_t2: bool,
+        seed_offset: int = 0,
     ) -> List[Trajectory]:
         """Process one chunk: generate all trajectories, batch-evaluate on GPU.
 
@@ -450,7 +540,7 @@ class TrajectoryGenerator:
             budget = max(1, int(meta.n_nodes * budget_ratio))
             teacher_scores = cache.get_teacher_scores(meta)
 
-            rng = random.Random(graph_idx * 31)
+            rng = random.Random(graph_idx * 31 + seed_offset)
             seed_nodes = [
                 rng.randint(0, max(meta.n_nodes - 1, 0))
                 for _ in range(seeds_per_graph)
@@ -529,22 +619,38 @@ class TrajectoryGenerator:
 # Filtering
 # ======================================================================
 
-def filter_top_k(trajectories: List[Trajectory], top_k: int) -> List[Trajectory]:
-    """Per graph: keep correctly classified, sort by CrossEntropy asc, take top-k."""
-    by_graph = defaultdict(list)
+def filter_top_k(trajectories: List[Trajectory], top_k: int,
+                 allow_incorrect_fallback: bool = False) -> List[Trajectory]:
+    """Per graph: keep correctly classified, sort by CrossEntropy asc, take top-k.
+
+    If allow_incorrect_fallback, graphs with fewer than top_k correct trajectories
+    are padded with the best (lowest CE) incorrect trajectories to reach top_k.
+    """
+    by_graph_correct = defaultdict(list)
+    by_graph_all = defaultdict(list)
     for t in trajectories:
+        by_graph_all[t.graph_idx].append(t)
         if t.is_correct:
-            by_graph[t.graph_idx].append(t)
+            by_graph_correct[t.graph_idx].append(t)
 
     result = []
-    for graph_idx in sorted(by_graph):
-        trajs = by_graph[graph_idx]
-        trajs.sort(key=lambda t: t.cross_entropy)
-        result.extend(trajs[:top_k])
+    for graph_idx in sorted(by_graph_all):
+        correct = sorted(by_graph_correct.get(graph_idx, []),
+                         key=lambda t: t.cross_entropy)
+        if len(correct) >= top_k or not allow_incorrect_fallback:
+            result.extend(correct[:top_k])
+        else:
+            result.extend(correct)
+            remaining = top_k - len(correct)
+            incorrect = [t for t in by_graph_all[graph_idx] if not t.is_correct]
+            incorrect.sort(key=lambda t: t.cross_entropy)
+            result.extend(incorrect[:remaining])
 
+    n_graphs = len(set(t.graph_idx for t in result))
+    n_correct = sum(1 for t in result if t.is_correct)
     logger.info(
-        "Filtered to %d trajectories: %d graphs, top-%d each",
-        len(result), len(by_graph), top_k,
+        "Filtered to %d trajectories: %d graphs, top-%d each (%d correct)",
+        len(result), n_graphs, top_k, n_correct,
     )
     return result
 

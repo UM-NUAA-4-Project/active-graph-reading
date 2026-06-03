@@ -189,20 +189,10 @@ class GraphMetaCache:
             edge_key_to_id=edge_key_to_id,
         )
 
-        # T1: gradient attribution (need encoder params to require grad)
+        # T1: gradient attribution (teacher enables/disables grad internally)
         if grad_teacher is not None:
             g_dev = g.to(self.device)
-            # Temporarily enable gradients on encoder for attribution
-            encoder = self.classifier.encoder
-            was_frozen = [p.requires_grad for p in encoder.parameters()]
-            for p in encoder.parameters():
-                p.requires_grad = True
-            try:
-                meta.t1_scores = grad_teacher.score_nodes(g_dev, self.classifier, label).cpu()
-            finally:
-                for p, was in zip(encoder.parameters(), was_frozen):
-                    p.requires_grad = was
-                self.classifier.zero_grad()
+            meta.t1_scores = grad_teacher.score_nodes(g_dev, self.classifier, label).cpu()
 
         # T3: degree (DGL native, fast)
         if not skip_t3_degree:

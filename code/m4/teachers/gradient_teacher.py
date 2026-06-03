@@ -63,66 +63,72 @@ class GradientTeacher(Teacher):
         """
         n_nodes = graph.num_nodes()
         encoder = classifier.encoder
-        n_layers = len(encoder.convs)
 
         # 1. Register forward hooks on each GINELayer
         self._register_hooks(encoder)
 
-        # 2. Forward pass on full graph
-        node_ids = torch.zeros(n_nodes, dtype=torch.long, device=graph.device)
-        logits = classifier(graph, node_ids)
+        # 2. Temporarily enable gradients on encoder for attribution
+        was_frozen = [p.requires_grad for p in encoder.parameters()]
+        for p in encoder.parameters():
+            p.requires_grad = True
 
-        if label is None:
-            label = int(logits.argmax(dim=1).item())
-
-        # 3. Compute gradients of correct-class logit w.r.t. captured embeddings
         try:
-            grads = torch.autograd.grad(
-                outputs=logits[0, label],
-                inputs=self._embeddings,
-                retain_graph=False,
-                create_graph=False,
-            )
-        except RuntimeError as e:
-            logger.warning("Gradient computation failed: %s. Falling back to uniform.", e)
+            # 3. Forward pass on full graph (move to classifier device)
+            device = next(classifier.parameters()).device
+            graph = graph.to(device)
+            node_ids = torch.zeros(n_nodes, dtype=torch.long, device=device)
+            logits = classifier(graph, node_ids)
+
+            if label is None:
+                label = int(logits.argmax(dim=1).item())
+
+            # 4. Compute gradients of correct-class logit w.r.t. captured embeddings
+            try:
+                grads = torch.autograd.grad(
+                    outputs=logits[0, label],
+                    inputs=self._embeddings,
+                    retain_graph=False,
+                    create_graph=False,
+                )
+            except RuntimeError as e:
+                logger.warning("Gradient computation failed: %s. Falling back to uniform.", e)
+                return torch.ones(n_nodes)
+
+            # 5. Per-layer gradient norm for each node
+            layer_norms = []
+            for layer_idx, grad in enumerate(grads):
+                if grad is None:
+                    logger.debug("Layer %d: gradient is None, skipping", layer_idx)
+                    continue
+                node_norms = grad.norm(p=2, dim=1)  # (n_nodes,)
+                layer_norms.append(node_norms)
+
+            if not layer_norms:
+                return torch.ones(n_nodes)
+
+            # 6. Aggregate across layers
+            stacked = torch.stack(layer_norms, dim=0)  # (n_layers, n_nodes)
+            if self._aggregate == 'max':
+                scores = stacked.max(dim=0).values
+            else:
+                scores = stacked.mean(dim=0)
+
+            # Verify gradient signal has variance
+            std = scores.std().item()
+            if std < 1e-8:
+                logger.warning(
+                    "Gradient scores have near-zero variance (std=%.2e). "
+                    "Check if classifier parameters are frozen or gradients are detached.",
+                    std,
+                )
+
+            return scores
+
+        finally:
             self._remove_hooks()
-            return torch.ones(n_nodes)
-
-        # 4. Per-layer gradient norm for each node
-        layer_norms = []
-        for layer_idx, grad in enumerate(grads):
-            if grad is None:
-                logger.debug("Layer %d: gradient is None, skipping", layer_idx)
-                continue
-            # grad shape: (n_nodes, hidden_dim) or (n_batched_nodes, hidden_dim)
-            node_norms = grad.norm(p=2, dim=1)  # (n_nodes,)
-            layer_norms.append(node_norms)
-
-        if not layer_norms:
-            self._remove_hooks()
-            return torch.ones(n_nodes)
-
-        # 5. Aggregate across layers
-        stacked = torch.stack(layer_norms, dim=0)  # (n_layers, n_nodes)
-        if self._aggregate == 'max':
-            scores = stacked.max(dim=0).values
-        else:
-            scores = stacked.mean(dim=0)
-
-        # 6. Cleanup
-        self._remove_hooks()
-        classifier.zero_grad()
-
-        # Verify gradient signal has variance
-        std = scores.std().item()
-        if std < 1e-8:
-            logger.warning(
-                "Gradient scores have near-zero variance (std=%.2e). "
-                "Check if classifier parameters are frozen or gradients are detached.",
-                std,
-            )
-
-        return scores
+            for p, was in zip(encoder.parameters(), was_frozen):
+                p.requires_grad = was
+            classifier.zero_grad()
 
     # ------------------------------------------------------------------
     # Hook management

@@ -85,6 +85,12 @@ def parse_args():
                    help='Max trajectories per graph after filtering')
     p.add_argument('--chunk-size', type=int, default=500,
                    help='Graphs per chunk for GPU batch eval (phased mode only)')
+    p.add_argument('--min-correct-per-graph', type=int, default=None,
+                   help='Min correct trajectories per graph (default: --top-k value)')
+    p.add_argument('--max-retries', type=int, default=3,
+                   help='Max retry rounds for graphs below min-correct-per-graph')
+    p.add_argument('--seeds-increment', type=int, default=3,
+                   help='Additional seeds per graph per retry round')
 
     # Output
     p.add_argument('--output-dir', type=str, default=None,
@@ -218,6 +224,9 @@ def main():
                 budget_ratio=args.budget_ratio,
                 seeds_per_graph=args.seeds_per_graph,
                 top_k=args.top_k,
+                min_correct_per_graph=args.min_correct_per_graph,
+                max_retries=args.max_retries,
+                seeds_increment=args.seeds_increment,
                 output_dir=str(output_dir),
                 checkpoint_file=str(output_dir / f'checkpoint_{split_name}.json'),
                 chunk_size=args.chunk_size,
