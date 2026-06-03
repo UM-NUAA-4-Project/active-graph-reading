@@ -1,0 +1,169 @@
+"""T2: 信息增益 Teacher — 每步模拟揭示所有 frontier 候选，选熵降最大的节点。"""
+
+import logging
+from typing import List, Optional
+
+import torch
+import torch.nn.functional as F
+import dgl
+
+from active_graph_reader.engine.graph_state import GraphState
+from active_graph_reader.engine.reveal_action import reveal_node
+from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
+from .base import Teacher, Trajectory
+
+logger = logging.getLogger(__name__)
+
+
+class InfoGainTeacher(Teacher):
+    """T2 (info-gain): 选使 classifier entropy 下降最多的 frontier node。
+
+    每步对所有 frontier 候选模拟揭示 → 构建子图 → 批量分类器推理 →
+    选 IG(v) = H(current) - H(after_reveal_v) 最大的节点。
+    IG ≤ 0 的候选被排除。
+    """
+
+    def __init__(
+        self,
+        classifier: torch.nn.Module,
+        subgraph_builder: SubgraphBuilder,
+        device: str = 'cpu',
+    ):
+        self._classifier = classifier
+        self._subgraph_builder = subgraph_builder
+        self._device = device
+
+    @property
+    def name(self) -> str:
+        return 'info-gain'
+
+    def score_nodes(
+        self,
+        graph: dgl.DGLGraph,
+        classifier: Optional[torch.nn.Module] = None,
+        label: Optional[int] = None,
+    ) -> torch.Tensor:
+        """T2 不使用静态分数。"""
+        return torch.zeros(graph.num_nodes())
+
+    def generate_trajectory(
+        self,
+        graph: dgl.DGLGraph,
+        scores: torch.Tensor,  # ignored
+        seed_node: int,
+        budget: int,
+        edge_key_to_id: Optional[dict] = None,
+    ) -> Trajectory:
+        state = GraphState(graph, seed_node, edge_key_to_id=edge_key_to_id)
+        reveal_order: List[int] = []
+
+        for _step in range(budget):
+            if state.is_frontier_empty:
+                break
+
+            frontier_nodes = state.get_frontier_nodes()
+            if not frontier_nodes:
+                break
+
+            # 当前熵 H(p_t)
+            if len(state.V_revealed) == 1 and len(state.revealed_edge_keys) == 0:
+                # G_0 状态无法构建有意义子图（无边），跳过熵计算
+                # 直接用第一个 frontier 节点
+                next_node = frontier_nodes[0]
+                reveal_order.append(next_node)
+                reveal_node(state, next_node)
+                continue
+
+            cur_g, _ = self._subgraph_builder.build(state)
+            H_current = self._entropy(cur_g)
+
+            # 为每个候选构建模拟子图并批量评估
+            candidate_gs = []
+            for v in frontier_nodes:
+                cg = self._build_candidate_subgraph(state, v)
+                candidate_gs.append(cg)
+
+            batched = dgl.batch(candidate_gs).to(self._device)
+            node_ids = torch.zeros(batched.num_nodes(), dtype=torch.long,
+                                   device=self._device)
+            with torch.no_grad():
+                logits = self._classifier(batched, node_ids)
+            probs = F.softmax(logits, dim=-1)
+            entropies = -(probs * torch.log(probs + 1e-8)).sum(dim=-1)
+
+            # 选 IG 最大的
+            best_node = None
+            best_ig = -float('inf')
+            for i, v in enumerate(frontier_nodes):
+                ig = H_current - float(entropies[i])
+                if ig > best_ig:
+                    best_ig = ig
+                    best_node = v
+
+            if best_node is None or best_ig <= 0:
+                break
+
+            reveal_order.append(best_node)
+            reveal_node(state, best_node)
+
+        n_revealed = len(state.V_revealed)
+        return Trajectory(
+            graph_idx=-1,
+            seed_node=seed_node,
+            reveal_ratio=n_revealed / max(state.n_nodes_total, 1),
+            reveal_order=reveal_order,
+            final_pred=-1,
+            is_correct=True,
+            teacher_type=self.name,
+        )
+
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    def _entropy(self, sub_g: dgl.DGLGraph) -> float:
+        sub_g = sub_g.to(self._device)
+        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long,
+                               device=self._device)
+        with torch.no_grad():
+            logits = self._classifier(sub_g, node_ids)
+        probs = F.softmax(logits, dim=-1)
+        return float(-(probs * torch.log(probs + 1e-8)).sum())
+
+    def _build_candidate_subgraph(
+        self, state: GraphState, v: int,
+    ) -> dgl.DGLGraph:
+        """构建 V_revealed ∪ {v} 的模拟子图（不修改 state）。"""
+        nodes = sorted(set(state.V_revealed) | {v})
+        n_nodes = len(nodes)
+
+        # 收集边：已有揭示边 + 连接 v 的前沿边
+        edge_keys = set(state.revealed_edge_keys)
+        for u, w in state.frontier_edges:
+            if (u == v and w in state.V_revealed) or (w == v and u in state.V_revealed):
+                edge_keys.add((min(u, w), max(u, w)))
+
+        edge_keys = list(edge_keys)
+        if not edge_keys:
+            return dgl.graph(([], []), num_nodes=n_nodes)
+
+        edge_ids = [state._edge_key_to_id[k] for k in edge_keys]
+        edge_feats = state.edge_feat[edge_ids]
+        device = edge_feats.device
+
+        edge_pairs = torch.tensor(edge_keys, dtype=torch.long, device=device)
+        max_old = max(nodes)
+        old_to_new = torch.full((max_old + 1,), -1, dtype=torch.long, device=device)
+        old_to_new[nodes] = torch.arange(n_nodes, device=device)
+
+        u_new = old_to_new[edge_pairs[:, 0]]
+        v_new = old_to_new[edge_pairs[:, 1]]
+        K = u_new.shape[0]
+        src = torch.empty(2 * K, dtype=torch.long, device=device)
+        dst = torch.empty(2 * K, dtype=torch.long, device=device)
+        src[0::2], src[1::2] = u_new, v_new
+        dst[0::2], dst[1::2] = v_new, u_new
+
+        sub_g = dgl.graph((src, dst), num_nodes=n_nodes)
+        sub_g.edata['feat'] = edge_feats.repeat_interleave(2, dim=0)
+        return sub_g
