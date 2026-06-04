@@ -87,6 +87,12 @@ def parse_args():
                    help='Label smoothing for CrossEntropyLoss (default: 0.0)')
     p.add_argument('--class-weight', action=argparse.BooleanOptionalAction, default=True,
                    help='Use inverse-frequency class weights (default: True)')
+    p.add_argument('--finetune-epochs', type=int, default=0,
+                   help='Fine-tune best model for N epochs with lower LR (0=skip)')
+    p.add_argument('--finetune-lr', type=float, default=1e-4,
+                   help='Learning rate for fine-tuning phase (default: 1e-4)')
+    p.add_argument('--finetune-patience', type=int, default=10,
+                   help='Early-stop patience for fine-tuning (default: 10)')
     return p.parse_args()
 
 
@@ -358,6 +364,83 @@ def main():
                 best_val, best_epoch,
                 train_perf[metric], test_perf[metric],
                 train_perf[metric] - test_perf[metric])
+
+    # -----------------------------------------------------------------------
+    # Fine-tuning phase: load best model, train with lower LR from scratch
+    # -----------------------------------------------------------------------
+    if args.finetune_epochs > 0:
+        logger.info("=" * 60)
+        logger.info("Starting fine-tuning phase (%d epochs, lr=%.1e)",
+                    args.finetune_epochs, args.finetune_lr)
+
+        ft_best_path = output_dir / 'best_model_ft.pt'
+
+        # Load best model weights (discard old optimizer/scheduler state)
+        best_ckpt = torch.load(best_model_path, map_location=device)
+        model.load_state_dict(best_ckpt['model_state_dict'])
+        logger.info("Loaded best model (val_acc=%.4f) for fine-tuning", best_ckpt.get('val_acc', -1))
+
+        ft_optimizer = optim.AdamW(model.parameters(), lr=args.finetune_lr,
+                                    weight_decay=args.weight_decay)
+        ft_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            ft_optimizer, mode='max', factor=0.5,
+            patience=args.finetune_patience // 2, min_lr=1e-7,
+        )
+
+        ft_best_val = best_val
+        ft_no_improve = 0
+        ft_valid_curve = []
+
+        for epoch in range(1, args.finetune_epochs + 1):
+            logger.info("===== Fine-tune Epoch %d / %d =====", epoch, args.finetune_epochs)
+
+            train_loss, train_acc = train_one_epoch(
+                model, loaders['train'], ft_optimizer, device,
+                class_weights, args.label_smoothing)
+            valid_perf = evaluate(model, loaders['valid'], evaluator, device)
+            val_acc = valid_perf[metric]
+
+            logger.info("ft_train_loss=%.4f ft_train_acc=%.4f | ft_valid_%s=%.4f | gap=%.4f",
+                        train_loss, train_acc, metric, val_acc, train_acc - val_acc)
+
+            ft_valid_curve.append(val_acc)
+            ft_scheduler.step(val_acc)
+
+            if val_acc > ft_best_val:
+                ft_best_val = val_acc
+                ft_no_improve = 0
+                torch.save({
+                    'model_state_dict': model.state_dict(),
+                    'epoch': epoch,
+                    'val_acc': ft_best_val,
+                }, ft_best_path)
+                logger.info("Fine-tune best saved (epoch=%d, val_acc=%.4f)", epoch, ft_best_val)
+            else:
+                ft_no_improve += 1
+
+            if ft_no_improve >= args.finetune_patience:
+                logger.info("Fine-tune early stop at epoch %d", epoch)
+                break
+
+        # Final evaluation — load best fine-tuned model
+        if ft_best_path.exists():
+            ft_ckpt = torch.load(ft_best_path, map_location=device)
+            model.load_state_dict(ft_ckpt['model_state_dict'])
+            ft_test_perf = evaluate(model, loaders['test'], evaluator, device)
+            ft_train_perf = evaluate(model, loaders['train'], evaluator, device)
+
+            ft_epoch = ft_ckpt['epoch']
+            torch.save({
+                'valid': ft_valid_curve,
+                'train_final': ft_train_perf[metric],
+                'test_final': ft_test_perf[metric],
+                'best_epoch': ft_epoch,
+                'best_val': ft_best_val,
+            }, output_dir / 'curves_ft.pt')
+
+            logger.info("Fine-tuning finished. Best val: %.4f (Δ=%.4f) at epoch %d | Train: %.4f | Test: %.4f",
+                        ft_best_val, ft_best_val - best_val, ft_epoch,
+                        ft_train_perf[metric], ft_test_perf[metric])
 
 
 if __name__ == '__main__':
