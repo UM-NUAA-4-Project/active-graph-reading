@@ -28,7 +28,7 @@ from m4.teachers.gradient_teacher import GradientTeacher
 from m4.teachers.structural_teacher import StructuralTeacher
 from m4.teachers.hybrid_teacher import HybridTeacher
 from m4.trajectory_generator import TrajectoryGenerator
-
+from m4.teachers.info_gain_teacher import InfoGainTeacher
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ def parse_args():
     p.add_argument('--device', type=str, default='cuda:0',
                    help='Device (cuda:0 / cpu)')
     p.add_argument('--reveal-ratios', type=float, nargs='+',
-                   default=[0.01, 0.02, 0.05, 0.10],
+                   default=[0.10, 0.15, 0.20, 0.25],
                    help='Reveal ratios (e.g. 0.01 0.05 0.10)')
     p.add_argument('--k-top', type=int, default=3,
                    help='Top-k trajectories per graph per teacher')
@@ -54,7 +54,7 @@ def parse_args():
                    help='Output directory (default: m4/output)')
     p.add_argument('--teachers', type=str, nargs='+',
                    default=['gradient', 'structural-degree', 'structural-pagerank',
-                            'hybrid-0.3', 'hybrid-0.7'],
+                            'hybrid-0.3', 'hybrid-0.7', 'info-gain'],
                    help='Teachers to use')
     return p.parse_args()
 
@@ -69,6 +69,8 @@ def build_teacher(name: str):
     elif name.startswith('hybrid-'):
         alpha = float(name.split('-')[1])
         return HybridTeacher(alpha=alpha)
+    elif name == 'info-gain':
+        return InfoGainTeacher()
     else:
         raise ValueError(f"Unknown teacher: {name}")
 
@@ -138,6 +140,9 @@ def main():
             count = sum(len(trajs) for trajs in per_graph)
             total_trajs += count
             logger.info("  %s: %d trajectories", teacher_name, count)
+        for teacher in teachers:
+            failures = sum(1 for trajs in result[teacher.name] if len(trajs) == 0)
+            print(f"  {teacher.name:>20s}  {failures:>9d}")
 
         ratio_str = f"{ratio:.3f}".replace('.', '_')
         output_path = output_dir / f'trajectories_r{ratio_str}.pt'

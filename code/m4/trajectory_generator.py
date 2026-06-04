@@ -28,7 +28,7 @@ class TrajectoryGenerator:
       1. 从 n seed 生成轨迹 → 过滤 is_correct
       2. 按 CE 升序选 top-k
       3. 不够 → 重试新 seed（最多 100 次）
-      4. 仍不够 → warn
+      4. 仍不够 → 退出
     """
 
     def __init__(
@@ -116,10 +116,6 @@ class TrajectoryGenerator:
 
         correct_trajs.sort(key=lambda x: x[1])
         top_trajs = [t for t, _ in correct_trajs[:k_top]]
-
-        if len(top_trajs) < k_top:
-            logger.warning("graph %d: 路径数小于%d (found=%d, attempts=%d)",
-                           idx, k_top, len(top_trajs), attempts)
 
         return top_trajs
 
