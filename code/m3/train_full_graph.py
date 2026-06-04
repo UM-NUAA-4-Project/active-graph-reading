@@ -89,6 +89,8 @@ def parse_args():
                    help='Use inverse-frequency class weights (default: True)')
     p.add_argument('--finetune-epochs', type=int, default=0,
                    help='Fine-tune best model for N epochs with lower LR (0=skip)')
+    p.add_argument('--finetune-from', type=str, default='',
+                   help='Skip main training, load this model and fine-tune directly')
     p.add_argument('--finetune-lr', type=float, default=1e-4,
                    help='Learning rate for fine-tuning phase (default: 1e-4)')
     p.add_argument('--finetune-patience', type=int, default=10,
@@ -283,87 +285,98 @@ def main():
         return
 
     # -----------------------------------------------------------------------
-    # Resume from checkpoint
-    # -----------------------------------------------------------------------
-    start_epoch = 1
-    best_val = -1.0
-    if args.resume:
-        resume_path = Path(args.resume)
-        if not resume_path.exists():
-            logger.error("Resume checkpoint not found: %s", resume_path)
-            sys.exit(1)
-        ckpt = torch.load(resume_path, map_location=device)
-        model.load_state_dict(ckpt['model_state_dict'])
-        start_epoch = ckpt.get('epoch', 0) + 1
-        best_val = ckpt.get('val_acc', -1.0)
-        if 'optimizer_state_dict' in ckpt:
-            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-        if 'scheduler_state_dict' in ckpt:
-            scheduler.load_state_dict(ckpt['scheduler_state_dict'])
-        logger.info("Resumed from %s (epoch %d, best_val=%.4f)", resume_path, start_epoch - 1, best_val)
-
-    # -----------------------------------------------------------------------
-    # Training loop
+    # Skip main training → directly fine-tune from a saved model
     # -----------------------------------------------------------------------
     metric = evaluator.eval_metric
-    valid_curve = []
-    no_improve_steps = 0
 
-    for epoch in range(start_epoch, args.epochs + 1):
-        logger.info("===== Epoch %d / %d =====", epoch, args.epochs)
+    if args.finetune_from:
+        ft_from_path = Path(args.finetune_from)
+        if not ft_from_path.exists():
+            logger.error("Finetune-from checkpoint not found: %s", ft_from_path)
+            sys.exit(1)
+        ckpt = torch.load(ft_from_path, map_location=device)
+        model.load_state_dict(ckpt['model_state_dict'])
+        best_val = ckpt.get('val_acc', -1.0)
+        best_model_path = ft_from_path  # for reference in fine-tune phase
+        logger.info("Loaded model from %s (val_acc=%.4f), skipping main training",
+                    ft_from_path, best_val)
+        # Jump directly to fine-tuning (skip main training loop + evaluation)
+        if args.finetune_epochs <= 0:
+            logger.warning("--finetune-from set but --finetune-epochs=0, nothing to do")
+            return
+    else:
+        # -------------------------------------------------------------------
+        # Training loop
+        # -------------------------------------------------------------------
+        start_epoch = 1
+        best_val = -1.0
+        if args.resume:
+            resume_path = Path(args.resume)
+            if not resume_path.exists():
+                logger.error("Resume checkpoint not found: %s", resume_path)
+                sys.exit(1)
+            ckpt = torch.load(resume_path, map_location=device)
+            model.load_state_dict(ckpt['model_state_dict'])
+            start_epoch = ckpt.get('epoch', 0) + 1
+            best_val = ckpt.get('val_acc', -1.0)
+            if 'optimizer_state_dict' in ckpt:
+                optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            if 'scheduler_state_dict' in ckpt:
+                scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+            logger.info("Resumed from %s (epoch %d, best_val=%.4f)", resume_path, start_epoch - 1, best_val)
 
-        train_loss, train_acc = train_one_epoch(
-            model, loaders['train'], optimizer, device, class_weights, args.label_smoothing)
-        valid_perf = evaluate(model, loaders['valid'], evaluator, device)
-        val_acc = valid_perf[metric]
+        valid_curve = []
+        no_improve_steps = 0
 
-        logger.info("train_loss=%.4f train_acc=%.4f | valid_%s=%.4f | gap=%.4f",
-                    train_loss, train_acc, metric, val_acc, train_acc - val_acc)
+        for epoch in range(start_epoch, args.epochs + 1):
+            logger.info("===== Epoch %d / %d =====", epoch, args.epochs)
 
-        valid_curve.append(val_acc)
+            train_loss, train_acc = train_one_epoch(
+                model, loaders['train'], optimizer, device, class_weights, args.label_smoothing)
+            valid_perf = evaluate(model, loaders['valid'], evaluator, device)
+            val_acc = valid_perf[metric]
 
-        # Scheduler step
-        scheduler.step(val_acc)
+            logger.info("train_loss=%.4f train_acc=%.4f | valid_%s=%.4f | gap=%.4f",
+                        train_loss, train_acc, metric, val_acc, train_acc - val_acc)
 
-        # Checkpoint every 5 epochs (allow resume from non-best)
-        if epoch % 5 == 0:
-            save_checkpoint(model, optimizer, scheduler, epoch, checkpoint_path)
+            valid_curve.append(val_acc)
+            scheduler.step(val_acc)
 
-        # Best model
-        if val_acc > best_val:
-            best_val = val_acc
-            no_improve_steps = 0
-            save_best_model(model, optimizer, scheduler, epoch, best_model_path, best_val)
-        else:
-            no_improve_steps += 1
+            if epoch % 5 == 0:
+                save_checkpoint(model, optimizer, scheduler, epoch, checkpoint_path)
 
-        # Early stopping
-        if no_improve_steps >= args.early_stop_patience:
-            logger.info("Early stopping at epoch %d — no improvement for %d epochs",
-                        epoch, args.early_stop_patience)
-            break
+            if val_acc > best_val:
+                best_val = val_acc
+                no_improve_steps = 0
+                save_best_model(model, optimizer, scheduler, epoch, best_model_path, best_val)
+            else:
+                no_improve_steps += 1
 
-    # Final evaluation — load best model and evaluate once
-    best_epoch = int(np.argmax(valid_curve)) + start_epoch
-    ckpt = torch.load(best_model_path, map_location=device)
-    model.load_state_dict(ckpt['model_state_dict'])
-    test_perf = evaluate(model, loaders['test'], evaluator, device)
-    train_perf = evaluate(model, loaders['train'], evaluator, device)
+            if no_improve_steps >= args.early_stop_patience:
+                logger.info("Early stopping at epoch %d — no improvement for %d epochs",
+                            epoch, args.early_stop_patience)
+                break
 
-    # Save curves
-    torch.save({
-        'valid': valid_curve,
-        'train_final': train_perf[metric],
-        'test_final': test_perf[metric],
-        'best_epoch': best_epoch,
-        'best_val': best_val,
-        'start_epoch': start_epoch,
-    }, output_dir / 'curves.pt')
+        # Final evaluation — load best model and evaluate once
+        best_epoch = int(np.argmax(valid_curve)) + start_epoch
+        ckpt = torch.load(best_model_path, map_location=device)
+        model.load_state_dict(ckpt['model_state_dict'])
+        test_perf = evaluate(model, loaders['test'], evaluator, device)
+        train_perf = evaluate(model, loaders['train'], evaluator, device)
 
-    logger.info("Training finished. Best val: %.4f at epoch %d | Train: %.4f | Test: %.4f | Gap: %.4f",
-                best_val, best_epoch,
-                train_perf[metric], test_perf[metric],
-                train_perf[metric] - test_perf[metric])
+        torch.save({
+            'valid': valid_curve,
+            'train_final': train_perf[metric],
+            'test_final': test_perf[metric],
+            'best_epoch': best_epoch,
+            'best_val': best_val,
+            'start_epoch': start_epoch,
+        }, output_dir / 'curves.pt')
+
+        logger.info("Training finished. Best val: %.4f at epoch %d | Train: %.4f | Test: %.4f | Gap: %.4f",
+                    best_val, best_epoch,
+                    train_perf[metric], test_perf[metric],
+                    train_perf[metric] - test_perf[metric])
 
     # -----------------------------------------------------------------------
     # Fine-tuning phase: load best model, train with lower LR from scratch
