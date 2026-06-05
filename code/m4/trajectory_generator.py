@@ -1,7 +1,6 @@
 """TrajectoryGenerator — 生成→过滤→选 top-k→重试循环。"""
 
 import logging
-from multiprocessing import Pool
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -13,19 +12,13 @@ from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
 from .teachers.base import Teacher, Trajectory
-from .graph_meta import GraphMeta, precompute_graph_meta, precompute_graph_meta_from_tensors
+from .graph_meta import GraphMeta, precompute_graph_meta
 
 logger = logging.getLogger(__name__)
 
 
 def _deterministic_seed(graph_index: int, seed_i: int, n_nodes: int) -> int:
     return (graph_index * 31 + seed_i * 17 + 7) % n_nodes
-
-
-def _precompute_meta_worker(payload) -> GraphMeta:
-    """模块级 worker，接收 (src, dst, degrees) CPU tensor，避免跨进程传输 DGL 图。"""
-    src, dst, degrees = payload
-    return precompute_graph_meta_from_tensors(src, dst, degrees)
 
 
 class TrajectoryGenerator:
@@ -67,21 +60,8 @@ class TrajectoryGenerator:
         """
         self.classifier.eval()
 
-        logger.info("预计算 %d 张图的 GraphMeta (并行)...", len(train_idx))
-        payloads = []
-        for i in train_idx:
-            g = dataset[int(i)][0]
-            src, dst = g.edges()
-            payloads.append((
-                src.cpu().clone(),
-                dst.cpu().clone(),
-                g.in_degrees().cpu().clone(),
-            ))
-        with Pool() as pool:
-            metas = list(tqdm(
-                pool.imap(_precompute_meta_worker, payloads),
-                total=len(payloads), desc="GraphMeta",
-            ))
+        logger.info("预计算 %d 张图的 GraphMeta...", len(train_idx))
+        metas = [precompute_graph_meta(dataset[int(i)][0]) for i in tqdm(train_idx, desc="GraphMeta")]
 
         result: Dict[str, List[List[Trajectory]]] = {
             t.name: [] for t in self.teachers

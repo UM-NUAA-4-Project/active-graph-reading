@@ -36,20 +36,3 @@ def precompute_graph_meta(graph: dgl.DGLGraph) -> GraphMeta:
 
     return GraphMeta(edge_key_to_id=edge_key_to_id, degrees=degrees)
 
-
-def precompute_graph_meta_from_tensors(
-    src: torch.Tensor,
-    dst: torch.Tensor,
-    degrees: torch.Tensor,
-) -> GraphMeta:
-    """从轻量 tensor 构建 GraphMeta — 仅供 multiprocessing worker 使用。
-
-    避免跨进程传输 DGL 图（spawn 模式下 DGL C++ backend 序列化会崩溃）。
-    """
-    edge_key_to_id: Dict[Tuple[int, int], int] = {}
-    for eid in range(src.shape[0]):
-        u, v = int(src[eid]), int(dst[eid])
-        key = (min(u, v), max(u, v))
-        if key not in edge_key_to_id:
-            edge_key_to_id[key] = eid
-    return GraphMeta(edge_key_to_id=edge_key_to_id, degrees=degrees)
