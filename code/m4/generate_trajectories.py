@@ -56,6 +56,8 @@ def parse_args():
                    default=['gradient', 'structural-degree', 'structural-pagerank',
                             'hybrid-0.3', 'hybrid-0.7'],
                    help='Teachers to use')
+    p.add_argument('--k-shards', type=int, default=1,
+                   help='Split training set into k shards (default: 1 = all at once)')
     return p.parse_args()
 
 
@@ -73,6 +75,20 @@ def build_teacher(name: str):
         return InfoGainTeacher()
     else:
         raise ValueError(f"Unknown teacher: {name}")
+
+
+def split_into_shards(train_idx, k):
+    """将 train_idx 均分为 k 片。"""
+    n = len(train_idx)
+    shard_size = (n + k - 1) // k  # ceil division
+    shards = []
+    for i in range(k):
+        start = i * shard_size
+        end = min(start + shard_size, n)
+        if start >= n:
+            break
+        shards.append(train_idx[start:end])
+    return shards
 
 
 def main():
@@ -124,38 +140,47 @@ def main():
         device=str(device),
     )
 
+    shards = split_into_shards(train_idx, args.k_shards)
+    k_actual = len(shards)
+    logger.info("Training set split into %d shards (~%d graphs each)", k_actual, len(shards[0]))
+
     for ratio in args.reveal_ratios:
-        logger.info("=== Reveal ratio = %.3f ===", ratio)
-        result = generator.generate_all(
-            dataset=train_dataset,
-            train_idx=train_idx,
-            reveal_ratio=ratio,
-            k_top=args.k_top,
-            max_attempts=args.max_attempts,
-        )
-
-        total_trajs = 0
-        for teacher_name, per_graph in result.items():
-            count = sum(len(trajs) for trajs in per_graph)
-            total_trajs += count
-            logger.info("  %s: %d trajectories", teacher_name, count)
-        for teacher in teachers:
-            failures = sum(1 for trajs in result[teacher.name] if len(trajs) == 0)
-            print(f"  {teacher.name:>20s}  {failures:>9d}")
-
         ratio_str = f"{ratio:.3f}".replace('.', '_')
-        output_path = output_dir / f'trajectories_r{ratio_str}.pt'
-        torch.save({
-            'trajectories': result,
-            'config': {
-                'reveal_ratio': ratio,
-                'k_top': args.k_top,
-                'max_attempts': args.max_attempts,
-                'n_graphs': len(train_idx),
-                'teacher_names': [t.name for t in teachers],
-            },
-        }, output_path)
-        logger.info("Saved %d trajectories to %s", total_trajs, output_path)
+        logger.info("=== Reveal ratio = %.3f ===", ratio)
+
+        for shard_i, shard_idx in enumerate(shards, start=1):
+            logger.info("--- Shard %d/%d (%d graphs) ---", shard_i, k_actual, len(shard_idx))
+            result = generator.generate_all(
+                dataset=train_dataset,
+                train_idx=shard_idx,
+                reveal_ratio=ratio,
+                k_top=args.k_top,
+                max_attempts=args.max_attempts,
+            )
+
+            total_trajs = 0
+            for teacher_name, per_graph in result.items():
+                count = sum(len(trajs) for trajs in per_graph)
+                total_trajs += count
+                logger.info("  %s: %d trajectories", teacher_name, count)
+            for teacher in teachers:
+                failures = sum(1 for trajs in result[teacher.name] if len(trajs) == 0)
+                logger.info("  %20s  failures: %d", teacher.name, failures)
+
+            output_path = output_dir / f'trajectories_r{ratio_str}_shard{shard_i:02d}_of_{k_actual:02d}.pt'
+            torch.save({
+                'trajectories': result,
+                'config': {
+                    'reveal_ratio': ratio,
+                    'k_top': args.k_top,
+                    'max_attempts': args.max_attempts,
+                    'n_graphs': len(shard_idx),
+                    'shard': shard_i,
+                    'k_shards': k_actual,
+                    'teacher_names': [t.name for t in teachers],
+                },
+            }, output_path)
+            logger.info("Saved %d trajectories to %s", total_trajs, output_path)
 
 
 if __name__ == '__main__':
