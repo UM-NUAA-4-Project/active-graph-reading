@@ -54,7 +54,7 @@ def parse_args():
                    help='Output directory (default: m4/output)')
     p.add_argument('--teachers', type=str, nargs='+',
                    default=['gradient', 'structural-degree', 'structural-pagerank',
-                            'hybrid-0.3', 'hybrid-0.7', 'info-gain'],
+                            'hybrid-0.3', 'hybrid-0.7'],
                    help='Teachers to use')
     return p.parse_args()
 
