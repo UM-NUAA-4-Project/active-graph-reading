@@ -47,9 +47,8 @@ class TrajectoryGenerator:
 
     def generate_all(
         self,
-        graphs: List[dgl.DGLGraph],
-        labels: List[int],
-        indices: List[int],
+        dataset,
+        train_idx: List[int],
         reveal_ratio: float,
         k_top: int = 3,
         max_attempts: int = 100,
@@ -61,16 +60,17 @@ class TrajectoryGenerator:
         """
         self.classifier.eval()
 
-        logger.info("预计算 %d 张图的 GraphMeta...", len(graphs))
-        metas = [precompute_graph_meta(g) for g in tqdm(graphs, desc="GraphMeta")]
+        logger.info("预计算 %d 张图的 GraphMeta...", len(train_idx))
+        metas = [precompute_graph_meta(dataset[int(i)][0]) for i in tqdm(train_idx, desc="GraphMeta")]
 
         result: Dict[str, List[List[Trajectory]]] = {
             t.name: [] for t in self.teachers
         }
 
-        for g_idx, (g, label, idx, meta) in enumerate(
-            tqdm(zip(graphs, labels, indices, metas), total=len(graphs), desc="Graphs")
-        ):
+        for g_idx, idx in enumerate(tqdm(train_idx, desc="Graphs")):
+            g, lbl = dataset[int(idx)]
+            label = int(lbl.item()) if hasattr(lbl, 'item') else int(lbl)
+            meta = metas[g_idx]
             budget = max(1, int(reveal_ratio * meta.n_nodes))
             for teacher in self.teachers:
                 trajs = self._generate_for_graph(

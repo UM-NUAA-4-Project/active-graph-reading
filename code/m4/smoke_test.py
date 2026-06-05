@@ -162,10 +162,14 @@ def main():
         device=str(device),
     )
 
+    # 用 list-based adapter 适配 generate_all 的新接口（无额外内存开销）
+    class _ListDataset:
+        def __getitem__(self, idx):
+            return graphs[idx], labels[idx]
+
     result = generator.generate_all(
-        graphs=graphs,
-        labels=labels,
-        indices=indices,
+        dataset=_ListDataset(),
+        train_idx=list(range(len(graphs))),
         reveal_ratio=args.reveal_ratio,
         k_top=args.k_top,
         max_attempts=args.max_attempts,

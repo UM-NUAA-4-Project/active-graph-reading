@@ -105,13 +105,10 @@ def main():
         train_idx = train_idx[:args.max_graphs]
         logger.info("Limited to %d training graphs", args.max_graphs)
 
-    graphs: list = []
-    labels: list = []
-    for i in tqdm(train_idx, desc="Loading graphs"):
-        g, lbl = dataset[int(i)]
-        g = dgl.add_self_loop(g)
-        graphs.append(g)
-        labels.append(int(lbl.item()))
+    # 原地加自环，避免额外复制一份 graphs 列表
+    logger.info("Adding self-loops to training graphs...")
+    for i in tqdm(train_idx, desc="self-loops"):
+        dataset.graphs[i] = dgl.add_self_loop(dataset.graphs[i])
 
     teachers = [build_teacher(name) for name in args.teachers]
     logger.info("Teachers: %s", [t.name for t in teachers])
@@ -127,9 +124,8 @@ def main():
     for ratio in args.reveal_ratios:
         logger.info("=== Reveal ratio = %.3f ===", ratio)
         result = generator.generate_all(
-            graphs=graphs,
-            labels=labels,
-            indices=train_idx,
+            dataset=dataset,
+            train_idx=train_idx,
             reveal_ratio=ratio,
             k_top=args.k_top,
             max_attempts=args.max_attempts,
@@ -152,7 +148,7 @@ def main():
                 'reveal_ratio': ratio,
                 'k_top': args.k_top,
                 'max_attempts': args.max_attempts,
-                'n_graphs': len(graphs),
+                'n_graphs': len(train_idx),
                 'teacher_names': [t.name for t in teachers],
             },
         }, output_path)
