@@ -57,6 +57,8 @@ def parse_args():
                    help='Split training set into k shards (default: 1 = all at once)')
     p.add_argument('--shard-idx', type=int, default=None,
                    help='Process only this shard (1-indexed). Requires --k-shards.')
+    p.add_argument('--graph-batch-size', type=int, default=32,
+                   help='Mini-batch size for cross-graph validation (default: 32)')
     return p.parse_args()
 
 
@@ -139,6 +141,7 @@ def main():
         classifier=classifier,
         subgraph_builder=subgraph_builder,
         device=str(device),
+        graph_batch_size=args.graph_batch_size,
     )
 
     shard_list = split_into_shards(train_idx, args.k_shards)

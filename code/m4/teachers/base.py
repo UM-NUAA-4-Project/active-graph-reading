@@ -70,8 +70,9 @@ class Teacher(ABC):
         seed_node: int,
         budget: int,
         edge_key_to_id: Optional[dict] = None,
-    ) -> Trajectory:
-        """基于预计算分数，从 seed 出发 greedy reveal 生成一条轨迹。"""
+    ) -> Tuple[Trajectory, GraphState]:
+        """基于预计算分数，从 seed 出发 greedy reveal 生成一条轨迹。
+        返回 (trajectory, final_state) — state 供调用方直接验证，避免重建。"""
         state = GraphState(graph, seed_node, edge_key_to_id=edge_key_to_id)
         reveal_order: List[int] = []
 
@@ -87,7 +88,7 @@ class Teacher(ABC):
         n_revealed = len(state.V_revealed)
         reveal_ratio = n_revealed / max(state.n_nodes_total, 1)
 
-        return Trajectory(
+        traj = Trajectory(
             graph_idx=-1,  # caller fills in
             seed_node=seed_node,
             reveal_ratio=reveal_ratio,
@@ -96,3 +97,4 @@ class Teacher(ABC):
             is_correct=True,   # filtered by caller
             teacher_type=self.name,
         )
+        return traj, state

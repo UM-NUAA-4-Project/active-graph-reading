@@ -1,7 +1,7 @@
 """T2: 信息增益 Teacher — 每步模拟揭示所有 frontier 候选，选熵降最大的节点。"""
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -53,7 +53,7 @@ class InfoGainTeacher(Teacher):
         seed_node: int,
         budget: int,
         edge_key_to_id: Optional[dict] = None,
-    ) -> Trajectory:
+    ) -> Tuple[Trajectory, GraphState]:
         state = GraphState(graph, seed_node, edge_key_to_id=edge_key_to_id)
         reveal_order: List[int] = []
 
@@ -107,7 +107,7 @@ class InfoGainTeacher(Teacher):
             reveal_node(state, best_node)
 
         n_revealed = len(state.V_revealed)
-        return Trajectory(
+        traj = Trajectory(
             graph_idx=-1,
             seed_node=seed_node,
             reveal_ratio=n_revealed / max(state.n_nodes_total, 1),
@@ -116,6 +116,7 @@ class InfoGainTeacher(Teacher):
             is_correct=True,
             teacher_type=self.name,
         )
+        return traj, state
 
     # ------------------------------------------------------------------
     # helpers

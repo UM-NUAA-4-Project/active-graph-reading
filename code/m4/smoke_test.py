@@ -44,6 +44,8 @@ def parse_args():
                    help='Reveal ratio (default: 0.05)')
     p.add_argument('--n-seeds', type=int, default=3,
                    help='Number of top-scored seeds per teacher per graph')
+    p.add_argument('--graph-batch-size', type=int, default=32,
+                   help='Mini-batch size for cross-graph validation')
     return p.parse_args()
 
 
@@ -158,7 +160,9 @@ def main():
         classifier=classifier,
         subgraph_builder=subgraph_builder,
         device=str(device),
+        graph_batch_size=args.graph_batch_size,
     )
+    print(f"Graph batch size: {args.graph_batch_size}")
 
     # 用 list-based adapter 适配 generate_all 的新接口（无额外内存开销）
     class _ListDataset:
