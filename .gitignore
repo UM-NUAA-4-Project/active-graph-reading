@@ -11,3 +11,6 @@ build/
 CLAUDE.md
 ../.claude/
 .claude/settings.local.json
+
+# PyTorch model/trajectory files
+*.pt
