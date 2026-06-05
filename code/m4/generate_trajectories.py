@@ -95,20 +95,23 @@ def main():
     logger.info("Loaded classifier (val_acc=%.4f)", val_acc)
     classifier.eval()
 
-    # 加载训练集
+    # 加载训练集 → 提取子集 → 释放原始数据 → 加自环
     logger.info("Loading OGBG-PPA train split (root=%s)...", args.root)
     dataset = DglGraphPropPredDataset(name='ogbg-ppa', root=args.root)
     split = dataset.get_idx_split()
     train_idx = split['train'].tolist()
-
     if args.max_graphs > 0:
         train_idx = train_idx[:args.max_graphs]
         logger.info("Limited to %d training graphs", args.max_graphs)
 
-    # 原地加自环，避免额外复制一份 graphs 列表
-    logger.info("Adding self-loops to training graphs...")
-    for i in tqdm(train_idx, desc="self-loops"):
-        dataset.graphs[i] = dgl.add_self_loop(dataset.graphs[i])
+    logger.info("Extracting training subset (%d graphs)...", len(train_idx))
+    train_dataset = [dataset[int(i)] for i in tqdm(train_idx, desc="Extract train")]
+    del dataset
+
+    for i in tqdm(range(len(train_dataset)), desc="self-loops"):
+        train_dataset[i] = (dgl.add_self_loop(train_dataset[i][0]), train_dataset[i][1])
+
+    train_idx = list(range(len(train_dataset)))
 
     teachers = [build_teacher(name) for name in args.teachers]
     logger.info("Teachers: %s", [t.name for t in teachers])
@@ -124,7 +127,7 @@ def main():
     for ratio in args.reveal_ratios:
         logger.info("=== Reveal ratio = %.3f ===", ratio)
         result = generator.generate_all(
-            dataset=dataset,
+            dataset=train_dataset,
             train_idx=train_idx,
             reveal_ratio=ratio,
             k_top=args.k_top,

@@ -1,6 +1,7 @@
 """TrajectoryGenerator — 生成→过滤→选 top-k→重试循环。"""
 
 import logging
+from multiprocessing import Pool
 from typing import Dict, List, Optional, Tuple
 
 import torch
@@ -19,6 +20,11 @@ logger = logging.getLogger(__name__)
 
 def _deterministic_seed(graph_index: int, seed_i: int, n_nodes: int) -> int:
     return (graph_index * 31 + seed_i * 17 + 7) % n_nodes
+
+
+def _precompute_meta_worker(graph: dgl.DGLGraph) -> GraphMeta:
+    """模块级 worker，供 multiprocessing.Pool 使用。"""
+    return precompute_graph_meta(graph)
 
 
 class TrajectoryGenerator:
@@ -60,8 +66,13 @@ class TrajectoryGenerator:
         """
         self.classifier.eval()
 
-        logger.info("预计算 %d 张图的 GraphMeta...", len(train_idx))
-        metas = [precompute_graph_meta(dataset[int(i)][0]) for i in tqdm(train_idx, desc="GraphMeta")]
+        logger.info("预计算 %d 张图的 GraphMeta (并行)...", len(train_idx))
+        graphs = [dataset[int(i)][0] for i in train_idx]
+        with Pool() as pool:
+            metas = list(tqdm(
+                pool.imap(_precompute_meta_worker, graphs),
+                total=len(graphs), desc="GraphMeta",
+            ))
 
         result: Dict[str, List[List[Trajectory]]] = {
             t.name: [] for t in self.teachers
