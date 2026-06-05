@@ -55,8 +55,9 @@ def parse_args():
                    help='Teachers to use')
     p.add_argument('--k-shards', type=int, default=1,
                    help='Split training set into k shards (default: 1 = all at once)')
-    p.add_argument('--shard-idx', type=int, default=None,
-                   help='Process only this shard (1-indexed). Requires --k-shards.')
+    p.add_argument('--shard-idx', type=int, nargs='+', default=None,
+                   help='Process only this/these shards (1-indexed). '
+                        'Accepts multiple: --shard-idx 1 3 5')
     p.add_argument('--graph-batch-size', type=int, default=32,
                    help='Mini-batch size for cross-graph validation (default: 32)')
     return p.parse_args()
@@ -149,11 +150,13 @@ def main():
     logger.info("Training set split into %d shards (~%d graphs each)", k_total, len(shard_list[0]))
 
     if args.shard_idx is not None:
-        if not (1 <= args.shard_idx <= k_total):
-            raise ValueError(f"--shard-idx={args.shard_idx} out of range [1, {k_total}]")
-        shards = {args.shard_idx: shard_list[args.shard_idx - 1]}
-        logger.info("Processing only shard %d/%d (%d graphs)",
-                     args.shard_idx, k_total, len(shards[args.shard_idx]))
+        for si in args.shard_idx:
+            if not (1 <= si <= k_total):
+                raise ValueError(f"--shard-idx={si} out of range [1, {k_total}]")
+        shards = {si: shard_list[si - 1] for si in sorted(set(args.shard_idx))}
+        logger.info("Processing %d shard(s): %s (%d graphs total)",
+                     len(shards), sorted(shards.keys()),
+                     sum(len(s) for s in shards.values()))
     else:
         shards = {i + 1: s for i, s in enumerate(shard_list)}
 
