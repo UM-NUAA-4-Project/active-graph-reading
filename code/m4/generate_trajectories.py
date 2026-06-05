@@ -1,9 +1,8 @@
 """M4 Teacher 轨迹生成 CLI 入口。
 
 使用方式：
-  python generate_trajectories.py --root D:\\ogb-master\\dataset --load ../m3/best_model.pt
-  python generate_trajectories.py --root D:\\ogb-master\\dataset --load ../m3/best_model.pt \\
-      --max-graphs 10 --reveal-ratios 0.01 0.05 --device cuda:0
+  python code/m4/generate_trajectories.py --root /mnt/data --load code/m3/best_model_ft.pt 
+  --device cuda:0 --n-seeds 50 --k-shards 10 --shard-idx 1
 """
 
 import argparse
@@ -44,24 +43,24 @@ def parse_args():
     p.add_argument('--reveal-ratios', type=float, nargs='+',
                    default=[0.10, 0.15, 0.20, 0.25],
                    help='Reveal ratios (e.g. 0.01 0.05 0.10)')
-    p.add_argument('--k-top', type=int, default=3,
-                   help='Top-k trajectories per graph per teacher')
-    p.add_argument('--max-attempts', type=int, default=100,
-                   help='Max seed attempts per graph')
+    p.add_argument('--n-seeds', type=int, default=5,
+                   help='Number of top-scored seeds per teacher per graph')
     p.add_argument('--max-graphs', type=int, default=0,
                    help='Limit number of training graphs (0 = all)')
     p.add_argument('--output-dir', type=str, default=None,
                    help='Output directory (default: m4/output)')
     p.add_argument('--teachers', type=str, nargs='+',
                    default=['gradient', 'structural-degree', 'structural-pagerank',
-                            'hybrid-0.3', 'hybrid-0.7'],
+                            'hybrid-0.3', 'hybrid-0.7','info-gain'],
                    help='Teachers to use')
     p.add_argument('--k-shards', type=int, default=1,
                    help='Split training set into k shards (default: 1 = all at once)')
+    p.add_argument('--shard-idx', type=int, default=None,
+                   help='Process only this shard (1-indexed). Requires --k-shards.')
     return p.parse_args()
 
 
-def build_teacher(name: str):
+def build_teacher(name: str, classifier=None, subgraph_builder=None, device='cpu'):
     if name == 'gradient':
         return GradientTeacher()
     elif name == 'structural-degree':
@@ -72,7 +71,8 @@ def build_teacher(name: str):
         alpha = float(name.split('-')[1])
         return HybridTeacher(alpha=alpha)
     elif name == 'info-gain':
-        return InfoGainTeacher()
+        return InfoGainTeacher(classifier=classifier, subgraph_builder=subgraph_builder,
+                               device=device)
     else:
         raise ValueError(f"Unknown teacher: {name}")
 
@@ -129,10 +129,11 @@ def main():
 
     train_idx = list(range(len(train_dataset)))
 
-    teachers = [build_teacher(name) for name in args.teachers]
-    logger.info("Teachers: %s", [t.name for t in teachers])
-
     subgraph_builder = SubgraphBuilder()
+
+    teachers = [build_teacher(name, classifier=classifier, subgraph_builder=subgraph_builder,
+                              device=str(device)) for name in args.teachers]
+    logger.info("Teachers: %s", [t.name for t in teachers])
     generator = TrajectoryGenerator(
         teachers=teachers,
         classifier=classifier,
@@ -140,22 +141,30 @@ def main():
         device=str(device),
     )
 
-    shards = split_into_shards(train_idx, args.k_shards)
-    k_actual = len(shards)
-    logger.info("Training set split into %d shards (~%d graphs each)", k_actual, len(shards[0]))
+    shard_list = split_into_shards(train_idx, args.k_shards)
+    k_total = len(shard_list)
+    logger.info("Training set split into %d shards (~%d graphs each)", k_total, len(shard_list[0]))
+
+    if args.shard_idx is not None:
+        if not (1 <= args.shard_idx <= k_total):
+            raise ValueError(f"--shard-idx={args.shard_idx} out of range [1, {k_total}]")
+        shards = {args.shard_idx: shard_list[args.shard_idx - 1]}
+        logger.info("Processing only shard %d/%d (%d graphs)",
+                     args.shard_idx, k_total, len(shards[args.shard_idx]))
+    else:
+        shards = {i + 1: s for i, s in enumerate(shard_list)}
 
     for ratio in args.reveal_ratios:
         ratio_str = f"{ratio:.3f}".replace('.', '_')
         logger.info("=== Reveal ratio = %.3f ===", ratio)
 
-        for shard_i, shard_idx in enumerate(shards, start=1):
-            logger.info("--- Shard %d/%d (%d graphs) ---", shard_i, k_actual, len(shard_idx))
+        for shard_i, shard_idx in sorted(shards.items()):
+            logger.info("--- Shard %d/%d (%d graphs) ---", shard_i, k_total, len(shard_idx))
             result = generator.generate_all(
                 dataset=train_dataset,
                 train_idx=shard_idx,
                 reveal_ratio=ratio,
-                k_top=args.k_top,
-                max_attempts=args.max_attempts,
+                n_seeds=args.n_seeds,
             )
 
             total_trajs = 0
@@ -167,16 +176,15 @@ def main():
                 failures = sum(1 for trajs in result[teacher.name] if len(trajs) == 0)
                 logger.info("  %20s  failures: %d", teacher.name, failures)
 
-            output_path = output_dir / f'trajectories_r{ratio_str}_shard{shard_i:02d}_of_{k_actual:02d}.pt'
+            output_path = output_dir / f'trajectories_r{ratio_str}_shard{shard_i:02d}_of_{k_total:02d}.pt'
             torch.save({
                 'trajectories': result,
                 'config': {
                     'reveal_ratio': ratio,
-                    'k_top': args.k_top,
-                    'max_attempts': args.max_attempts,
+                    'n_seeds': args.n_seeds,
                     'n_graphs': len(shard_idx),
                     'shard': shard_i,
-                    'k_shards': k_actual,
+                    'k_shards': k_total,
                     'teacher_names': [t.name for t in teachers],
                 },
             }, output_path)

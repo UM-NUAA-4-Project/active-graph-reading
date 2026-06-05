@@ -4,8 +4,8 @@ Usage:
   # Step 1: 采样
   python code/m4/sample_ppa_smoke.py --root D:\\ogb-master\\dataset
   # Step 2: 冒烟测试
-  python code/m4/smoke_test.py --load code\small_checkpoints\best_model.pt 
-  --reveal-ratio 0.1 --max_attempts 100 --device cuda:0
+  python code/m4/smoke_test.py --load code\small_checkpoints\best_model.pt
+  --reveal-ratio 0.1 --n-seeds 5 --device cuda:0
 """
 
 import argparse
@@ -42,10 +42,8 @@ def parse_args():
                    help='Device (cpu / cuda:0)') 
     p.add_argument('--reveal-ratio', type=float, default=0.05,
                    help='Reveal ratio (default: 0.05)')
-    p.add_argument('--k-top', type=int, default=2,
-                   help='Top-k trajectories per graph per teacher')
-    p.add_argument('--max_attempts', type=int, default=50,
-                   help='Max attempts to generate trajectories per graph')
+    p.add_argument('--n-seeds', type=int, default=3,
+                   help='Number of top-scored seeds per teacher per graph')
     return p.parse_args()
 
 
@@ -171,8 +169,7 @@ def main():
         dataset=_ListDataset(),
         train_idx=list(range(len(graphs))),
         reveal_ratio=args.reveal_ratio,
-        k_top=args.k_top,
-        max_attempts=args.max_attempts,
+        n_seeds=args.n_seeds,
     )
 
     total_correct = 0
@@ -190,7 +187,7 @@ def main():
         print(f"  {tname}: {count} trajectories, {correct_count} correct")
 
     print(f"  Total: {total_trajs} trajectories across {len(graphs)} graphs")
-    assert total_correct == total_trajs, "All trajectories must have is_correct=True!"
+    assert total_correct == total_trajs, "_generate_for_graph should only return correct trajectories!"
     print("  [OK] All trajectories is_correct=True")
 
     # -------------------------------------------------------------------

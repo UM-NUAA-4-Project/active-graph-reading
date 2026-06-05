@@ -22,6 +22,7 @@ class Trajectory:
     final_pred: int
     is_correct: bool
     teacher_type: str
+    ce: float = 0.0
 
 
 class Teacher(ABC):
