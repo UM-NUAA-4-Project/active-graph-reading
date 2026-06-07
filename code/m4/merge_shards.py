@@ -3,7 +3,7 @@
 将 m4/output/ 下的分片 .pt 文件按 reveal_ratio 合并为完整文件。
 
 用法:
-  python code/m4/merge_shards.py [--input-dir m4/output] [--output-dir m4/output]
+  python ./code/m4/merge_shards.py --input-dir ./code/m4/output --output-dir ./code/m4/output
 """
 
 import argparse

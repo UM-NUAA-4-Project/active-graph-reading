@@ -7,7 +7,7 @@
 同时保存统计数据为 JSON。
 
 用法:
-  python code/m4/analyze_trajectories.py [--input-dir m4/output] [--output-dir m4/output]
+  python ./code/m4/analyze_trajectories.py --input-dir ./code/m4/filtered --output-dir ./code/m4/analysis
 """
 
 import argparse
@@ -45,14 +45,14 @@ def parse_args():
 
 def load_merged_files(input_dir: Path) -> dict:
     """加载所有 merged .pt 文件, 返回 {ratio_str: data}."""
-    files = sorted(input_dir.glob('trajectories_merged_r*.pt'))
+    files = sorted(input_dir.glob('trajectories_filtered_r*.pt'))
     if not files:
         logger.error("No merged files found in %s", input_dir)
         sys.exit(1)
 
     result = {}
     for f in files:
-        ratio_str = f.stem.replace('trajectories_merged_r', '')
+        ratio_str = f.stem.replace('trajectories_filtered_r', '')
         data = torch.load(f, map_location='cpu', weights_only=False)
         result[ratio_str] = data
         logger.info("Loaded %s: %d graphs", f.name, data['config']['n_graphs'])
@@ -260,7 +260,7 @@ def main():
         for tn in teacher_names:
             teacher_label_avg_ce[tn] = {}
             for k in range(N_CLASSES):
-                teacher_label_avg_ce[tn][k] = stats['per_teacher'][tn][
+                teacher_label_avg_ce[tn][k] = stats['per_teacher'][tn][ 
                     'per_label_avg_ce'].get(str(k), float('nan'))
         plot_ce_heatmap(teacher_label_avg_ce,
                         output_dir / f'{prefix}_ce_heatmap.png',

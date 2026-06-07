@@ -4,8 +4,7 @@
 同一 (graph_idx, reveal_ratio) 下，高度相似的轨迹只保留 CE 最低的。
 
 用法:
-  python code/m4/filter_trajectories.py [--input-dir m4/output] [--output-dir m4/output]
-                                        [--threshold 0.85]
+  python ./code/m4/filter_trajectories.py --input-dir ./code/m4/output --output-dir ./code/m4/filtered --threshold 0.85
 """
 
 import argparse
