@@ -38,7 +38,7 @@ def parse_args():
     return p.parse_args()
 
 
-def cosine_similarity(set1: Set[int], set2: Set[int]) -> float:
+def similarity(set1: Set[int], set2: Set[int]) -> float:
     """计算两个轨迹集表示的余弦相似度。
 
     cos_sim = |A ∩ B| / sqrt(|A| * |B|)
@@ -68,7 +68,7 @@ def dedup_group(trajs: List[Trajectory], threshold: float) -> List[Trajectory]:
         traj_set = set(traj.reveal_order)
         is_dup = False
         for ks in kept_sets:
-            if cosine_similarity(traj_set, ks) > threshold:
+            if similarity(traj_set, ks) > threshold:
                 is_dup = True
                 break
 

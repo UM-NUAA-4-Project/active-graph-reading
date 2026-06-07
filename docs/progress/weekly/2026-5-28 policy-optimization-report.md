@@ -160,7 +160,7 @@ next_node = argmax(frontier_scores)            # int — 不可微！
 
 一幅图从n个seed开始生成轨迹，从中依靠交叉熵选出top-k条路径
 
-T1 (gradient): 选使 classifier loss 下降最快的 frontier node；生成轨迹t11, t12, t13, ……, t1n
+T1 (gradient): 选梯度归因分数最高的 frontier node；生成轨迹t11, t12, t13, ……, t1n
 
 T2 (info-gain): 选使 classifier entropy 下降最多的 frontier node;生成轨迹t21, t22, t23, ……, t2n
 

@@ -315,7 +315,7 @@ def plot_ce_trend_across_budgets(all_ratio_data: dict, output_path: Path):
     class_total = {l: sum(class_ce_trend[l]['counts']) for l in range(N_CLASSES)}
     max_count = max(class_total.values()) if any(class_total.values()) else 1
 
-    highlight_classes = [l for l in range(N_CLASSES) if class_total[l] >= 500] 
+    highlight_classes = [l for l in range(N_CLASSES) if class_total[l] > 0] 
     palette = plt.cm.tab10(np.linspace(0, 1, len(highlight_classes)))
 
     fig, ax = plt.subplots(figsize=(14, 7))
