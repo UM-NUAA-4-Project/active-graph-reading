@@ -59,6 +59,31 @@ def load_merged_files(input_dir: Path) -> dict:
     return result
 
 
+def load_all_ratio_files(input_dir: Path, glob_pattern: str = 'trajectories_filtered_r*.pt') -> dict:
+    """加载所有 budget ratio 的文件, 返回 {ratio_float: [(teacher_name, traj), ...]}."""
+    files = sorted(input_dir.glob(glob_pattern))
+    if not files:
+        logger.error("No files matching '%s' found in %s", glob_pattern, input_dir)
+        sys.exit(1)
+
+    result = {}
+    for f in files:
+        stem = f.stem
+        for prefix in ['trajectories_filtered_r', 'trajectories_merged_r']:
+            if stem.startswith(prefix):
+                ratio_str = stem[len(prefix):]
+                break
+        else:
+            ratio_str = stem.split('_r')[-1] if '_r' in stem else stem
+
+        ratio_float = float(ratio_str.replace('_', '.'))
+        data = torch.load(f, map_location='cpu', weights_only=False)
+        flat = flatten_trajectories(data)
+        result[ratio_float] = flat
+        logger.info("Loaded %s: %d trajectories (ratio=%.3f)", f.name, len(flat), ratio_float)
+    return result
+
+
 def flatten_trajectories(data: dict):
     """将嵌套的 trajectories dict 展平为 [(teacher_name, traj), ...]."""
     trajs = data['trajectories']
@@ -100,7 +125,7 @@ def compute_stats(all_flat: list, teacher_names: list):
         for label in range(N_CLASSES):
             s = teacher_label_ce_sum[tn].get(label, 0.0)
             c = teacher_label_ce_cnt[tn].get(label, 0)
-            teacher_label_avg_ce[tn][label] = s / c if c > 0 else float('nan')
+            teacher_label_avg_ce[tn][label] = s / c if c > 0 else float('NaN')
 
     stats = {
         'total_trajectories': len(all_flat),
@@ -182,14 +207,14 @@ def plot_ce_heatmap(teacher_label_avg_ce: dict, output_path: Path,
     teacher_names = list(teacher_label_avg_ce.keys())
     labels = list(range(N_CLASSES))
 
-    data = np.full((len(teacher_names), N_CLASSES), np.nan)
+    data = np.full((len(teacher_names), N_CLASSES), np.NaN)
     for i, tn in enumerate(teacher_names):
         for j, label in enumerate(labels):
-            data[i, j] = teacher_label_avg_ce[tn].get(label, np.nan)
+            data[i, j] = teacher_label_avg_ce[tn].get(label, np.NaN)
 
     fig, ax = plt.subplots(figsize=(16, 1.2 + 0.5 * len(teacher_names)))
 
-    # 用合适的 colormap, nan 显示为灰色
+    # 用合适的 colormap, NaN 显示为灰色
     cmap = plt.cm.YlOrRd
     cmap.set_bad('lightgray')
 
@@ -205,12 +230,161 @@ def plot_ce_heatmap(teacher_label_avg_ce: dict, output_path: Path,
     cbar = fig.colorbar(im, ax=ax, shrink=0.85)
     cbar.set_label('Avg CE')
 
-    # 在非 nan 格子标注数值
+    # 在非 NaN 格子标注数值
     for i in range(len(teacher_names)):
         for j in range(N_CLASSES):
             v = data[i, j]
             if not np.isnan(v):
                 ax.text(j, i, f'{v:.2f}', ha='center', va='center', fontsize=5)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    logger.info("Saved %s", output_path)
+
+
+def plot_per_label_ce_by_budget(all_ratio_data: dict, output_path: Path):
+    """分组柱状图: 不同预算下每类标签的平均 CE. x=类别, 分组=budget ratio."""
+    ratios = sorted(all_ratio_data.keys())
+
+    ce_matrix = {}  # ce_matrix[label][ratio] = avg_ce
+    for ratio in ratios:
+        flat = all_ratio_data[ratio]
+        label_ce_sum = defaultdict(float)
+        label_ce_cnt = defaultdict(int)
+        for _, traj in flat:
+            label = int(traj.final_pred)
+            label_ce_sum[label] += traj.ce
+            label_ce_cnt[label] += 1
+        for label in range(N_CLASSES):
+            if label not in ce_matrix:
+                ce_matrix[label] = {}
+            s = label_ce_sum.get(label, 0.0)
+            c = label_ce_cnt.get(label, 0)
+            ce_matrix[label][ratio] = s / c if c > 0 else 0.0
+
+    labels = list(range(N_CLASSES))
+    n_ratios = len(ratios)
+    x = np.arange(len(labels))
+    width = 0.8 / n_ratios
+
+    fig, ax = plt.subplots(figsize=(20, 6))
+    colors = plt.cm.viridis(np.linspace(0.1, 0.9, n_ratios))
+
+    for i, ratio in enumerate(ratios):
+        values = [ce_matrix[l].get(ratio, 0) for l in labels]
+        offset = (i - n_ratios / 2 + 0.5) * width
+        ax.bar(x + offset, values, width, label=f'ratio={ratio:.3f}',
+               color=colors[i], edgecolor='white', linewidth=0.3)
+
+    ax.set_xlabel('Class Label')
+    ax.set_ylabel('Average Cross-Entropy')
+    ax.set_title('Per-Class Average CE by Budget Ratio')
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=7)
+    ax.legend(fontsize=8, ncol=n_ratios)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    logger.info("Saved %s", output_path)
+
+
+def plot_ce_trend_across_budgets(all_ratio_data: dict, output_path: Path):
+    """折线图: 每类 CE 随 budget 变化趋势. x=揭示比例, y=平均 CE, 每条线一个类."""
+    ratios = sorted(all_ratio_data.keys())
+
+    class_ce_trend = {}
+    for ratio in ratios:
+        flat = all_ratio_data[ratio]
+        label_ce_sum = defaultdict(float)
+        label_ce_cnt = defaultdict(int)
+        for _, traj in flat:
+            label = int(traj.final_pred)
+            label_ce_sum[label] += traj.ce
+            label_ce_cnt[label] += 1
+        for label in range(N_CLASSES):
+            if label not in class_ce_trend:
+                class_ce_trend[label] = {'ratios': [], 'ces': [], 'counts': []}
+            s = label_ce_sum.get(label, 0.0)
+            c = label_ce_cnt.get(label, 0)
+            class_ce_trend[label]['ratios'].append(ratio)
+            class_ce_trend[label]['ces'].append(s / c if c > 0 else float('NaN'))
+            class_ce_trend[label]['counts'].append(c)
+
+    class_total = {l: sum(class_ce_trend[l]['counts']) for l in range(N_CLASSES)}
+    max_count = max(class_total.values()) if any(class_total.values()) else 1
+
+    highlight_classes = [l for l in range(N_CLASSES) if class_total[l] >= 500] 
+    palette = plt.cm.tab10(np.linspace(0, 1, len(highlight_classes)))
+
+    fig, ax = plt.subplots(figsize=(14, 7))
+
+    for label in range(N_CLASSES):
+        trend = class_ce_trend[label]
+        r = trend['ratios']
+        c = trend['ces']
+        total = class_total[label]
+        if total == 0:
+            continue
+        if label in highlight_classes:
+            color = palette[list(highlight_classes).index(label)]
+            ax.plot(r, c, 'o-', linewidth=2.0, markersize=6, color=color,
+                    label=f'class {label} (n={total})')
+        else:
+            alpha = 0.12 + 0.25 * (total / max_count)
+            ax.plot(r, c, '-', linewidth=0.5, color='gray', alpha=min(alpha, 0.6))
+
+    ax.set_xlabel('Reveal Ratio')
+    ax.set_ylabel('Average Cross-Entropy')
+    ax.set_title('CE Trend Across Budgets — Highlighted: Key Classes')
+    ax.legend(fontsize=7, ncol=2, loc='upper left')
+    ax.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    logger.info("Saved %s", output_path)
+
+
+def plot_zero_traj_heatmap(all_ratio_data: dict, output_path: Path):
+    """热力图: 不同预算下哪些类别没有轨迹. 行=类别, 列=budget, 绿=有数据, 红=无数据."""
+    ratios = sorted(all_ratio_data.keys())
+
+    has_data = np.ones((N_CLASSES, len(ratios)))
+
+    for j, ratio in enumerate(ratios):
+        flat = all_ratio_data[ratio]
+        label_set = set()
+        for _, traj in flat:
+            label_set.add(int(traj.final_pred))
+        for i in range(N_CLASSES):
+            if i not in label_set:
+                has_data[i, j] = 0
+
+    fig, ax = plt.subplots(figsize=(8, max(8, N_CLASSES * 0.32)))
+
+    cmap = plt.cm.RdYlGn
+    im = ax.imshow(has_data, aspect='auto', cmap=cmap, vmin=0, vmax=1)
+
+    ax.set_xticks(range(len(ratios)))
+    ax.set_xticklabels([f'{r:.3f}' for r in ratios], fontsize=9)
+    ax.set_yticks(range(N_CLASSES))
+    ax.set_yticklabels(range(N_CLASSES), fontsize=7)
+    ax.set_xlabel('Reveal Ratio')
+    ax.set_ylabel('Class Label')
+    ax.set_title('Classes with Trajectories (Green) vs Missing (Red) at Each Budget')
+
+    missing_counts = np.sum(has_data == 0, axis=0)
+    for j in range(len(ratios)):
+        ax.text(j, N_CLASSES, f'miss\n{int(missing_counts[j])}', ha='center', fontsize=7,
+                color='darkred', fontweight='bold', va='top')
+
+    for i in range(N_CLASSES):
+        for j in range(len(ratios)):
+            if has_data[i, j] == 0:
+                ax.text(j, i, '×', ha='center', va='center', fontsize=7, color='darkred',
+                        fontweight='bold')
 
     fig.tight_layout()
     fig.savefig(output_path, dpi=150)
@@ -261,7 +435,7 @@ def main():
             teacher_label_avg_ce[tn] = {}
             for k in range(N_CLASSES):
                 teacher_label_avg_ce[tn][k] = stats['per_teacher'][tn][ 
-                    'per_label_avg_ce'].get(str(k), float('nan'))
+                    'per_label_avg_ce'].get(str(k), float('NaN'))
         plot_ce_heatmap(teacher_label_avg_ce,
                         output_dir / f'{prefix}_ce_heatmap.png',
                         title_suffix=title_suf)
@@ -269,6 +443,29 @@ def main():
         logger.info("  Total trajectories: %d", stats['total_trajectories'])
         for tn in teacher_names:
             logger.info("    %s: %d trajectories", tn, stats['per_teacher'][tn]['total'])
+
+    # --- 跨 budget 分析 ---
+    logger.info("=== Cross-Budget Analysis ===")
+    all_ratio_data = load_all_ratio_files(input_dir)
+
+    plot_per_label_ce_by_budget(all_ratio_data,
+                                output_dir / 'analysis_cross_budget_ce.png')
+    plot_ce_trend_across_budgets(all_ratio_data,
+                                 output_dir / 'analysis_ce_trend.png')
+    plot_zero_traj_heatmap(all_ratio_data,
+                           output_dir / 'analysis_zero_traj_heatmap.png')
+
+    # 补充 JSON: 跨 budget 统计
+    cross_stats = {}
+    for ratio, flat in sorted(all_ratio_data.items()):
+        missing = sorted([l for l in range(N_CLASSES)
+                          if not any(int(t.final_pred) == l for _, t in flat)])
+        cross_stats[str(ratio)] = {
+            'total_trajectories': len(flat),
+            'missing_classes': missing,
+            'n_missing': len(missing),
+        }
+    all_stats['cross_budget'] = cross_stats
 
     # 保存 JSON
     json_path = output_dir / 'analysis_stats.json'

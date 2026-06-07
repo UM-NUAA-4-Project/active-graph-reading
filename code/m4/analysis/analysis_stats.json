@@ -1794,5 +1794,56 @@
         }
       }
     }
+  },
+  "cross_budget": {
+    "0.05": {
+      "total_trajectories": 27321,
+      "missing_classes": [
+        0,
+        5,
+        10,
+        11,
+        13,
+        14,
+        16,
+        19,
+        20,
+        27,
+        28,
+        32,
+        35
+      ],
+      "n_missing": 13
+    },
+    "0.1": {
+      "total_trajectories": 37347,
+      "missing_classes": [
+        0,
+        16,
+        19,
+        30,
+        32
+      ],
+      "n_missing": 5
+    },
+    "0.15": {
+      "total_trajectories": 40804,
+      "missing_classes": [
+        0,
+        13,
+        28,
+        32
+      ],
+      "n_missing": 4
+    },
+    "0.2": {
+      "total_trajectories": 40996,
+      "missing_classes": [
+        0,
+        28,
+        32
+      ],
+      "n_missing": 3
+    }
   }
 }
