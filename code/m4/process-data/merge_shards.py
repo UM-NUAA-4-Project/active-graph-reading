@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 def parse_args():
     p = argparse.ArgumentParser(description='M4 Trajectory Shard Merger')
     p.add_argument('--input-dir', type=str, default=None,
-                   help='Directory containing shard .pt files (default: m4/output)')
+                   help='Directory containing shard .pt files (default: m4/data/stage1_merged)')
     p.add_argument('--output-dir', type=str, default=None,
                    help='Output directory for merged files (default: same as input-dir)')
     return p.parse_args()
@@ -41,7 +41,7 @@ def extract_ratio(filename: str) -> str:
 
 def main():
     args = parse_args()
-    input_dir = Path(args.input_dir) if args.input_dir else _script_dir / 'output'
+    input_dir = Path(args.input_dir) if args.input_dir else _script_dir / 'data' / 'stage1_merged'
     output_dir = Path(args.output_dir) if args.output_dir else input_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 

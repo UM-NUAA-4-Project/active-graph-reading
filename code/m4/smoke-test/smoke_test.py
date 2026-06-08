@@ -2,9 +2,9 @@
 
 Usage:
   # Step 1: 采样
-  python code/m4/sample_ppa_smoke.py --root D:\\ogb-master\\dataset
+  python code/m4/smoke-test/sample_ppa_smoke.py --root D:\\ogb-master\\dataset
   # Step 2: 冒烟测试
-  python code/m4/smoke_test.py --load code\small_checkpoints\best_model.pt
+  python code/m4/smoke-test/smoke_test.py --load code\small_checkpoints\best_model.pt
   --reveal-ratio 0.1 --n-seeds 5 --device cuda:0
 """
 

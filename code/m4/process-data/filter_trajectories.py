@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 def parse_args():
     p = argparse.ArgumentParser(description='M4 Trajectory Filter (vector-based dedup)')
     p.add_argument('--input-dir', type=str, default=None,
-                   help='Directory containing merged .pt files (default: m4/output)')
+                   help='Directory containing merged .pt files (default: m4/data/stage2_trimmed)')
     p.add_argument('--output-dir', type=str, default=None,
                    help='Output directory for filtered files (default: same as input-dir)')
     p.add_argument('--threshold', type=float, default=0.85,
@@ -121,7 +121,7 @@ def filter_trajectories(trajs_dict: dict, threshold: float) -> Tuple[dict, int, 
 
 def main():
     args = parse_args()
-    input_dir = Path(args.input_dir) if args.input_dir else _script_dir / 'output'
+    input_dir = Path(args.input_dir) if args.input_dir else _script_dir / 'data' / 'stage2_trimmed'
     output_dir = Path(args.output_dir) if args.output_dir else input_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 

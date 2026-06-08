@@ -394,8 +394,8 @@ def plot_zero_traj_heatmap(all_ratio_data: dict, output_path: Path):
 
 def main():
     args = parse_args()
-    input_dir = Path(args.input_dir) if args.input_dir else _script_dir / 'output'
-    output_dir = Path(args.output_dir) if args.output_dir else input_dir
+    input_dir = Path(args.input_dir) if args.input_dir else _script_dir / 'data' / 'stage3_filtered'
+    output_dir = Path(args.output_dir) if args.output_dir else _script_dir / 'analysis'
     output_dir.mkdir(parents=True, exist_ok=True)
 
     merged_data = load_merged_files(input_dir)
