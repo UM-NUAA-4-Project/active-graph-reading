@@ -6,7 +6,7 @@
   - 例外：12, 21, 24, 4 虽 >= 1000 但仍保留 0.20
 
 用法:
-  python ./code/m4/trim_budget.py --input-dir ./code/m4/data/stage1_merged --output-dir ./code/m4/data/stage2_trimmed
+  python code\m4\process-data\trim_budget.py --input-dir code\m4\data\stage2_filtered --output-dir ./code/m4/data/stage3_trimmed
 """
 
 import argparse
@@ -18,7 +18,7 @@ from pathlib import Path
 import torch
 
 _script_dir = Path(__file__).resolve().parent
-_parent_dir = _script_dir.parent
+_parent_dir = _script_dir.parent.parent  # process-data/ → m4/ → code/
 if str(_parent_dir) not in sys.path:
     sys.path.insert(0, str(_parent_dir))
 
@@ -42,7 +42,7 @@ def parse_args():
 
 def load_all_merged(input_dir: Path) -> dict:
     """加载所有 merged .pt 文件, 返回 {ratio_float: (data_dict, file_path)}."""
-    files = sorted(input_dir.glob('trajectories_merged_r*.pt'))
+    files = sorted(input_dir.glob('trajectories_filtered_r*.pt'))
     if not files:
         logger.error("No merged files found in %s", input_dir)
         sys.exit(1)
@@ -50,7 +50,7 @@ def load_all_merged(input_dir: Path) -> dict:
     result = {}
     for f in files:
         stem = f.stem
-        ratio_str = stem.replace('trajectories_merged_r', '')
+        ratio_str = stem.replace('trajectories_filtered_r', '')
         ratio_float = float(ratio_str.replace('_', '.'))
         data = torch.load(f, map_location='cpu', weights_only=False)
         result[ratio_float] = data
@@ -102,8 +102,8 @@ def filter_r020(data: dict) -> tuple:
 
 def main():
     args = parse_args()
-    input_dir = Path(args.input_dir) if args.input_dir else _script_dir / 'data' / 'stage1_merged'
-    output_dir = Path(args.output_dir) if args.output_dir else _script_dir / 'data' / 'stage2_trimmed'
+    input_dir = Path(args.input_dir) 
+    output_dir = Path(args.output_dir) 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     all_data = load_all_merged(input_dir)
@@ -146,7 +146,7 @@ def main():
         grand_before += before_count
         grand_after += after_count
 
-        out_path = output_dir / f'trajectories_merged_r{ratio_str}.pt'
+        out_path = output_dir / f'trajectories_trimmed_r{ratio_str}.pt'
         torch.save(filtered_data, out_path)
         logger.info("  Saved %s", out_path)
 
@@ -159,7 +159,7 @@ def main():
     after_counts = defaultdict(int)
     for ratio, data in sorted(all_data.items()):
         ratio_str = f"{ratio:.3f}".replace('.', '_')
-        out_path = output_dir / f'trajectories_merged_r{ratio_str}.pt'
+        out_path = output_dir / f'trajectories_trimmed_r{ratio_str}.pt'
         reloaded = torch.load(out_path, map_location='cpu', weights_only=False)
         for label, c in count_per_class(reloaded).items():
             after_counts[label] += c

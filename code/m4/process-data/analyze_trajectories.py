@@ -7,7 +7,7 @@
 同时保存统计数据为 JSON。
 
 用法:
-  python ./code/m4/analyze_trajectories.py --input-dir ./code/m4/filtered --output-dir ./code/m4/analysis
+  python ./code/m4/analyze_trajectories.py --input-dir ./code/m4/trimmed --output-dir ./code/m4/analysis
 """
 
 import argparse
@@ -24,7 +24,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 _script_dir = Path(__file__).resolve().parent
-_parent_dir = _script_dir.parent
+_parent_dir = _script_dir.parent.parent  # process-data/ → m4/ → code/
 if str(_parent_dir) not in sys.path:
     sys.path.insert(0, str(_parent_dir))
 
@@ -44,22 +44,22 @@ def parse_args():
 
 
 def load_merged_files(input_dir: Path) -> dict:
-    """加载所有 merged .pt 文件, 返回 {ratio_str: data}."""
-    files = sorted(input_dir.glob('trajectories_filtered_r*.pt'))
+    """加载所有.pt 文件, 返回 {ratio_str: data}."""
+    files = sorted(input_dir.glob('trajectories_balanced_r*.pt'))
     if not files:
-        logger.error("No merged files found in %s", input_dir)
+        logger.error("No balanced files found in %s", input_dir)
         sys.exit(1)
 
     result = {}
     for f in files:
-        ratio_str = f.stem.replace('trajectories_filtered_r', '')
+        ratio_str = f.stem.replace('trajectories_balanced_r', '')
         data = torch.load(f, map_location='cpu', weights_only=False)
         result[ratio_str] = data
         logger.info("Loaded %s: %d graphs", f.name, data['config']['n_graphs'])
     return result
 
 
-def load_all_ratio_files(input_dir: Path, glob_pattern: str = 'trajectories_filtered_r*.pt') -> dict:
+def load_all_ratio_files(input_dir: Path, glob_pattern: str = 'trajectories_balanced_r*.pt') -> dict:
     """加载所有 budget ratio 的文件, 返回 {ratio_float: [(teacher_name, traj), ...]}."""
     files = sorted(input_dir.glob(glob_pattern))
     if not files:
@@ -69,7 +69,7 @@ def load_all_ratio_files(input_dir: Path, glob_pattern: str = 'trajectories_filt
     result = {}
     for f in files:
         stem = f.stem
-        for prefix in ['trajectories_filtered_r', 'trajectories_merged_r']:
+        for prefix in ['trajectories_filtered_r', 'trajectories_merged_r', 'trajectories_balanced_r']:
             if stem.startswith(prefix):
                 ratio_str = stem[len(prefix):]
                 break

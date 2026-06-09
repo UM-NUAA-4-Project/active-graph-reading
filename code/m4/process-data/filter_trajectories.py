@@ -17,7 +17,7 @@ from typing import List, Set, Tuple
 import torch
 
 _script_dir = Path(__file__).resolve().parent
-_parent_dir = _script_dir.parent
+_parent_dir = _script_dir.parent.parent  # process-data/ → m4/ → code/
 if str(_parent_dir) not in sys.path:
     sys.path.insert(0, str(_parent_dir))
 
