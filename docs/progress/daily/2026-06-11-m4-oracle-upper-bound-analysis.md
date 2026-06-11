@@ -21,12 +21,13 @@
 
 ### 1.2 配置
 
-| 参数 | 值 |
-|---|---|
-| 图数 | 9,250（k=250 per class × 37 classes，训练集分层抽样） |
-| Budget | 5%, 10%, 15%（相对节点数） |
-| Seed 来源 | gradient-best, structural-degree-best |
-| 分类器 | M3 GINE（frozen, test-acc=0.642） |
+
+| 参数      | 值                                                     |
+| --------- | ------------------------------------------------------ |
+| 图数      | 9,250（k=250 per class × 37 classes，训练集分层抽样） |
+| Budget    | 5%, 10%, 15%（相对节点数）                             |
+| Seed 来源 | gradient-best, structural-degree-best                  |
+| 分类器    | M3 GINE（frozen, test-acc=0.642）                      |
 
 ---
 
@@ -36,32 +37,35 @@
 
 **Seed = Gradient Best（梯度分数最高节点）**
 
-| Budget | Gradient (oracle) | Struct-Deg | BFS | Random |
-|--------|-------------------|------------|-----|--------|
-| 5% | 0.0670 | 0.0631 | 0.0509 | 0.0363 |
-| 10% | 0.0948 | 0.1044 | 0.0682 | 0.0505 |
-| 15% | 0.1094 | 0.1297 | 0.0835 | 0.0639 |
+
+| Budget | Gradient (oracle) | Struct-Deg | BFS    | Random |
+| ------ | ----------------- | ---------- | ------ | ------ |
+| 5%     | 0.0670            | 0.0631     | 0.0509 | 0.0363 |
+| 10%    | 0.0948            | 0.1044     | 0.0682 | 0.0505 |
+| 15%    | 0.1094            | 0.1297     | 0.0835 | 0.0639 |
 
 **Seed = Structural-Deg Best（度最高节点）**
 
-| Budget | Gradient (oracle) | Struct-Deg | BFS | Random |
-|--------|-------------------|------------|-----|--------|
-| 5% | 0.0669 | 0.0648 | 0.0501 | 0.0364 |
-| 10% | 0.0942 | 0.1053 | 0.0691 | 0.0488 |
-| 15% | 0.1102 | 0.1291 | 0.0839 | 0.0659 |
+
+| Budget | Gradient (oracle) | Struct-Deg | BFS    | Random |
+| ------ | ----------------- | ---------- | ------ | ------ |
+| 5%     | 0.0669            | 0.0648     | 0.0501 | 0.0364 |
+| 10%    | 0.0942            | 0.1053     | 0.0691 | 0.0488 |
+| 15%    | 0.1102            | 0.1291     | 0.0839 | 0.0659 |
 
 **全图分类器 accuracy: 0.642**
 
 ### 2.2 Headroom 分析
 
-| Seed Source | Budget | Oracle vs BFS | Oracle vs Random | BFS vs Random |
-|-------------|--------|---------------|------------------|---------------|
-| gradient | 5% | +0.0161 | +0.0307 | +0.0146 |
-| gradient | 10% | +0.0266 | +0.0443 | +0.0177 |
-| gradient | 15% | +0.0259 | +0.0455 | +0.0196 |
-| structural-degree | 5% | +0.0169 | +0.0305 | +0.0136 |
-| structural-degree | 10% | +0.0251 | +0.0454 | +0.0203 |
-| structural-degree | 15% | +0.0263 | +0.0442 | +0.0179 |
+
+| Seed Source       | Budget | Oracle vs BFS | Oracle vs Random | BFS vs Random |
+| ----------------- | ------ | ------------- | ---------------- | ------------- |
+| gradient          | 5%     | +0.0161       | +0.0307          | +0.0146       |
+| gradient          | 10%    | +0.0266       | +0.0443          | +0.0177       |
+| gradient          | 15%    | +0.0259       | +0.0455          | +0.0196       |
+| structural-degree | 5%     | +0.0169       | +0.0305          | +0.0136       |
+| structural-degree | 10%    | +0.0251       | +0.0454          | +0.0203       |
+| structural-degree | 15%    | +0.0263       | +0.0442          | +0.0179       |
 
 ---
 
@@ -74,6 +78,7 @@
 ### 3.2 Oracle 一致优于 BFS，但绝对差距有限
 
 Oracle vs BFS 的 headroom 在 **1.6–2.6 个百分点**。按 M4 设计文档的阈值（§6.1）：
+
 - 差距 > 5pp → 轨迹蒸馏强力推荐
 - 差距 2–5pp → 可以做，预期收益有限
 - 差距 < 2pp → BC 可能无法超越 BFS
@@ -87,6 +92,7 @@ Oracle vs BFS 的 headroom 在 **1.6–2.6 个百分点**。按 M4 设计文档�
 ### 3.4 结构策略的竞争力
 
 Structural-degree reader 在 10%–15% budget 下**略优于** gradient reader。这提示：
+
 - 简单拓扑特征（度中心性）在中等 budget 下是强信号
 - M5 LearnableReader 的前沿编码器应同时利用拓扑和边特征信号
 - BC 训练轨迹中包含 structural teacher 的样本至关重要
@@ -123,39 +129,23 @@ BC 预训练（当前 train_bc.py）
   → 如果 BC ≈ BFS → 需要 Gumbel-Softmax 端到端微调
 ```
 
-### 4.3 上界的真正含义
-
-Oracle Type II（gradient teacher）给出的 ~10.9%@15% 不应被理解为"BC 的天花板"。理由：
-- Oracle 只使用单个最优 seed + 单条 greedy 轨迹
-- M5 BC 训练使用了 5 种 teacher × 4 budgets 的多样化轨迹（~67K+ trajectories after balancing）
-- Student reader 可能通过**跨图泛化**学到超越单一 teacher 的策略
-- Gumbel-Softmax 端到端微调进一步打开了超越 teacher 的空间
-
-**真正有意义的对比不是 BC vs Oracle，而是 BC vs BFS vs Random。** Oracle 提供的是"当前 teacher 设计下可达的性能参考"，而非绝对上界。
-
----
-
 ## 五、与 M3 基准的对比
 
-| | M3 Benchmark (370 图) | M4 Oracle (9,250 图) |
-|---|---|---|
-| 规模 | 370 图, k=10/class | 9,250 图, k=250/class |
-| BFS@5% | 0.1470 | 0.0509 |
-| BFS@10% | 0.2241 | 0.0682 |
-| Random@5% | 0.1003 | 0.0363 |
 
-**数值差异显著**。原因：M3 benchmark 使用了 v0 协议（无 frontier edge feature 可见性约束），且 seed 公式不同。M4 oracle 严格使用 v1 协议 + 随机 seed（非最优 seed 公式），因此所有 accuracy 系统性偏低。
+|           | M3 Benchmark (370 图) | M4 Oracle (9,250 图)  |
+| --------- | --------------------- | --------------------- |
+| 规模      | 370 图, k=10/class    | 9,250 图, k=250/class |
+| BFS@5%    | 0.1470                | 0.0509                |
+| BFS@10%   | 0.2241                | 0.0682                |
+| Random@5% | 0.1003                | 0.0363                |
 
-这揭示了一个重要事实：**v1 协议下（frontier edge feature 可见，但 seed 是随机的），partial graph reading 比 v0 协议下更困难。** M5 BC 训练的难度因此比 M3 benchmark 所暗示的更高。
-
----
+**数值差异显著**。原因：M3 benchmark 尝试了10个seed，且每类样本少，特别是目前classifier的不可学习类别的数量少（0，32等）。M4 oracle 从 seed尝试一次，每类250张图，包含大量classifier本身难判断的类别。因此，所有 accuracy 系统性偏低。
 
 ## 六、结论
 
 1. **Oracle 上界确认了 policy optimization 空间的存在**——oracle 一致优于 BFS 1.6–2.6pp，优于 random 3.0–4.6pp
 2. **提升空间有限但不为零**——距离"BC 确定性优于 BFS"的 5pp 阈值有差距，但 2–5pp 区间意味着"值得尝试但需管理预期"
-3. **M5 BC 训练的意义**不仅仅在于超越 BFS——BC 提供的 Reader 初始化是 Gumbel-Softmax 端到端微调的前提
-4. **M4 数据管线产出达标**——4 个 budget × 5 个 teacher 的类别平衡轨迹（stage4_balanced）已就绪，可投入 M5 BC 训练
-5. **M4 阶段完成**——轨迹蒸馏可行性已量化分析，M5 路线明确（BC → Gumbel-Softmax → REINFORCE backup）
+3. **M4 数据管线产出达标**——4 个 budget × 5 个 teacher 的类别平衡轨迹（stage4_balanced）已就绪，可投入 M5 BC 训练
+4. **M4 阶段完成**——轨迹蒸馏可行性已量化分析
 
 **下一步**：在服务器上运行 `m5/train_bc.py`，首轮 BC 训练的 val acc vs BFS baseline 将决定是否需要立即进入 Gumbel-Softmax 微调。
