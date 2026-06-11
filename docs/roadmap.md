@@ -59,7 +59,7 @@ Goal: make the project concrete enough that a first benchmark and baseline imple
 
 **Target**: after first benchmark protocol works**Status**: not started
 
-- [ ]  Generate trajectories from random, BFS, degree / centrality, and heuristic policies.
+- [X]  Generate trajectories from random, BFS, degree / centrality, and heuristic policies.
 - [X]  Score trajectories by final prediction quality or information gain.
 - [ ]  Estimate oracle / upper-bound headroom without leaking labels into the test-time policy.
 - [ ]  Decide whether trajectory distillation is worth pursuing.

@@ -22,18 +22,19 @@
 
 ### 1.1 系统映射表
 
-| RL 概念 | Reader 对应 | 状态 | 缺口 |
-|---------|------------|------|------|
-| State s_t | `GraphState` G_t | 已实现 | — |
-| State encoder φ(s) | `FrontierNodesEncoder(G_t)` | 已实现 | 只输出 frontier 嵌入，缺图级汇总 |
-| Action space A(s) | `frontier_nodes` (~10-50, 动态) | 已实现 | — |
-| Policy π(a\|s) | `softmax(ReaderMLP(φ(s)_a))` | 已实现 | 逐节点独立，缺上下文条件化 |
-| Transition P(s'\|s,a) | `reveal_node(s, a)` 确定性 | 已实现 | — |
-| Reward r(s,a) | Δclassifier_confidence / episode accuracy | **未形式化** | 核心缺口 |
-| Value V(s) | 期望 classifier accuracy from s | **未实现** | 核心缺口 |
-| Advantage A(s,a) | Q(s,a) − V(s) | **未实现** | 依赖 V(s) |
-| Trajectory τ | reveal_order | M4 已生成 | — |
-| 探索机制 | ε-greedy / Thompson / UCB | **无** | 纯 argmax |
+
+| RL 概念               | Reader 对应                                | 状态         | 缺口                             |
+| --------------------- | ------------------------------------------ | ------------ | -------------------------------- |
+| State s_t             | `GraphState` G_t                           | 已实现       | —                               |
+| State encoder φ(s)   | `FrontierNodesEncoder(G_t)`                | 已实现       | 只输出 frontier 嵌入，缺图级汇总 |
+| Action space A(s)     | `frontier_nodes` (~10-50, 动态)            | 已实现       | —                               |
+| Policy π(a\|s)       | `softmax(ReaderMLP(φ(s)_a))`              | 已实现       | 逐节点独立，缺上下文条件化       |
+| Transition P(s'\|s,a) | `reveal_node(s, a)` 确定性                 | 已实现       | —                               |
+| Reward r(s,a)         | Δclassifier_confidence / episode accuracy | **未形式化** | 核心缺口                         |
+| Value V(s)            | 期望 classifier accuracy from s            | **未实现**   | 核心缺口                         |
+| Advantage A(s,a)      | Q(s,a) − V(s)                             | **未实现**   | 依赖 V(s)                        |
+| Trajectory τ         | reveal_order                               | M4 已生成    | —                               |
+| 探索机制              | ε-greedy / Thompson / UCB                 | **无**     | 纯 argmax                        |
 
 ### 1.2 梯度流映射：RL vs BC vs 端到端
 
@@ -67,6 +68,7 @@ REINFORCE 模式的梯度流:
 - **自然奖励信号**：信息增益（鼓励探索）+ 分类是否正确（鼓励利用）
 
 与标准 multi-armed bandit 的关键区别：
+
 - 每次 pull 后，臂集合发生变化（新节点加入 frontier，被选节点移除）
 - 侧信息是图结构的（边特征），不是简单的特征向量
 - 有明确的 horizon（budget 耗尽）
@@ -170,6 +172,7 @@ GraphState → FrontierGraphBuilder → extended subgraph
 ### 2.3 BC 兼容性
 
 增强架构 **向后兼容 BC 训练**：
+
 - `graph_summary`、`budget_vec`、`attended` 在 BC 模式下同样有效——提供更丰富的上下文给 ReaderMLP
 - `value_head` 在 BC 模式下可选择性使用（辅助 loss）或不使用
 - `forward()` 返回 `(scores, probs, frontier_nodes, state_value)` — BC 训练忽略 `state_value` 即可
@@ -181,11 +184,12 @@ GraphState → FrontierGraphBuilder → extended subgraph
 
 ### 3.1 三模式定义
 
-| 模式 | 用途 | 数据来源 | 梯度来源 | select() 行为 |
-|------|------|---------|---------|--------------|
-| `bc` | 预训练 | M4 teacher 轨迹 | CE(scores, a*_t) | argmax (确定性) |
-| `gumbel-softmax` | 端到端微调 | 无（自主探索） | classifier loss → STE → scores | Gumbel-Softmax reparameterized sample |
-| `reinforce` | 端到端微调（兜底） | 无（自主探索） | reward × ∇log π | Categorical sample + log_prob |
+
+| 模式             | 用途               | 数据来源        | 梯度来源                         | select() 行为                         |
+| ---------------- | ------------------ | --------------- | -------------------------------- | ------------------------------------- |
+| `bc`             | 预训练             | M4 teacher 轨迹 | CE(scores, a*_t)                 | argmax (确定性)                       |
+| `gumbel-softmax` | 端到端微调         | 无（自主探索）  | classifier loss → STE → scores | Gumbel-Softmax reparameterized sample |
+| `reinforce`      | 端到端微调（兜底） | 无（自主探索）  | reward × ∇log π               | Categorical sample + log_prob         |
 
 ### 3.2 切换流程
 
@@ -232,6 +236,7 @@ GraphState → FrontierGraphBuilder → extended subgraph
 ```
 
 **关键点**：
+
 - 不需要 teacher — reader 自己探索
 - classifier loss 直接作为 reader 的监督信号
 - STE 假设 soft selection ≈ hard selection（temperature 低时近似好）
@@ -258,6 +263,7 @@ GraphState → FrontierGraphBuilder → extended subgraph
 ```
 
 **关键点**：
+
 - 梯度不经过采样 — `log_prob` 本身可微
 - reward 作为常数权重乘在 log_prob 上
 - value_head 提供 baseline 降方差
@@ -271,21 +277,23 @@ GraphState → FrontierGraphBuilder → extended subgraph
 
 ### 5.1 保持不变的模块
 
-| 模块 | 说明 |
-|------|------|
-| `FrontierGraphBuilder` | 扩展子图构建逻辑不变 |
-| `GraphState` / `reveal_node` / `RevealLoop` | 协议引擎不变 |
-| `SubgraphBuilder` | 最终子图构建不变 |
-| `GraphClassifier` / `GINEEncoder` | 分类器不变 |
+
+| 模块                                        | 说明                 |
+| ------------------------------------------- | -------------------- |
+| `FrontierGraphBuilder`                      | 扩展子图构建逻辑不变 |
+| `GraphState` / `reveal_node` / `RevealLoop` | 协议引擎不变         |
+| `SubgraphBuilder`                           | 最终子图构建不变     |
+| `GraphClassifier` / `GINEEncoder`           | 分类器不变           |
 
 ### 5.2 需要修改的模块
 
-| 文件 | 改动程度 | 说明 |
-|------|---------|------|
-| `reader/frontier_encoder.py` | 小 | `forward()` 新增返回 `graph_summary`（mean pool over h_all） |
-| `reader/learnable_reader.py` | 大 | 新增 budget_encoder、frontier_attn、value_head、context-aware ReaderMLP、mode 属性、select 双模式 |
-| `reader/rl_trainer.py` | **新建** | Gumbel-Softmax 和 REINFORCE 训练循环封装 |
-| `reader/__init__.py` | 小 | 导出 RLTrainer |
+
+| 文件                         | 改动程度 | 说明                                                                                              |
+| ---------------------------- | -------- | ------------------------------------------------------------------------------------------------- |
+| `reader/frontier_encoder.py` | 小       | `forward()` 新增返回 `graph_summary`（mean pool over h_all）                                      |
+| `reader/learnable_reader.py` | 大       | 新增 budget_encoder、frontier_attn、value_head、context-aware ReaderMLP、mode 属性、select 双模式 |
+| `reader/rl_trainer.py`       | **新建** | Gumbel-Softmax 和 REINFORCE 训练循环封装                                                          |
+| `reader/__init__.py`         | 小       | 导出 RLTrainer                                                                                    |
 
 ### 5.3 参数量变化
 
@@ -298,13 +306,14 @@ GraphState → FrontierGraphBuilder → extended subgraph
 
 ## 六、风险与缓解
 
-| 风险 | 影响 | 缓解措施 |
-|------|------|---------|
-| STE 梯度有偏导致 GS 不收敛 | GS 模式失败 | Temperature annealing + 从 BC checkpoint 初始化（非随机初始化） |
-| Value head 预测不准 | REINFORCE baseline 无效 | 先用 BC 数据预训练 value head（已知最终 accuracy 作 label） |
-| Self-attention 在 frontier 很小（<5）时退化 | 额外计算无收益 | 设置 min_frontier 阈值，低于阈值跳过 attention |
-| 增强后参数增大导致小样本过拟合 | BC 性能下降 | 保持 dropout + BC 阶段冻结 value_head |
-| 端到端训练显存超限 | 无法训练 | GS 模式每步 reveal 不保留中间图（detach），REINFORCE 模式用 gradient accumulation |
+
+| 风险                                        | 影响                    | 缓解措施                                                                          |
+| ------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------- |
+| STE 梯度有偏导致 GS 不收敛                  | GS 模式失败             | Temperature annealing + 从 BC checkpoint 初始化（非随机初始化）                   |
+| Value head 预测不准                         | REINFORCE baseline 无效 | 先用 BC 数据预训练 value head（已知最终 accuracy 作 label）                       |
+| Self-attention 在 frontier 很小（<5）时退化 | 额外计算无收益          | 设置 min_frontier 阈值，低于阈值跳过 attention                                    |
+| 增强后参数增大导致小样本过拟合              | BC 性能下降             | 保持 dropout + BC 阶段冻结 value_head                                             |
+| 端到端训练显存超限                          | 无法训练                | GS 模式每步 reveal 不保留中间图（detach），REINFORCE 模式用 gradient accumulation |
 
 ---
 
