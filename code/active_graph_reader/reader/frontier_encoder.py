@@ -59,11 +59,13 @@ class FrontierNodesEncoder(nn.Module):
         if len(frontier) == 0:
             return torch.empty(0, self.hidden_dim), []
 
+        device = self.node_type_emb.weight.device
+        g = subgraph.g.to(device)
         n_total = g.num_nodes()
         edge_feat = g.edata['feat']
 
         # 节点类型 embedding（revealed=0, frontier=1）
-        node_types = torch.zeros(n_total, dtype=torch.long)
+        node_types = torch.zeros(n_total, dtype=torch.long, device=device)
         node_types[n_revealed:] = 1
         h = self.node_type_emb(node_types)
 

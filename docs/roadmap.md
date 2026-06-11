@@ -61,8 +61,8 @@ Goal: make the project concrete enough that a first benchmark and baseline imple
 
 - [X]  Generate trajectories from random, BFS, degree / centrality, and heuristic policies.
 - [X]  Score trajectories by final prediction quality or information gain.
-- [ ]  Estimate oracle / upper-bound headroom without leaking labels into the test-time policy.
-- [ ]  Decide whether trajectory distillation is worth pursuing.
+- [X]  Estimate oracle / upper-bound headroom without leaking labels into the test-time policy.
+- [X]  Decide whether trajectory distillation is worth pursuing.
 
 ### M5: First Learned Reading Policy
 
