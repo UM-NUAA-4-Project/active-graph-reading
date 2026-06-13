@@ -78,7 +78,7 @@ class TrajectoryGenerator:
 
         n_graphs = len(train_idx)
         logger.info("预计算 %d 张图的 GraphMeta...", n_graphs)
-        metas = [precompute_graph_meta(dataset[g_idx][0]) for g_idx in tqdm(range(n_graphs), desc="GraphMeta")]
+        metas = [precompute_graph_meta(dataset[int(i)][0]) for i in tqdm(train_idx, desc="GraphMeta")]
 
         result: Dict[str, List[List[Trajectory]]] = {
             t.name: [[] for _ in range(n_graphs)] for t in self.teachers
@@ -92,7 +92,7 @@ class TrajectoryGenerator:
 
             for g_idx in range(batch_start, batch_end):
                 idx = train_idx[g_idx]
-                g, lbl = dataset[g_idx]
+                g, lbl = dataset[int(idx)]
                 label = int(lbl.item()) if hasattr(lbl, 'item') else int(lbl)
                 meta = metas[g_idx]
                 budget = max(1, int(reveal_ratio * meta.n_nodes))

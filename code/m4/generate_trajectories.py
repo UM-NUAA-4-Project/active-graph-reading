@@ -130,6 +130,8 @@ def main():
     for i in tqdm(range(len(train_dataset)), desc="self-loops"):
         train_dataset[i] = (dgl.add_self_loop(train_dataset[i][0]), train_dataset[i][1])
 
+    train_idx = list(range(len(train_dataset)))
+
     subgraph_builder = SubgraphBuilder()
 
     teachers = [build_teacher(name, classifier=classifier, subgraph_builder=subgraph_builder,
