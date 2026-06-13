@@ -22,6 +22,12 @@ import logging
 import sys
 from pathlib import Path
 
+# pickle 反序列化 Trajectory 需要 m4 包可导入
+_script_dir = Path(__file__).resolve().parent
+_code_dir = _script_dir.parent.parent
+if str(_code_dir) not in sys.path:
+    sys.path.insert(0, str(_code_dir))
+
 import torch
 from ogb.graphproppred import DglGraphPropPredDataset
 
