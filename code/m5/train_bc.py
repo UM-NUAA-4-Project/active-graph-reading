@@ -248,6 +248,7 @@ def train_one_epoch(
             'batch_loss': f'{batch_loss.item():.4f}',
             'avg_step_loss': f'{avg_step_loss:.4f}',
             'batch': f'{batch_idx + 1}/{n_batches}',
+            'lr': f'{optimizer.param_groups[0]["lr"]:.1e}',
         })
 
     return total_loss / max(total_steps, 1)
@@ -261,10 +262,12 @@ def main():
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--hidden-dim', type=int, default=128)
+    parser.add_argument('--hidden-dim', type=int, default=256)
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--output-dir', default='m5/')
     parser.add_argument('--resume', default='')
+    parser.add_argument('--n_layers_reader', type=int, default=2)
+    parser.add_argument('--dropout_reader', type=float, default=0.25)
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
@@ -299,7 +302,7 @@ def main():
     # 4. 创建 Reader 和 optimizer
     print("\n=== Creating LearnableReader ===")
     reader = LearnableReader(
-        edge_feat_dim=7, hidden_dim=args.hidden_dim, n_layers=2, dropout=0.1,
+        edge_feat_dim=7, hidden_dim=args.hidden_dim, n_layers=args.n_layers_reader, dropout=args.dropout_reader,
     ).to(device)
     total_params = sum(p.numel() for p in reader.parameters())
     print(f"  Params: {total_params:,}")
@@ -356,6 +359,8 @@ def main():
                 'hidden_dim': args.hidden_dim,
                 'lr': args.lr,
                 'batch_size': args.batch_size,
+                'n_layers_reader': args.n_layers_reader,
+                'dropout_reader': args.dropout_reader,
             },
         }
 
