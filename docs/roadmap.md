@@ -68,8 +68,8 @@ Goal: make the project concrete enough that a first benchmark and baseline imple
 
 **Target**: after M4 shows headroom**Status**: not started
 
-- [ ]  Train a policy to imitate useful reading trajectories.
-- [ ]  Compare learned reading against random / heuristic baselines under matched budget.
+- [X]  Train a policy to imitate useful reading trajectories.
+- [X]  Compare learned reading against random / heuristic baselines under matched budget.
 - [ ]  Evaluate robustness across budget values and graph sizes.
 - [ ]  Decide paper framing and target venue.
 
