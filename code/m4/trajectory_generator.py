@@ -72,13 +72,22 @@ class TrajectoryGenerator:
         train_idx: List[int],
         reveal_ratio: float,
         n_seeds: int = 5,
+        ogb_to_local: Dict[int, int] = None,
     ) -> Dict[str, List[List[Trajectory]]]:
-        """在给定 reveal_ratio 下生成所有图 × teacher 的轨迹。"""
+        """在给定 reveal_ratio 下生成所有图 × teacher 的轨迹。
+
+        train_idx: OGB 原始 index 列表（可来自 shard 切片）。
+        dataset: train_dataset，按原始 OGB 顺序存储，local_pos ↔ ogb_idx 映射由 ogb_to_local 提供。
+        """
         self.classifier.eval()
+
+        # 显式映射 OGB index → train_dataset 中的位置
+        if ogb_to_local is None:
+            ogb_to_local = {ogb: pos for pos, ogb in enumerate(train_idx)}
 
         n_graphs = len(train_idx)
         logger.info("预计算 %d 张图的 GraphMeta...", n_graphs)
-        metas = [precompute_graph_meta(dataset[int(i)][0]) for i in tqdm(train_idx, desc="GraphMeta")]
+        metas = [precompute_graph_meta(dataset[i][0]) for i in range(n_graphs)]
 
         result: Dict[str, List[List[Trajectory]]] = {
             t.name: [[] for _ in range(n_graphs)] for t in self.teachers
@@ -91,8 +100,9 @@ class TrajectoryGenerator:
             pending: List[Tuple[str, int, Trajectory, GraphState, int]] = []
 
             for g_idx in range(batch_start, batch_end):
-                idx = train_idx[g_idx]
-                g, lbl = dataset[int(idx)]
+                ogb_idx = train_idx[g_idx]         # 原始 OGB index，存入 trajectory
+                local_pos = ogb_to_local[ogb_idx]  # 显式映射 → train_dataset 位置
+                g, lbl = dataset[local_pos]
                 label = int(lbl.item()) if hasattr(lbl, 'item') else int(lbl)
                 meta = metas[g_idx]
                 budget = max(1, int(reveal_ratio * meta.n_nodes))
@@ -104,7 +114,7 @@ class TrajectoryGenerator:
                 for teacher in self.teachers:
                     scores = score_cache.get(teacher.name)
                     trajs_states = self._generate_for_graph(
-                        teacher, g, label, idx, meta, budget, n_seeds, scores=scores,
+                        teacher, g, label, ogb_idx, meta, budget, n_seeds, scores=scores,
                     )
                     for traj, state in trajs_states:
                         pending.append((teacher.name, g_idx, traj, state, label))

@@ -27,6 +27,7 @@ from active_graph_reader.engine.reveal_action import reveal_node
 from training_utils import (
     TEACHER_NAMES, BUDGET_RATIOS,
     merge_trajectories, load_graphs_for_trajectories,
+    split_trajectories,
 )
 
 
@@ -100,6 +101,54 @@ def train_one_epoch(reader, optimizer, graph_cache, train_trajs,
     return total_loss / max(len(train_trajs), 1)
 
 
+@torch.no_grad()
+def val_one_epoch(reader, graph_cache, val_trajs, batch_size, device, beta_belief):
+    """单轮 BC 验证（POMDP），返回平均 loss。"""
+    reader.eval()
+    total_loss = 0.0
+    n_trajs = 0
+
+    pbar = tqdm(range(0, len(val_trajs), batch_size), desc="  Validating")
+    for batch_start in pbar:
+        batch_end = min(batch_start + batch_size, len(val_trajs))
+        batch_trajs = val_trajs[batch_start:batch_end]
+
+        for traj in batch_trajs:
+            g, label = graph_cache[traj.graph_idx]
+            y = torch.tensor(label, device=device)
+
+            reader.reset()
+            state = GraphState(g, seed_node=traj.seed_node)
+            step_losses = []
+
+            for teacher_node in traj.reveal_order:
+                scores, probs, frontier_nodes = reader.forward(state)
+                nf = len(frontier_nodes)
+                if nf == 0:
+                    break
+                try:
+                    target_idx = frontier_nodes.index(teacher_node)
+                except ValueError:
+                    break
+                loss_t = F.cross_entropy(
+                    scores.unsqueeze(0),
+                    torch.tensor([target_idx], device=device),
+                )
+                step_losses.append(loss_t)
+                reveal_node(state, teacher_node)
+
+            final_out = reader.get_terminal_belief(state)
+            belief_loss = F.cross_entropy(final_out.b_total, y.unsqueeze(0))
+
+            if step_losses:
+                bc_loss = torch.stack(step_losses).mean()
+                traj_loss = bc_loss + beta_belief * belief_loss
+                total_loss += traj_loss.item()
+                n_trajs += 1
+
+    return total_loss / max(n_trajs, 1)
+
+
 def main():
     parser = argparse.ArgumentParser(description='Phase 2: POMDP Reader BC training')
     parser.add_argument('--gsae-checkpoint', default='m5/phase01/checkpoint_epoch20.pt')
@@ -114,6 +163,8 @@ def main():
     parser.add_argument('--limit-trajs', type=int, default=0)
     parser.add_argument('--output-dir', default='m5/phase2/')
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--val-split', type=float, default=0.2,
+                        help='Validation split ratio (0 = all train, no val)')
     args = parser.parse_args()
 
     repo_root = _repo_root
@@ -134,6 +185,16 @@ def main():
     print("\n=== Loading graphs ===")
     needed_graphs = {t.graph_idx for t in all_trajs}
     graph_cache = load_graphs_for_trajectories(args.root, needed_graphs)
+
+    # 划分 train/val
+    if args.val_split > 0:
+        print("\n=== Splitting trajectories ===")
+        train_trajs, val_trajs = split_trajectories(
+            all_trajs, args.root, val_ratio=args.val_split, random_seed=args.seed,
+        )
+    else:
+        train_trajs, val_trajs = all_trajs, []
+        print(f"\nUsing all {len(train_trajs)} trajectories for training (no val split)")
 
     # 2. 创建 POMDPReader + 加载 Phase 0+1 checkpoint
     print("\n=== Creating POMDPReader ===")
@@ -157,15 +218,26 @@ def main():
     training_log = []
 
     # 3. 训练
+    print(f"  Train trajectories: {len(train_trajs)}")
     for epoch in range(args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
-        avg_loss = train_one_epoch(
-            reader, optimizer, graph_cache, all_trajs,
+        train_loss = train_one_epoch(
+            reader, optimizer, graph_cache, train_trajs,
             args.batch_size, device, args.beta_belief, args.freeze_gsae,
         )
-        print(f"  Avg loss: {avg_loss:.4f}")
+        print(f"  Train loss: {train_loss:.4f}")
 
-        training_log.append({'epoch': epoch + 1, 'avg_loss': avg_loss})
+        log_entry = {'epoch': epoch + 1, 'train_loss': train_loss}
+
+        if val_trajs:
+            val_loss = val_one_epoch(
+                reader, graph_cache, val_trajs,
+                args.batch_size, device, args.beta_belief,
+            )
+            print(f"  Val loss:   {val_loss:.4f}")
+            log_entry['val_loss'] = val_loss
+
+        training_log.append(log_entry)
 
         ckpt = {
             'epoch': epoch,

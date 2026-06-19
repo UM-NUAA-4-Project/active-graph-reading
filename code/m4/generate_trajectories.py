@@ -41,7 +41,7 @@ def parse_args():
     p.add_argument('--device', type=str, default='cuda:0',
                    help='Device (cuda:0 / cpu)')
     p.add_argument('--reveal-ratios', type=float, nargs='+',
-                   default=[0.10, 0.15, 0.20, 0.25],
+                   default=[0.10, 0.15, 0.20],
                    help='Reveal ratios (e.g. 0.01 0.05 0.10)')
     p.add_argument('--n-seeds', type=int, default=5,
                    help='Number of top-scored seeds per teacher per graph')
@@ -51,7 +51,7 @@ def parse_args():
                    help='Output directory (default: m4/output)')
     p.add_argument('--teachers', type=str, nargs='+',
                    default=['gradient', 'structural-degree', 'structural-pagerank',
-                            'hybrid-0.3', 'hybrid-0.7','info-gain'],
+                            'hybrid-0.3', 'hybrid-0.7'],
                    help='Teachers to use')
     p.add_argument('--k-shards', type=int, default=1,
                    help='Split training set into k shards (default: 1 = all at once)')
@@ -130,7 +130,9 @@ def main():
     for i in tqdm(range(len(train_dataset)), desc="self-loops"):
         train_dataset[i] = (dgl.add_self_loop(train_dataset[i][0]), train_dataset[i][1])
 
-    train_idx = list(range(len(train_dataset)))
+    # 显式映射：OGB index → train_dataset 位置
+    ogb_to_local = {ogb: pos for pos, ogb in enumerate(train_idx)}
+    logger.info("Built ogb_to_local mapping: %d entries", len(ogb_to_local))
 
     subgraph_builder = SubgraphBuilder()
 
@@ -171,6 +173,7 @@ def main():
                 train_idx=shard_idx,
                 reveal_ratio=ratio,
                 n_seeds=args.n_seeds,
+                ogb_to_local=ogb_to_local,
             )
 
             total_trajs = 0
