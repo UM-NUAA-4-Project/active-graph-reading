@@ -5,7 +5,8 @@ import sys
 from pathlib import Path
 
 _script_dir = Path(__file__).resolve().parent
-sys.path.insert(0, str(_script_dir.parent))
+_repo_root = _repo_root.parent
+sys.path.insert(0, str(_repo_root))
 
 import torch
 import dgl
@@ -30,7 +31,7 @@ def main():
     print(f"Device: {device}")
 
     # 1. 加载 1 条 trajectory
-    data_path = _script_dir.parent / args.data_dir / 'trajectories_balanced_r0_050.pt'
+    data_path = _repo_root / args.data_dir / 'trajectories_balanced_r0_050.pt'
     data = torch.load(str(data_path), map_location='cpu', weights_only=False)
     teacher_names = data['config']['teacher_names']
     print(f"Teachers: {teacher_names}")
@@ -60,7 +61,7 @@ def main():
     classifier = GraphClassifier(
         edge_feat_dim=7, n_classes=37, hidden_dim=300, n_layers=5, dropout=0.5,
     ).to(device)
-    ckpt = torch.load(str(_script_dir.parent / args.pretrained), map_location=device)
+    ckpt = torch.load(str(_repo_root / args.pretrained), map_location=device)
     classifier.load_state_dict(ckpt['model_state_dict'], strict=True)
     classifier.eval()
     # require grad for gradient teacher, but we don't need it for BC training

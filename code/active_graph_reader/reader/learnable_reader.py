@@ -50,17 +50,30 @@ class LearnableReader(BaseReader, nn.Module):
         self.reader_mlp = ReaderMLP(input_dim=hidden_dim, hidden_dim=hidden_dim, dropout=dropout)
 
     def forward(
-        self, graph_state: GraphState
-    ) -> Tuple[torch.Tensor, torch.Tensor, List[int]]:
-        """核心可微管线。Returns: (scores, probs, frontier_nodes)."""
+        self, graph_state: GraphState, sample: bool = False
+    ):
+        """核心可微管线。
+
+        sample=False: Returns (scores, probs, frontier_nodes)
+        sample=True:  Returns (scores, probs, frontier_nodes, action_idx, log_prob)
+        """
         subgraph = self.frontier_builder.build(graph_state)
         frontier_embeds, frontier_nodes = self.frontier_encoder(subgraph)
 
         if len(frontier_nodes) == 0:
+            if sample:
+                return torch.empty(0), torch.empty(0), [], None, None
             return torch.empty(0), torch.empty(0), []
 
         scores = self.reader_mlp(frontier_embeds)
         probs = F.softmax(scores, dim=0)
+
+        if sample:
+            dist = torch.distributions.Categorical(probs)
+            action_idx = dist.sample()
+            log_prob = dist.log_prob(action_idx)
+            return scores, probs, frontier_nodes, action_idx, log_prob
+
         return scores, probs, frontier_nodes
 
     def select(self, graph_state: GraphState) -> Optional[int]:

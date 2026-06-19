@@ -23,7 +23,10 @@ import dgl
 from tqdm import tqdm
 
 _script_dir = Path(__file__).resolve().parent
-sys.path.insert(0, str(_script_dir.parent))
+_m5_dir = _script_dir.parent
+_repo_root = _m5_dir.parent
+sys.path.insert(0, str(_repo_root))
+sys.path.insert(0, str(_m5_dir))
 
 from active_graph_reader.reader.learnable_reader import LearnableReader
 from active_graph_reader.reader import FixedStrategyReader
@@ -266,11 +269,11 @@ def plot_results(
 def main():
     parser = argparse.ArgumentParser(
         description='Evaluate LearnableReader vs Random/BFS on valid/test sets')
-    parser.add_argument('--checkpoint', default='m5/checkpoint/best_reader.pt')
+    parser.add_argument('--checkpoint', default='m5/base/checkpoint/best_reader.pt')
     parser.add_argument('--classifier', default='m3/best_model_ft.pt')
     parser.add_argument('--root', default=r'D:\ogb-master\dataset')
     parser.add_argument('--device', default='cuda:0')
-    parser.add_argument('--output-dir', default=None)
+    parser.add_argument('--output-dir', default='m5/base/eval_results')
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='Limit graphs per split (0 = all)')
     parser.add_argument('--dropout', type=float, default=0.1)
@@ -286,11 +289,11 @@ def main():
                         help='Full-graph classifier test accuracy')
     args = parser.parse_args()
 
-    repo_root = _script_dir.parent
+    repo_root = _repo_root
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
-    output_dir = Path(args.output_dir) if args.output_dir else _script_dir
+    output_dir = Path(args.output_dir) if args.output_dir else _m5_dir / 'base' / 'eval_results'
     output_dir.mkdir(parents=True, exist_ok=True)
 
     strategies_to_run = [s for s in args.strategies if s in ALL_STRATEGIES]

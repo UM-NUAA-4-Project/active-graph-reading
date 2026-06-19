@@ -17,7 +17,10 @@ import sys
 from pathlib import Path
 
 _script_dir = Path(__file__).resolve().parent
-sys.path.insert(0, str(_script_dir.parent))
+_m5_dir = _script_dir.parent
+_repo_root = _m5_dir.parent
+sys.path.insert(0, str(_repo_root))
+sys.path.insert(0, str(_m5_dir))
 
 import torch
 
@@ -42,7 +45,7 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--hidden-dim', type=int, default=256)
     parser.add_argument('--batch-size', type=int, default=16)
-    parser.add_argument('--output-dir', default='m5/')
+    parser.add_argument('--output-dir', default='m5/base/checkpoint')
     parser.add_argument('--n-layers-reader', type=int, default=2, dest='n_layers_reader')
     parser.add_argument('--dropout-reader', type=float, default=0.25, dest='dropout_reader')
     # 恢复 / 微调
@@ -53,7 +56,7 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 
-    repo_root = _script_dir.parent
+    repo_root = _repo_root
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
@@ -62,7 +65,7 @@ def main():
 
     output_dir = repo_root / args.output_dir
     if is_finetune:
-        output_dir = _script_dir / 'finetune'
+        output_dir = _m5_dir / 'finetune'
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- 1. 加载所有轨迹 & 图 ----

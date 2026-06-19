@@ -11,7 +11,10 @@ import sys
 from pathlib import Path
 
 _script_dir = Path(__file__).resolve().parent
-sys.path.insert(0, str(_script_dir.parent))
+_m5_dir = _script_dir.parent
+_repo_root = _m5_dir.parent
+sys.path.insert(0, str(_repo_root))
+sys.path.insert(0, str(_m5_dir))
 
 import torch
 import torch.nn.functional as F
@@ -113,7 +116,7 @@ def main():
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 
-    repo_root = _script_dir.parent
+    repo_root = _repo_root
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
