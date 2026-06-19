@@ -23,7 +23,6 @@ class RevealConfig:
     """
 
     strategy: str = 'random'
-    cost_model: str = 'unit'
     budget: Optional[int] = None
     max_ratio: Optional[float] = None
     seed_node: Optional[int] = None

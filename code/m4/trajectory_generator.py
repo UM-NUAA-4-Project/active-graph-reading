@@ -14,7 +14,7 @@ import torch.nn.functional as F
 import dgl
 from tqdm import tqdm
 
-from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
+from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
 from active_graph_reader.engine.graph_state import GraphState
 from .teachers.base import Teacher, Trajectory
 from .teachers.gradient_teacher import GradientTeacher

@@ -26,11 +26,11 @@ import dgl
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_loop import RevealLoop
 from active_graph_reader.engine.reveal_action import reveal_node
-from active_graph_reader.strategies.registry import get_strategy
-from active_graph_reader.cost.registry import get_cost_model
-from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
-from active_graph_reader.encoder.gin_encoder import GINEEncoder
-from active_graph_reader.encoder.classifier import GraphClassifier
+from active_graph_reader.reader.fixed.registry import get_strategy
+
+from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
+from active_graph_reader.gnn.gin_encoder import GINEEncoder
+from active_graph_reader.gnn.classifier import GraphClassifier
 
 SEPARATOR = "=" * 60
 
@@ -120,8 +120,7 @@ def test_all_strategies():
     for strat_name in ['random', 'bfs', 'max-frontier-degree']:
         state = GraphState(g, seed_node=0)
         strategy = get_strategy(strat_name)
-        cost_model = get_cost_model('unit')
-        loop = RevealLoop(state, strategy, cost_model)
+        loop = RevealLoop(state, strategy)
         stats = loop.run(budget=5)
         assert stats['n_revealed'] >= 1
         assert stats['budget_used'] <= 5
@@ -134,7 +133,7 @@ def test_encoder_classifier():
     g = make_synthetic_graph(20, edge_feat_dim=7)
 
     state = GraphState(g, seed_node=0)
-    loop = RevealLoop(state, get_strategy('bfs'), get_cost_model('unit'))
+    loop = RevealLoop(state, get_strategy('bfs'))
     loop.run(budget=8)
 
     builder = SubgraphBuilder()
@@ -167,7 +166,7 @@ def test_multiple_graphs_batch():
     subgraphs = []
     for seed, budget in [(0, 3), (5, 5), (10, 7)]:
         state = GraphState(g, seed_node=seed)
-        loop = RevealLoop(state, get_strategy('bfs'), get_cost_model('unit'))
+        loop = RevealLoop(state, get_strategy('bfs'))
         loop.run(budget=budget)
         sub_g, _ = builder.build(state)
         subgraphs.append(sub_g)
@@ -231,7 +230,7 @@ def realdata_test_reader_encoder_classifier(g, edge_feat_dim, n_classes, seed=42
     """[Real] BFS Reader -> SubgraphBuilder -> GINEEncoder -> GraphClassifier."""
     # Reader
     state = GraphState(g, seed_node=seed)
-    loop = RevealLoop(state, get_strategy('bfs'), get_cost_model('unit'))
+    loop = RevealLoop(state, get_strategy('bfs'))
     stats = loop.run(budget=10)
     print(f"  revealed: {stats['n_revealed']}/{stats['n_total']} "
           f"({stats['reveal_ratio']:.2%})")
@@ -267,12 +266,12 @@ def realdata_test_reader_encoder_classifier(g, edge_feat_dim, n_classes, seed=42
 def realdata_test_multi_budget_batch(g, edge_feat_dim, n_classes, builder, model):
     """[Real] Multi-budget multi-subgraph batch."""
     state1 = GraphState(g, seed_node=42)
-    loop1 = RevealLoop(state1, get_strategy('bfs'), get_cost_model('unit'))
+    loop1 = RevealLoop(state1, get_strategy('bfs'))
     loop1.run(budget=5)
     sub_g1, _ = builder.build(state1)
 
     state2 = GraphState(g, seed_node=42)
-    loop2 = RevealLoop(state2, get_strategy('bfs'), get_cost_model('unit'))
+    loop2 = RevealLoop(state2, get_strategy('bfs'))
     loop2.run(budget=20)
     sub_g2, _ = builder.build(state2)
 

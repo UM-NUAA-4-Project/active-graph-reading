@@ -2,8 +2,8 @@
 
 from typing import Optional
 
-from ..reader.base_reader import BaseReader
-from ..engine.graph_state import GraphState
+from ...core.base_reader import BaseReader
+from ...engine.graph_state import GraphState
 
 
 class MaxFrontierDegreeStrategy(BaseReader):

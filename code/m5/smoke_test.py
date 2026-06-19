@@ -13,7 +13,7 @@ import dgl
 from active_graph_reader.reader.learnable_reader import LearnableReader
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
-from active_graph_reader.encoder.classifier import GraphClassifier
+from active_graph_reader.gnn.classifier import GraphClassifier
 from ogb.graphproppred import DglGraphPropPredDataset
 
 

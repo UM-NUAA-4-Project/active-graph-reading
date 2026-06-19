@@ -34,7 +34,7 @@ if _script_dir not in sys.path:
     sys.path.insert(0, _script_dir)
 
 from ogb.graphproppred import collate_dgl
-from active_graph_reader.encoder.classifier import GraphClassifier
+from active_graph_reader.gnn.classifier import GraphClassifier
 
 
 # ============================================================

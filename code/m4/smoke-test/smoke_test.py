@@ -19,8 +19,8 @@ if str(_script_dir) not in sys.path:
 
 import torch
 
-from active_graph_reader.encoder.classifier import GraphClassifier
-from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
+from active_graph_reader.gnn.classifier import GraphClassifier
+from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
 from m4.teachers.gradient_teacher import GradientTeacher
 from m4.teachers.structural_teacher import StructuralTeacher
 from m4.teachers.hybrid_teacher import HybridTeacher

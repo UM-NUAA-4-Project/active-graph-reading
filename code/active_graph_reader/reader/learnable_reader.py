@@ -10,9 +10,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .base_reader import BaseReader
-from .frontier_graph_builder import FrontierGraphBuilder
-from .frontier_encoder import FrontierNodesEncoder
+from ..core.base_reader import BaseReader
+from ..gnn.frontier.graph_builder import FrontierGraphBuilder
+from ..gnn.frontier.encoder import FrontierNodesEncoder
 from ..engine.graph_state import GraphState
 
 
@@ -53,8 +53,7 @@ class LearnableReader(BaseReader, nn.Module):
         n_layers: int = 2,
         dropout: float = 0.1,
     ):
-        BaseReader.__init__(self)
-        nn.Module.__init__(self)
+        super().__init__()
 
         self.frontier_builder = FrontierGraphBuilder()
         self.frontier_encoder = FrontierNodesEncoder(

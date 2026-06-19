@@ -37,10 +37,10 @@ if str(_script_dir) not in sys.path:
 
 from ogb.graphproppred import DglGraphPropPredDataset
 
-from active_graph_reader.encoder.classifier import GraphClassifier
-from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
+from active_graph_reader.gnn.classifier import GraphClassifier
+from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
 from active_graph_reader.reader import FixedStrategyReader
-from active_graph_reader.reader.facade import run_reveal
+from active_graph_reader.engine.reveal import run_reveal
 
 from m4.teachers.gradient_teacher import GradientTeacher
 from m4.teachers.structural_teacher import StructuralTeacher

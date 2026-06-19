@@ -10,7 +10,7 @@ from typing import List, Tuple
 import dgl
 import torch
 
-from ..engine.graph_state import GraphState
+from ...engine.graph_state import GraphState
 
 
 @dataclass

@@ -9,7 +9,7 @@ import dgl
 
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
-from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
+from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
 from .base import Teacher, Trajectory
 
 logger = logging.getLogger(__name__)

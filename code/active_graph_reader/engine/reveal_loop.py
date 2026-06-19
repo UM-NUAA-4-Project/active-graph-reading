@@ -1,4 +1,4 @@
-"""揭示循环模块：策略、成本模型、揭示动作之间的协调者。"""
+"""揭示循环模块：策略与揭示动作之间的协调者。"""
 
 from __future__ import annotations
 
@@ -9,26 +9,21 @@ from .graph_state import GraphState
 from .reveal_action import reveal_node
 
 if TYPE_CHECKING:
-    from ..reader.base_reader import BaseReader
+    from ..core.base_reader import BaseReader
 
 logger = logging.getLogger(__name__)
 
 
 class RevealLoop:
-    """揭示协议的主循环协调器。
-
-    构造时注入策略和成本模型，运行期间不变。
-    """
+    """揭示协议的主循环协调器。每步揭示固定消耗 1 预算。"""
 
     def __init__(
         self,
         graph_state: GraphState,
         strategy: BaseReader,
-        cost_model,
     ):
         self._state = graph_state
         self._strategy = strategy
-        self._cost_model = cost_model
 
         strategy.reset()
 
@@ -41,12 +36,12 @@ class RevealLoop:
         budget: Optional[int] = None,
         max_ratio: Optional[float] = None,
     ) -> dict:
-        """执行完整的揭示循环。budget=None/Max_ratio=None 表示揭示所有可达节点。"""
+        """执行完整的揭示循环。budget=None/max_ratio=None 表示揭示所有可达节点。"""
         actual_budget = self._resolve_budget(budget, max_ratio)
 
         logger.info(
-            "揭示循环开始: 策略=%s, 成本模型=%s, 预算=%d, |V|=%d",
-            self._strategy.name, self._cost_model.name,
+            "揭示循环开始: 策略=%s, 预算=%d, |V|=%d",
+            self._strategy.name,
             actual_budget, self._state.n_nodes_total,
         )
 
@@ -61,10 +56,9 @@ class RevealLoop:
                 logger.info("策略返回 None，揭示循环终止（step=%d）", step)
                 break
 
-            cost = self._cost_model.compute(next_node, self._state)
             remaining = actual_budget - self._state.get_budget_used()
-            if cost > remaining:
-                logger.info("预算不足: 需要 %.1f, 剩余 %d（step=%d）", cost, remaining, step)
+            if remaining < 1:
+                logger.info("预算不足: 剩余 %d（step=%d）", remaining, step)
                 break
 
             step += 1
@@ -82,7 +76,6 @@ class RevealLoop:
 
         stats = self._state.stats()
         stats['strategy'] = self._strategy.name
-        stats['cost_model'] = self._cost_model.name
         stats['budget_limit'] = actual_budget
 
         logger.info(
@@ -116,7 +109,3 @@ class RevealLoop:
     @property
     def strategy(self) -> BaseReader:
         return self._strategy
-
-    @property
-    def cost_model(self):
-        return self._cost_model

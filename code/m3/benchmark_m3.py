@@ -31,8 +31,11 @@ if str(_script_dir) not in sys.path:
 
 from ogb.graphproppred import DglGraphPropPredDataset
 
-from active_graph_reader.encoder.classifier import GraphClassifier
-from active_graph_reader.reader import FixedStrategyReader, evaluate
+from active_graph_reader.gnn.classifier import GraphClassifier
+from active_graph_reader.reader import FixedStrategyReader
+from active_graph_reader.engine.graph_state import GraphState
+from active_graph_reader.engine.reveal_loop import RevealLoop
+from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
 
 # ---------------------------------------------------------------------------
 # Stratified sampling
@@ -150,9 +153,69 @@ def evaluate_full_graph(
 
 
 # ---------------------------------------------------------------------------
-# Single strategy evaluation
+# Multi-seed strategy evaluation (增量 reveal + 批量 GPU 推理)
 # ---------------------------------------------------------------------------
 
+@torch.no_grad()
+def evaluate(
+    reader,
+    dataset,
+    indices: List[int],
+    classifier,
+    budgets_rel: List[float],
+    seeds_per_graph: int,
+    device: torch.device,
+    batch_size: int = 8,
+) -> Dict[float, List[float]]:
+    """对 reader + classifier 在 dataset 上做多 seed、多 budget 评测。"""
+    budgets_rel_sorted = sorted(budgets_rel)
+    results: Dict[float, List[float]] = defaultdict(list)
+
+    builder = SubgraphBuilder()
+
+    for batch_start in tqdm(
+        range(0, len(indices), batch_size),
+        desc=reader.name, leave=False,
+    ):
+        batch_indices = indices[batch_start:batch_start + batch_size]
+
+        subgraphs: List[dgl.DGLGraph] = []
+        meta: List[Tuple[int, float, int]] = []
+
+        for batch_i, idx in enumerate(batch_indices):
+            g_raw, label = dataset[int(idx)]
+            if hasattr(label, 'item'):
+                label = label.item()
+            n_nodes = g_raw.num_nodes()
+            budgets_abs = [max(1, int(r * n_nodes)) for r in budgets_rel_sorted]
+
+            for seed_i in range(seeds_per_graph):
+                seed_node = (idx * 31 + seed_i * 17 + 7) % max(n_nodes, 1)
+
+                state = GraphState(g_raw, seed_node=seed_node)
+                loop = RevealLoop(state, reader)
+
+                for abs_b, rel_b in zip(budgets_abs, budgets_rel_sorted):
+                    loop.run(budget=abs_b)
+                    sub_g, _ = builder.build(state)
+                    subgraphs.append(sub_g)
+                    meta.append((batch_i, rel_b, label))
+
+        batch_g = dgl.batch(subgraphs).to(device)
+        node_ids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
+        logits = classifier(batch_g, node_ids)
+        preds = logits.argmax(dim=1).cpu().tolist()
+
+        graph_budget_correct: Dict[Tuple[int, float], List[float]] = defaultdict(list)
+        for flat_i, (batch_i, rel_b, label) in enumerate(meta):
+            graph_budget_correct[(batch_i, rel_b)].append(
+                1.0 if preds[flat_i] == label else 0.0
+            )
+
+        for (_batch_i, rel_b), corrects in graph_budget_correct.items():
+            results[rel_b].append(np.mean(corrects))
+
+    return dict(results)
 
 
 # ---------------------------------------------------------------------------

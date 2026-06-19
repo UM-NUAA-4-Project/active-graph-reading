@@ -19,7 +19,7 @@ import dgl
 import numpy as np
 from ogb.graphproppred import DglGraphPropPredDataset
 
-from active_graph_reader.encoder.classifier import GraphClassifier
+from active_graph_reader.gnn.classifier import GraphClassifier
 
 SEPARATOR = "=" * 60
 

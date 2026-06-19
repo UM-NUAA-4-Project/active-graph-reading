@@ -29,8 +29,8 @@ from active_graph_reader.reader.learnable_reader import LearnableReader
 from active_graph_reader.reader import FixedStrategyReader
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
-from active_graph_reader.encoder.classifier import GraphClassifier
-from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
+from active_graph_reader.gnn.classifier import GraphClassifier
+from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
 from ogb.graphproppred import DglGraphPropPredDataset
 
 BUDGETS_REL = [0.05, 0.10, 0.15]

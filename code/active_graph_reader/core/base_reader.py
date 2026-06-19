@@ -1,9 +1,12 @@
 """BaseReader 抽象接口：所有 Reader（固定策略/可学习）的统一接口。"""
 
-from abc import ABC, abstractmethod
-from typing import List, Optional, Tuple
+from __future__ import annotations
 
-from ..engine.graph_state import GraphState
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from ..engine.graph_state import GraphState
 
 
 class BaseReader(ABC):
@@ -20,6 +23,7 @@ class BaseReader(ABC):
     """
 
     def __init__(self):
+        super().__init__()
         self._training = False
 
     @abstractmethod

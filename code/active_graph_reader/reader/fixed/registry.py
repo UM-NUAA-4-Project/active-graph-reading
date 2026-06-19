@@ -2,10 +2,10 @@
 
 from typing import Dict, Type
 
-from ..reader.base_reader import BaseReader
-from .random_strategy import RandomStrategy
-from .bfs_strategy import BfsStrategy
-from .max_frontier_degree_strategy import MaxFrontierDegreeStrategy
+from ...core.base_reader import BaseReader
+from .random import RandomStrategy
+from .bfs import BfsStrategy
+from .max_degree import MaxFrontierDegreeStrategy
 
 _registry: Dict[str, Type[BaseReader]] = {
     'random': RandomStrategy,

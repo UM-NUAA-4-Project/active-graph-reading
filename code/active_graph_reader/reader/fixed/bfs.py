@@ -3,8 +3,8 @@
 import collections
 from typing import Optional, Deque, List, Tuple
 
-from ..reader.base_reader import BaseReader
-from ..engine.graph_state import GraphState
+from ...core.base_reader import BaseReader
+from ...engine.graph_state import GraphState
 
 
 class BfsStrategy(BaseReader):

@@ -23,7 +23,7 @@ import logging
 from pathlib import Path
 
 # Ensure mycode/ is on the path so that imports like
-# "from active_graph_reader.encoder.classifier import GraphClassifier" work.
+# "from active_graph_reader.gnn.classifier import GraphClassifier" work.
 _script_dir = Path(__file__).resolve().parent
 _parent_dir = _script_dir.parent
 if str(_parent_dir) not in sys.path:
@@ -39,7 +39,7 @@ from tqdm import tqdm
 
 from ogb.graphproppred import DglGraphPropPredDataset, Evaluator, collate_dgl
 
-from active_graph_reader.encoder.classifier import GraphClassifier
+from active_graph_reader.gnn.classifier import GraphClassifier
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)

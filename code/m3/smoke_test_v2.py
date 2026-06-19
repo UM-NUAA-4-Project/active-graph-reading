@@ -5,31 +5,33 @@ Smoke test v2 — 验证优化后的 reader pipeline
 使用合成图测试（不加载 OGBG-PPA）：
 1. SubgraphBuilder 向量化正确性（与旧逻辑对比）
 2. reveal_one() 协议正确性
-3. evaluate() 批量评测 pipeline
-4. create_dataloader() DataLoader 集成
+3. 增量 reveal + 批量分类评测 pipeline
+4. DataLoader 集成
 5. 端到端速度 sanity check（64 图 × 3 strategy × 3 budget）
 """
 
 import random
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
+from typing import Dict, List, Tuple
 
 _script_dir = Path(__file__).resolve().parent.parent
 if str(_script_dir) not in sys.path:
     sys.path.insert(0, str(_script_dir))
 
+import numpy as np
 import torch
 import dgl
 from tqdm import tqdm
 
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_loop import RevealLoop
-from active_graph_reader.strategies.registry import get_strategy
-from active_graph_reader.cost.registry import get_cost_model
-from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
-from active_graph_reader.encoder.classifier import GraphClassifier
-from active_graph_reader.reader import FixedStrategyReader, reveal_one, evaluate, create_dataloader
+from active_graph_reader.reader.fixed.registry import get_strategy
+from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
+from active_graph_reader.gnn.classifier import GraphClassifier
+from active_graph_reader.reader import FixedStrategyReader, reveal_one
 
 SEP = "=" * 60
 
@@ -89,6 +91,69 @@ def make_synthetic_dataset(n_graphs=64, n_nodes_range=(20, 80), edge_feat_dim=7)
 
 
 # ==========================================================================
+# 本地评测 helper（替代已删除的 reader.evaluate）
+# ==========================================================================
+
+@torch.no_grad()
+def _evaluate(
+    reader,
+    dataset,
+    indices: List[int],
+    classifier,
+    budgets_rel: List[float],
+    seeds_per_graph: int,
+    device: torch.device,
+    batch_size: int = 8,
+) -> Dict[float, List[float]]:
+    """增量 reveal + 批量 GPU 推理评测。"""
+    budgets_rel_sorted = sorted(budgets_rel)
+    results: Dict[float, List[float]] = defaultdict(list)
+
+    builder = SubgraphBuilder()
+
+    for batch_start in range(0, len(indices), batch_size):
+        batch_indices = indices[batch_start:batch_start + batch_size]
+
+        subgraphs: List[dgl.DGLGraph] = []
+        meta: List[Tuple[int, float, int]] = []
+
+        for batch_i, idx in enumerate(batch_indices):
+            g_raw, label = dataset[int(idx)]
+            if hasattr(label, 'item'):
+                label = label.item()
+            n_nodes = g_raw.num_nodes()
+            budgets_abs = [max(1, int(r * n_nodes)) for r in budgets_rel_sorted]
+
+            for seed_i in range(seeds_per_graph):
+                seed_node = (idx * 31 + seed_i * 17 + 7) % max(n_nodes, 1)
+
+                state = GraphState(g_raw, seed_node=seed_node)
+                loop = RevealLoop(state, reader)
+
+                for abs_b, rel_b in zip(budgets_abs, budgets_rel_sorted):
+                    loop.run(budget=abs_b)
+                    sub_g, _ = builder.build(state)
+                    subgraphs.append(sub_g)
+                    meta.append((batch_i, rel_b, label))
+
+        batch_g = dgl.batch(subgraphs).to(device)
+        node_ids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
+        logits = classifier(batch_g, node_ids)
+        preds = logits.argmax(dim=1).cpu().tolist()
+
+        graph_budget_correct: Dict[Tuple[int, float], List[float]] = defaultdict(list)
+        for flat_i, (batch_i, rel_b, label) in enumerate(meta):
+            graph_budget_correct[(batch_i, rel_b)].append(
+                1.0 if preds[flat_i] == label else 0.0
+            )
+
+        for (_batch_i, rel_b), corrects in graph_budget_correct.items():
+            results[rel_b].append(np.mean(corrects))
+
+    return dict(results)
+
+
+# ==========================================================================
 # Test 1: SubgraphBuilder vectorized correctness
 # ==========================================================================
 
@@ -136,11 +201,11 @@ def test_subgraph_builder_vectorized():
         budget = random.randint(3, 15)
 
         state_new = GraphState(g, seed_node=seed)
-        loop_new = RevealLoop(state_new, get_strategy('bfs'), get_cost_model('unit'))
+        loop_new = RevealLoop(state_new, get_strategy('bfs'))
         loop_new.run(budget=budget)
 
         state_ref = GraphState(g, seed_node=seed)
-        loop_ref = RevealLoop(state_ref, get_strategy('bfs'), get_cost_model('unit'))
+        loop_ref = RevealLoop(state_ref, get_strategy('bfs'))
         loop_ref.run(budget=budget)
 
         sub_new, ids_new = new_builder.build(state_new)
@@ -182,12 +247,12 @@ def test_reader_reveal_one():
 
 
 # ==========================================================================
-# Test 3: evaluate()
+# Test 3: 增量 reveal + 批量分类评测 pipeline
 # ==========================================================================
 
 def test_reader_evaluate():
-    """End-to-end evaluate() pipeline with a random classifier."""
-    print("\n[Test 3] evaluate()...")
+    """End-to-end reveal + classify pipeline with a random classifier."""
+    print("\n[Test 3] Reveal + classify pipeline...")
 
     dataset = make_synthetic_dataset(n_graphs=16, n_nodes_range=(20, 50))
     indices = list(range(len(dataset)))
@@ -198,7 +263,7 @@ def test_reader_evaluate():
 
     for strat in ['random', 'bfs', 'max-frontier-degree']:
         reader = FixedStrategyReader(strat)
-        results = evaluate(
+        results = _evaluate(
             reader=reader,
             dataset=dataset,
             indices=indices,
@@ -217,26 +282,38 @@ def test_reader_evaluate():
 
 
 # ==========================================================================
-# Test 4: create_dataloader()
+# Test 4: DataLoader 集成
 # ==========================================================================
 
 def test_reader_dataloader():
-    """DataLoader with ReaderDataset."""
-    print("\n[Test 4] create_dataloader()...")
+    """DataLoader with collate_fn for graph batching."""
+    print("\n[Test 4] DataLoader integration...")
 
     dataset = make_synthetic_dataset(n_graphs=32, n_nodes_range=(15, 40))
-    indices = list(range(len(dataset)))
 
-    reader = FixedStrategyReader('random')
+    from torch.utils.data import DataLoader, Dataset
 
-    loader = create_dataloader(reader_factory=lambda: FixedStrategyReader('random'),
-        dataset=dataset,
-        indices=indices,
-        budget_ratios=[0.10, 0.30],
-        batch_size=8,
-        num_workers=0,
-        seeds_per_graph=1,
-    )
+    class SimpleGraphDataset(Dataset):
+        def __init__(self, syn_dataset):
+            self.ds = syn_dataset
+
+        def __len__(self):
+            return len(self.ds)
+
+        def __getitem__(self, idx):
+            g, label = self.ds[idx]
+            if hasattr(label, 'item'):
+                label = label.item()
+            return g, label
+
+    def collate(batch):
+        graphs, labels = zip(*batch)
+        batched_g = dgl.batch(list(graphs))
+        label_t = torch.tensor(labels, dtype=torch.long)
+        return batched_g, label_t
+
+    ds = SimpleGraphDataset(dataset)
+    loader = DataLoader(ds, batch_size=8, shuffle=True, collate_fn=collate)
 
     batch_count = 0
     graph_count = 0
@@ -273,7 +350,7 @@ def test_speed():
     for strat in strategies:
         reader = FixedStrategyReader(strat)
         t0 = time.time()
-        results = evaluate(
+        _evaluate(
             reader=reader,
             dataset=dataset, indices=indices, classifier=model,
             budgets_rel=budgets_rel, seeds_per_graph=2,
@@ -312,7 +389,7 @@ def main():
 
     run_test("SubgraphBuilder", test_subgraph_builder_vectorized)
     run_test("reveal_one", test_reader_reveal_one)
-    run_test("evaluate", test_reader_evaluate)
+    run_test("reveal+classify pipeline", test_reader_evaluate)
     run_test("DataLoader", test_reader_dataloader)
     run_test("Speed", test_speed)
 

@@ -13,8 +13,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .frontier_graph_builder import FrontierSubgraph
-from ..encoder.gin_encoder import GINELayer
+from .graph_builder import FrontierSubgraph
+from ..gin_encoder import GINELayer
 
 
 class FrontierNodesEncoder(nn.Module):
