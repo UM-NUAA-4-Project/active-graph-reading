@@ -159,3 +159,36 @@ def infer_reader_config(state_dict: dict) -> Tuple[int, int]:
             layer_idx = int(k.split('.')[2])
             n_layers = max(n_layers, layer_idx + 1)
     return hidden_dim, n_layers
+
+
+def edl_loss(evidence, alpha, S, y_onehot, k_evidence, lambda_kl=0.01):
+    """EDL loss (Sensoy et al. 2018).
+
+    Parameters
+    ----------
+    evidence : Tensor (B, K)  非负证据 e
+    alpha : Tensor (B, K)     Dirichlet 参数 = 1 + e
+    S : Tensor (B,)           Dirichlet 强度
+    y_onehot : Tensor (B, K)  one-hot 标签
+    k_evidence : int          类别数
+    lambda_kl : float         KL 正则权重
+
+    Returns
+    -------
+    loss : scalar Tensor
+    """
+    b = evidence / S.unsqueeze(-1)  # (B, K) 信念 = e/S
+
+    mse = ((y_onehot - b) ** 2).sum(dim=-1) * S  # (B,)
+
+    alpha_tilde = y_onehot + (1 - y_onehot) * alpha
+    S_tilde = alpha_tilde.sum(dim=-1, keepdim=True)
+
+    # KL( Dir(alpha_tilde) || Dir(ones(K)) )
+    kl = (
+        torch.lgamma(S_tilde.squeeze(-1))
+        - torch.lgamma(alpha_tilde).sum(dim=-1)
+        - torch.lgamma(torch.tensor(float(k_evidence), device=alpha.device))
+        + ((alpha_tilde - 1) * (torch.digamma(alpha_tilde) - torch.digamma(S_tilde))).sum(dim=-1)
+    )
+    return (mse + lambda_kl * kl).mean()

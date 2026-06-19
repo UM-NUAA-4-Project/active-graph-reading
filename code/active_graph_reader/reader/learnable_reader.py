@@ -10,29 +10,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .reader_mlp import ReaderMLP
+
 from ..core.base_reader import BaseReader
 from ..gnn.frontier.graph_builder import FrontierGraphBuilder
 from ..gnn.frontier.encoder import FrontierNodesEncoder
 from ..engine.graph_state import GraphState
 
 
-class ReaderMLP(nn.Module):
-    """小型 MLP：将 frontier node embeddings 映射为标量 scores。"""
-
-    def __init__(self, hidden_dim: int, dropout: float = 0.1):
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(p=dropout),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(p=dropout),
-            nn.Linear(hidden_dim, 1),
-        )
-
-    def forward(self, frontier_embeds: torch.Tensor) -> torch.Tensor:
-        return self.mlp(frontier_embeds).squeeze(-1)
 
 
 class LearnableReader(BaseReader, nn.Module):
@@ -62,7 +47,7 @@ class LearnableReader(BaseReader, nn.Module):
             n_layers=n_layers,
             dropout=dropout,
         )
-        self.reader_mlp = ReaderMLP(hidden_dim, dropout=dropout)
+        self.reader_mlp = ReaderMLP(input_dim=hidden_dim, hidden_dim=hidden_dim, dropout=dropout)
 
     def forward(
         self, graph_state: GraphState
