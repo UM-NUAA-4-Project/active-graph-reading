@@ -1,0 +1,1759 @@
+{
+  "config": {
+    "regular_classes": [
+      1,
+      2,
+      3,
+      4,
+      6,
+      12,
+      17,
+      18,
+      21,
+      23,
+      24,
+      33,
+      36
+    ],
+    "scarce_classes": [
+      0,
+      5,
+      7,
+      8,
+      9,
+      10,
+      11,
+      13,
+      14,
+      15,
+      16,
+      19,
+      20,
+      22,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      34,
+      35
+    ],
+    "sim_threshold": 0.85,
+    "max_per_graph_budget": 10,
+    "target_per_class_budget": 200
+  },
+  "summary": {
+    "total_trajectories": 72300,
+    "n_gaps": 12,
+    "missing_per_budget": {
+      "0_050": {
+        "missing_classes": [
+          0,
+          11,
+          19,
+          20,
+          28
+        ],
+        "n_missing": 5
+      },
+      "0_100": {
+        "missing_classes": [
+          30
+        ],
+        "n_missing": 1
+      },
+      "0_150": {
+        "missing_classes": [],
+        "n_missing": 0
+      },
+      "0_200": {
+        "missing_classes": [
+          0,
+          1,
+          2,
+          3,
+          6,
+          17,
+          18,
+          23,
+          28,
+          32,
+          33,
+          36
+        ],
+        "n_missing": 12
+      }
+    }
+  },
+  "per_budget": {
+    "0_050": {
+      "total_trajectories": 17638,
+      "n_classes_represented": 32,
+      "label_distribution": {
+        "0": 0,
+        "1": 321,
+        "2": 1931,
+        "3": 325,
+        "4": 228,
+        "5": 12,
+        "6": 2683,
+        "7": 161,
+        "8": 42,
+        "9": 455,
+        "10": 67,
+        "11": 0,
+        "12": 89,
+        "13": 42,
+        "14": 16,
+        "15": 167,
+        "16": 2,
+        "17": 1981,
+        "18": 3892,
+        "19": 0,
+        "20": 0,
+        "21": 133,
+        "22": 88,
+        "23": 802,
+        "24": 182,
+        "25": 33,
+        "26": 36,
+        "27": 1,
+        "28": 0,
+        "29": 46,
+        "30": 13,
+        "31": 125,
+        "32": 29,
+        "33": 2718,
+        "34": 16,
+        "35": 8,
+        "36": 994
+      }
+    },
+    "0_100": {
+      "total_trajectories": 24017,
+      "n_classes_represented": 36,
+      "label_distribution": {
+        "0": 2,
+        "1": 1172,
+        "2": 2668,
+        "3": 827,
+        "4": 778,
+        "5": 40,
+        "6": 3087,
+        "7": 194,
+        "8": 116,
+        "9": 816,
+        "10": 105,
+        "11": 26,
+        "12": 557,
+        "13": 15,
+        "14": 89,
+        "15": 486,
+        "16": 12,
+        "17": 3322,
+        "18": 2125,
+        "19": 5,
+        "20": 15,
+        "21": 491,
+        "22": 176,
+        "23": 1689,
+        "24": 529,
+        "25": 196,
+        "26": 118,
+        "27": 26,
+        "28": 1,
+        "29": 157,
+        "30": 0,
+        "31": 216,
+        "32": 12,
+        "33": 2023,
+        "34": 151,
+        "35": 358,
+        "36": 1417
+      }
+    },
+    "0_150": {
+      "total_trajectories": 25507,
+      "n_classes_represented": 37,
+      "label_distribution": {
+        "0": 1,
+        "1": 1227,
+        "2": 2556,
+        "3": 1038,
+        "4": 913,
+        "5": 59,
+        "6": 3230,
+        "7": 285,
+        "8": 151,
+        "9": 901,
+        "10": 70,
+        "11": 29,
+        "12": 449,
+        "13": 10,
+        "14": 77,
+        "15": 623,
+        "16": 31,
+        "17": 3697,
+        "18": 1754,
+        "19": 19,
+        "20": 29,
+        "21": 670,
+        "22": 189,
+        "23": 2060,
+        "24": 634,
+        "25": 207,
+        "26": 171,
+        "27": 36,
+        "28": 3,
+        "29": 308,
+        "30": 5,
+        "31": 161,
+        "32": 8,
+        "33": 1945,
+        "34": 249,
+        "35": 239,
+        "36": 1473
+      }
+    },
+    "0_200": {
+      "total_trajectories": 5138,
+      "n_classes_represented": 25,
+      "label_distribution": {
+        "0": 0,
+        "1": 0,
+        "2": 0,
+        "3": 0,
+        "4": 911,
+        "5": 18,
+        "6": 0,
+        "7": 330,
+        "8": 208,
+        "9": 330,
+        "10": 20,
+        "11": 36,
+        "12": 345,
+        "13": 2,
+        "14": 12,
+        "15": 281,
+        "16": 14,
+        "17": 0,
+        "18": 0,
+        "19": 52,
+        "20": 25,
+        "21": 715,
+        "22": 163,
+        "23": 0,
+        "24": 672,
+        "25": 156,
+        "26": 144,
+        "27": 47,
+        "28": 0,
+        "29": 196,
+        "30": 15,
+        "31": 60,
+        "32": 0,
+        "33": 0,
+        "34": 293,
+        "35": 93,
+        "36": 0
+      }
+    }
+  },
+  "per_class": {
+    "0": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 2,
+          "n_graphs_used": 1,
+          "n_teacher": 0,
+          "n_reader": 2,
+          "avg_ce": 0.0,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 1,
+          "n_graphs_used": 1,
+          "n_teacher": 0,
+          "n_reader": 1,
+          "avg_ce": 0.0,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 3
+    },
+    "1": {
+      "type": "regular",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 321,
+          "n_graphs_used": 218,
+          "n_teacher": 321,
+          "n_reader": 0,
+          "avg_ce": 0.14095052334144356,
+          "gap_to_200": 0
+        },
+        "0_100": {
+          "n_trajectories": 1172,
+          "n_graphs_used": 626,
+          "n_teacher": 1172,
+          "n_reader": 0,
+          "avg_ce": 0.0754131496551611,
+          "gap_to_200": 0
+        },
+        "0_150": {
+          "n_trajectories": 1227,
+          "n_graphs_used": 663,
+          "n_teacher": 1227,
+          "n_reader": 0,
+          "avg_ce": 0.08332037330645443,
+          "gap_to_200": 0
+        },
+        "0_200": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": 200
+        }
+      },
+      "total_across_budgets": 2720
+    },
+    "2": {
+      "type": "regular",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 1931,
+          "n_graphs_used": 1040,
+          "n_teacher": 1931,
+          "n_reader": 0,
+          "avg_ce": 0.07620445630637691,
+          "gap_to_200": 0
+        },
+        "0_100": {
+          "n_trajectories": 2668,
+          "n_graphs_used": 1353,
+          "n_teacher": 2668,
+          "n_reader": 0,
+          "avg_ce": 0.07247010707822607,
+          "gap_to_200": 0
+        },
+        "0_150": {
+          "n_trajectories": 2556,
+          "n_graphs_used": 1346,
+          "n_teacher": 2556,
+          "n_reader": 0,
+          "avg_ce": 0.07475165002397245,
+          "gap_to_200": 0
+        },
+        "0_200": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": 200
+        }
+      },
+      "total_across_budgets": 7155
+    },
+    "3": {
+      "type": "regular",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 325,
+          "n_graphs_used": 212,
+          "n_teacher": 325,
+          "n_reader": 0,
+          "avg_ce": 0.07903102453632359,
+          "gap_to_200": 0
+        },
+        "0_100": {
+          "n_trajectories": 827,
+          "n_graphs_used": 439,
+          "n_teacher": 827,
+          "n_reader": 0,
+          "avg_ce": 0.06299748382794848,
+          "gap_to_200": 0
+        },
+        "0_150": {
+          "n_trajectories": 1038,
+          "n_graphs_used": 543,
+          "n_teacher": 1038,
+          "n_reader": 0,
+          "avg_ce": 0.05517945105496065,
+          "gap_to_200": 0
+        },
+        "0_200": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": 200
+        }
+      },
+      "total_across_budgets": 2190
+    },
+    "4": {
+      "type": "regular",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 228,
+          "n_graphs_used": 157,
+          "n_teacher": 228,
+          "n_reader": 0,
+          "avg_ce": 0.05067930963027862,
+          "gap_to_200": 0
+        },
+        "0_100": {
+          "n_trajectories": 778,
+          "n_graphs_used": 515,
+          "n_teacher": 778,
+          "n_reader": 0,
+          "avg_ce": 0.030982658795656638,
+          "gap_to_200": 0
+        },
+        "0_150": {
+          "n_trajectories": 913,
+          "n_graphs_used": 639,
+          "n_teacher": 913,
+          "n_reader": 0,
+          "avg_ce": 0.02641596202537424,
+          "gap_to_200": 0
+        },
+        "0_200": {
+          "n_trajectories": 911,
+          "n_graphs_used": 670,
+          "n_teacher": 911,
+          "n_reader": 0,
+          "avg_ce": 0.04461099306019598,
+          "gap_to_200": 0
+        }
+      },
+      "total_across_budgets": 2830
+    },
+    "5": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 12,
+          "n_graphs_used": 11,
+          "n_teacher": 0,
+          "n_reader": 12,
+          "avg_ce": 0.0,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 40,
+          "n_graphs_used": 21,
+          "n_teacher": 4,
+          "n_reader": 36,
+          "avg_ce": 0.04560230970382691,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 59,
+          "n_graphs_used": 27,
+          "n_teacher": 16,
+          "n_reader": 43,
+          "avg_ce": 0.09235321592847359,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 18,
+          "n_graphs_used": 16,
+          "n_teacher": 18,
+          "n_reader": 0,
+          "avg_ce": 0.13963106466043326,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 129
+    },
+    "6": {
+      "type": "regular",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 2683,
+          "n_graphs_used": 1523,
+          "n_teacher": 2683,
+          "n_reader": 0,
+          "avg_ce": 0.05915225790869837,
+          "gap_to_200": 0
+        },
+        "0_100": {
+          "n_trajectories": 3087,
+          "n_graphs_used": 1728,
+          "n_teacher": 3087,
+          "n_reader": 0,
+          "avg_ce": 0.05717594442634769,
+          "gap_to_200": 0
+        },
+        "0_150": {
+          "n_trajectories": 3230,
+          "n_graphs_used": 1814,
+          "n_teacher": 3230,
+          "n_reader": 0,
+          "avg_ce": 0.05682178604007923,
+          "gap_to_200": 0
+        },
+        "0_200": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": 200
+        }
+      },
+      "total_across_budgets": 9000
+    },
+    "7": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 161,
+          "n_graphs_used": 124,
+          "n_teacher": 134,
+          "n_reader": 27,
+          "avg_ce": 0.12732190159068002,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 194,
+          "n_graphs_used": 137,
+          "n_teacher": 183,
+          "n_reader": 11,
+          "avg_ce": 0.12119869464581275,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 285,
+          "n_graphs_used": 197,
+          "n_teacher": 277,
+          "n_reader": 8,
+          "avg_ce": 0.11428997951165189,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 330,
+          "n_graphs_used": 223,
+          "n_teacher": 330,
+          "n_reader": 0,
+          "avg_ce": 0.11184059599895449,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 970
+    },
+    "8": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 42,
+          "n_graphs_used": 27,
+          "n_teacher": 24,
+          "n_reader": 18,
+          "avg_ce": 0.1668220228365109,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 116,
+          "n_graphs_used": 70,
+          "n_teacher": 100,
+          "n_reader": 16,
+          "avg_ce": 0.17020910285502053,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 151,
+          "n_graphs_used": 85,
+          "n_teacher": 147,
+          "n_reader": 4,
+          "avg_ce": 0.15681462848580038,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 208,
+          "n_graphs_used": 125,
+          "n_teacher": 208,
+          "n_reader": 0,
+          "avg_ce": 0.1882578130746051,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 517
+    },
+    "9": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 455,
+          "n_graphs_used": 173,
+          "n_teacher": 106,
+          "n_reader": 349,
+          "avg_ce": 0.012047549380618765,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 816,
+          "n_graphs_used": 210,
+          "n_teacher": 193,
+          "n_reader": 623,
+          "avg_ce": 0.03243825183635553,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 901,
+          "n_graphs_used": 244,
+          "n_teacher": 289,
+          "n_reader": 612,
+          "avg_ce": 0.06640204799730558,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 330,
+          "n_graphs_used": 203,
+          "n_teacher": 330,
+          "n_reader": 0,
+          "avg_ce": 0.181180395607828,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 2502
+    },
+    "10": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 67,
+          "n_graphs_used": 19,
+          "n_teacher": 0,
+          "n_reader": 67,
+          "avg_ce": 0.0,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 105,
+          "n_graphs_used": 20,
+          "n_teacher": 9,
+          "n_reader": 96,
+          "avg_ce": 0.003277067521356089,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 70,
+          "n_graphs_used": 18,
+          "n_teacher": 15,
+          "n_reader": 55,
+          "avg_ce": 0.03140727427883283,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 20,
+          "n_graphs_used": 16,
+          "n_teacher": 20,
+          "n_reader": 0,
+          "avg_ce": 0.2509617610485293,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 262
+    },
+    "11": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 26,
+          "n_graphs_used": 20,
+          "n_teacher": 5,
+          "n_reader": 21,
+          "avg_ce": 0.08174603804945946,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 29,
+          "n_graphs_used": 28,
+          "n_teacher": 19,
+          "n_reader": 10,
+          "avg_ce": 0.19296779194525604,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 36,
+          "n_graphs_used": 35,
+          "n_teacher": 36,
+          "n_reader": 0,
+          "avg_ce": 0.30369999198268893,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 91
+    },
+    "12": {
+      "type": "regular",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 89,
+          "n_graphs_used": 77,
+          "n_teacher": 89,
+          "n_reader": 0,
+          "avg_ce": 0.35452096691627183,
+          "gap_to_200": 111
+        },
+        "0_100": {
+          "n_trajectories": 557,
+          "n_graphs_used": 415,
+          "n_teacher": 557,
+          "n_reader": 0,
+          "avg_ce": 0.22113546082142443,
+          "gap_to_200": 0
+        },
+        "0_150": {
+          "n_trajectories": 449,
+          "n_graphs_used": 343,
+          "n_teacher": 449,
+          "n_reader": 0,
+          "avg_ce": 0.20741831778274417,
+          "gap_to_200": 0
+        },
+        "0_200": {
+          "n_trajectories": 345,
+          "n_graphs_used": 269,
+          "n_teacher": 345,
+          "n_reader": 0,
+          "avg_ce": 0.23675775999309354,
+          "gap_to_200": 0
+        }
+      },
+      "total_across_budgets": 1440
+    },
+    "13": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 42,
+          "n_graphs_used": 32,
+          "n_teacher": 0,
+          "n_reader": 42,
+          "avg_ce": 0.0,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 15,
+          "n_graphs_used": 10,
+          "n_teacher": 2,
+          "n_reader": 13,
+          "avg_ce": 0.15942498842875164,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 10,
+          "n_graphs_used": 8,
+          "n_teacher": 0,
+          "n_reader": 10,
+          "avg_ce": 0.0,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 2,
+          "n_graphs_used": 2,
+          "n_teacher": 2,
+          "n_reader": 0,
+          "avg_ce": 0.605157853817218,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 69
+    },
+    "14": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 16,
+          "n_graphs_used": 15,
+          "n_teacher": 0,
+          "n_reader": 16,
+          "avg_ce": 0.0,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 89,
+          "n_graphs_used": 40,
+          "n_teacher": 8,
+          "n_reader": 81,
+          "avg_ce": 0.017526954815335824,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 77,
+          "n_graphs_used": 41,
+          "n_teacher": 8,
+          "n_reader": 69,
+          "avg_ce": 0.021385703777876235,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 12,
+          "n_graphs_used": 11,
+          "n_teacher": 12,
+          "n_reader": 0,
+          "avg_ce": 0.2945441735985999,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 194
+    },
+    "15": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 167,
+          "n_graphs_used": 91,
+          "n_teacher": 63,
+          "n_reader": 104,
+          "avg_ce": 0.033664883385770006,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 486,
+          "n_graphs_used": 143,
+          "n_teacher": 157,
+          "n_reader": 329,
+          "avg_ce": 0.033760743083065786,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 623,
+          "n_graphs_used": 168,
+          "n_teacher": 228,
+          "n_reader": 395,
+          "avg_ce": 0.04801513302805969,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 281,
+          "n_graphs_used": 164,
+          "n_teacher": 281,
+          "n_reader": 0,
+          "avg_ce": 0.11667659058324846,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 1557
+    },
+    "16": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 2,
+          "n_graphs_used": 2,
+          "n_teacher": 0,
+          "n_reader": 2,
+          "avg_ce": 0.0,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 12,
+          "n_graphs_used": 10,
+          "n_teacher": 0,
+          "n_reader": 12,
+          "avg_ce": 0.0,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 31,
+          "n_graphs_used": 24,
+          "n_teacher": 7,
+          "n_reader": 24,
+          "avg_ce": 0.011460308558819252,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 14,
+          "n_graphs_used": 14,
+          "n_teacher": 14,
+          "n_reader": 0,
+          "avg_ce": 0.1444442377001646,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 59
+    },
+    "17": {
+      "type": "regular",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 1981,
+          "n_graphs_used": 1543,
+          "n_teacher": 1981,
+          "n_reader": 0,
+          "avg_ce": 8.249480134537878e-06,
+          "gap_to_200": 0
+        },
+        "0_100": {
+          "n_trajectories": 3322,
+          "n_graphs_used": 2376,
+          "n_teacher": 3322,
+          "n_reader": 0,
+          "avg_ce": 9.520574428153182e-07,
+          "gap_to_200": 0
+        },
+        "0_150": {
+          "n_trajectories": 3697,
+          "n_graphs_used": 2655,
+          "n_teacher": 3697,
+          "n_reader": 0,
+          "avg_ce": 9.6692514399258e-07,
+          "gap_to_200": 0
+        },
+        "0_200": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": 200
+        }
+      },
+      "total_across_budgets": 9000
+    },
+    "18": {
+      "type": "regular",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 3892,
+          "n_graphs_used": 1870,
+          "n_teacher": 3892,
+          "n_reader": 0,
+          "avg_ce": 0.2188549297906243,
+          "gap_to_200": 0
+        },
+        "0_100": {
+          "n_trajectories": 2125,
+          "n_graphs_used": 1325,
+          "n_teacher": 2125,
+          "n_reader": 0,
+          "avg_ce": 0.25083452380167365,
+          "gap_to_200": 0
+        },
+        "0_150": {
+          "n_trajectories": 1754,
+          "n_graphs_used": 1199,
+          "n_teacher": 1754,
+          "n_reader": 0,
+          "avg_ce": 0.2775937833650049,
+          "gap_to_200": 0
+        },
+        "0_200": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": 200
+        }
+      },
+      "total_across_budgets": 7771
+    },
+    "19": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 5,
+          "n_graphs_used": 4,
+          "n_teacher": 0,
+          "n_reader": 5,
+          "avg_ce": 0.0,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 19,
+          "n_graphs_used": 19,
+          "n_teacher": 18,
+          "n_reader": 1,
+          "avg_ce": 0.4718441119368531,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 52,
+          "n_graphs_used": 51,
+          "n_teacher": 52,
+          "n_reader": 0,
+          "avg_ce": 0.2070984941784935,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 76
+    },
+    "20": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 15,
+          "n_graphs_used": 8,
+          "n_teacher": 15,
+          "n_reader": 0,
+          "avg_ce": 0.21173218072702488,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 29,
+          "n_graphs_used": 21,
+          "n_teacher": 25,
+          "n_reader": 4,
+          "avg_ce": 0.2985717908896763,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 25,
+          "n_graphs_used": 19,
+          "n_teacher": 25,
+          "n_reader": 0,
+          "avg_ce": 0.2950039231381379,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 69
+    },
+    "21": {
+      "type": "regular",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 133,
+          "n_graphs_used": 106,
+          "n_teacher": 133,
+          "n_reader": 0,
+          "avg_ce": 0.17016880269852247,
+          "gap_to_200": 67
+        },
+        "0_100": {
+          "n_trajectories": 491,
+          "n_graphs_used": 325,
+          "n_teacher": 491,
+          "n_reader": 0,
+          "avg_ce": 0.10835518369058995,
+          "gap_to_200": 0
+        },
+        "0_150": {
+          "n_trajectories": 670,
+          "n_graphs_used": 409,
+          "n_teacher": 670,
+          "n_reader": 0,
+          "avg_ce": 0.08985219134495966,
+          "gap_to_200": 0
+        },
+        "0_200": {
+          "n_trajectories": 715,
+          "n_graphs_used": 434,
+          "n_teacher": 715,
+          "n_reader": 0,
+          "avg_ce": 0.1082814286047803,
+          "gap_to_200": 0
+        }
+      },
+      "total_across_budgets": 2009
+    },
+    "22": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 88,
+          "n_graphs_used": 55,
+          "n_teacher": 84,
+          "n_reader": 4,
+          "avg_ce": 0.09041548945989222,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 176,
+          "n_graphs_used": 98,
+          "n_teacher": 169,
+          "n_reader": 7,
+          "avg_ce": 0.07238004620122557,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 189,
+          "n_graphs_used": 117,
+          "n_teacher": 186,
+          "n_reader": 3,
+          "avg_ce": 0.08984226148750861,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 163,
+          "n_graphs_used": 106,
+          "n_teacher": 163,
+          "n_reader": 0,
+          "avg_ce": 0.11904094529753367,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 616
+    },
+    "23": {
+      "type": "regular",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 802,
+          "n_graphs_used": 418,
+          "n_teacher": 802,
+          "n_reader": 0,
+          "avg_ce": 0.20751877265952665,
+          "gap_to_200": 0
+        },
+        "0_100": {
+          "n_trajectories": 1689,
+          "n_graphs_used": 745,
+          "n_teacher": 1689,
+          "n_reader": 0,
+          "avg_ce": 0.13193078421596643,
+          "gap_to_200": 0
+        },
+        "0_150": {
+          "n_trajectories": 2060,
+          "n_graphs_used": 860,
+          "n_teacher": 2060,
+          "n_reader": 0,
+          "avg_ce": 0.10454705120434167,
+          "gap_to_200": 0
+        },
+        "0_200": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": 200
+        }
+      },
+      "total_across_budgets": 4551
+    },
+    "24": {
+      "type": "regular",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 182,
+          "n_graphs_used": 127,
+          "n_teacher": 182,
+          "n_reader": 0,
+          "avg_ce": 0.07560826396138279,
+          "gap_to_200": 18
+        },
+        "0_100": {
+          "n_trajectories": 529,
+          "n_graphs_used": 328,
+          "n_teacher": 529,
+          "n_reader": 0,
+          "avg_ce": 0.08998414636582393,
+          "gap_to_200": 0
+        },
+        "0_150": {
+          "n_trajectories": 634,
+          "n_graphs_used": 394,
+          "n_teacher": 634,
+          "n_reader": 0,
+          "avg_ce": 0.09059975967544917,
+          "gap_to_200": 0
+        },
+        "0_200": {
+          "n_trajectories": 672,
+          "n_graphs_used": 422,
+          "n_teacher": 672,
+          "n_reader": 0,
+          "avg_ce": 0.09911599347656441,
+          "gap_to_200": 0
+        }
+      },
+      "total_across_budgets": 2017
+    },
+    "25": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 33,
+          "n_graphs_used": 24,
+          "n_teacher": 7,
+          "n_reader": 26,
+          "avg_ce": 0.09286339039152319,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 196,
+          "n_graphs_used": 86,
+          "n_teacher": 88,
+          "n_reader": 108,
+          "avg_ce": 0.10346010935952145,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 207,
+          "n_graphs_used": 110,
+          "n_teacher": 124,
+          "n_reader": 83,
+          "avg_ce": 0.10932147576895221,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 156,
+          "n_graphs_used": 116,
+          "n_teacher": 156,
+          "n_reader": 0,
+          "avg_ce": 0.1991709427180318,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 592
+    },
+    "26": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 36,
+          "n_graphs_used": 24,
+          "n_teacher": 36,
+          "n_reader": 0,
+          "avg_ce": 0.08128105961415678,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 118,
+          "n_graphs_used": 87,
+          "n_teacher": 115,
+          "n_reader": 3,
+          "avg_ce": 0.12919469696143962,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 171,
+          "n_graphs_used": 125,
+          "n_teacher": 159,
+          "n_reader": 12,
+          "avg_ce": 0.13861647075963246,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 144,
+          "n_graphs_used": 115,
+          "n_teacher": 144,
+          "n_reader": 0,
+          "avg_ce": 0.2160866056430041,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 469
+    },
+    "27": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 1,
+          "n_graphs_used": 1,
+          "n_teacher": 0,
+          "n_reader": 1,
+          "avg_ce": 0.0,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 26,
+          "n_graphs_used": 14,
+          "n_teacher": 26,
+          "n_reader": 0,
+          "avg_ce": 0.08967013779070279,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 36,
+          "n_graphs_used": 18,
+          "n_teacher": 36,
+          "n_reader": 0,
+          "avg_ce": 0.030151938492091388,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 47,
+          "n_graphs_used": 30,
+          "n_teacher": 47,
+          "n_reader": 0,
+          "avg_ce": 0.18866586138150926,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 110
+    },
+    "28": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 1,
+          "n_graphs_used": 1,
+          "n_teacher": 1,
+          "n_reader": 0,
+          "avg_ce": 0.4778899550437927,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 3,
+          "n_graphs_used": 3,
+          "n_teacher": 0,
+          "n_reader": 3,
+          "avg_ce": 0.0,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 4
+    },
+    "29": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 46,
+          "n_graphs_used": 34,
+          "n_teacher": 12,
+          "n_reader": 34,
+          "avg_ce": 0.06782137163226372,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 157,
+          "n_graphs_used": 54,
+          "n_teacher": 50,
+          "n_reader": 107,
+          "avg_ce": 0.0362150071925757,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 308,
+          "n_graphs_used": 107,
+          "n_teacher": 153,
+          "n_reader": 155,
+          "avg_ce": 0.07494825535352684,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 196,
+          "n_graphs_used": 114,
+          "n_teacher": 196,
+          "n_reader": 0,
+          "avg_ce": 0.12088956611325563,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 707
+    },
+    "30": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 13,
+          "n_graphs_used": 10,
+          "n_teacher": 11,
+          "n_reader": 2,
+          "avg_ce": 0.10668335568026613,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 5,
+          "n_graphs_used": 5,
+          "n_teacher": 5,
+          "n_reader": 0,
+          "avg_ce": 0.4257534682750702,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 15,
+          "n_graphs_used": 15,
+          "n_teacher": 15,
+          "n_reader": 0,
+          "avg_ce": 0.13672219421714543,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 33
+    },
+    "31": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 125,
+          "n_graphs_used": 73,
+          "n_teacher": 43,
+          "n_reader": 82,
+          "avg_ce": 0.0830004950389266,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 216,
+          "n_graphs_used": 89,
+          "n_teacher": 98,
+          "n_reader": 118,
+          "avg_ce": 0.08340719521560526,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 161,
+          "n_graphs_used": 81,
+          "n_teacher": 82,
+          "n_reader": 79,
+          "avg_ce": 0.08293175414621813,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 60,
+          "n_graphs_used": 43,
+          "n_teacher": 60,
+          "n_reader": 0,
+          "avg_ce": 0.2197270982247403,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 562
+    },
+    "32": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 29,
+          "n_graphs_used": 26,
+          "n_teacher": 0,
+          "n_reader": 29,
+          "avg_ce": 0.0,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 12,
+          "n_graphs_used": 8,
+          "n_teacher": 0,
+          "n_reader": 12,
+          "avg_ce": 0.0,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 8,
+          "n_graphs_used": 8,
+          "n_teacher": 0,
+          "n_reader": 8,
+          "avg_ce": 0.0,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 49
+    },
+    "33": {
+      "type": "regular",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 2718,
+          "n_graphs_used": 976,
+          "n_teacher": 2718,
+          "n_reader": 0,
+          "avg_ce": 0.18702240437116774,
+          "gap_to_200": 0
+        },
+        "0_100": {
+          "n_trajectories": 2023,
+          "n_graphs_used": 939,
+          "n_teacher": 2023,
+          "n_reader": 0,
+          "avg_ce": 0.1731205572498576,
+          "gap_to_200": 0
+        },
+        "0_150": {
+          "n_trajectories": 1945,
+          "n_graphs_used": 939,
+          "n_teacher": 1945,
+          "n_reader": 0,
+          "avg_ce": 0.14394660701145984,
+          "gap_to_200": 0
+        },
+        "0_200": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": 200
+        }
+      },
+      "total_across_budgets": 6686
+    },
+    "34": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 16,
+          "n_graphs_used": 12,
+          "n_teacher": 7,
+          "n_reader": 9,
+          "avg_ce": 0.11022041951946449,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 151,
+          "n_graphs_used": 98,
+          "n_teacher": 97,
+          "n_reader": 54,
+          "avg_ce": 0.12277478459126367,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 249,
+          "n_graphs_used": 153,
+          "n_teacher": 212,
+          "n_reader": 37,
+          "avg_ce": 0.1536434886037017,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 293,
+          "n_graphs_used": 175,
+          "n_teacher": 293,
+          "n_reader": 0,
+          "avg_ce": 0.16328593877198988,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 709
+    },
+    "35": {
+      "type": "scarce",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 8,
+          "n_graphs_used": 6,
+          "n_teacher": 0,
+          "n_reader": 8,
+          "avg_ce": 0.0,
+          "gap_to_200": null
+        },
+        "0_100": {
+          "n_trajectories": 358,
+          "n_graphs_used": 65,
+          "n_teacher": 78,
+          "n_reader": 280,
+          "avg_ce": 0.012924506014559986,
+          "gap_to_200": null
+        },
+        "0_150": {
+          "n_trajectories": 239,
+          "n_graphs_used": 55,
+          "n_teacher": 86,
+          "n_reader": 153,
+          "avg_ce": 0.011773694205063417,
+          "gap_to_200": null
+        },
+        "0_200": {
+          "n_trajectories": 93,
+          "n_graphs_used": 45,
+          "n_teacher": 93,
+          "n_reader": 0,
+          "avg_ce": 0.046916759071448176,
+          "gap_to_200": null
+        }
+      },
+      "total_across_budgets": 698
+    },
+    "36": {
+      "type": "regular",
+      "budgets": {
+        "0_050": {
+          "n_trajectories": 994,
+          "n_graphs_used": 442,
+          "n_teacher": 994,
+          "n_reader": 0,
+          "avg_ce": 0.06506511130265019,
+          "gap_to_200": 0
+        },
+        "0_100": {
+          "n_trajectories": 1417,
+          "n_graphs_used": 648,
+          "n_teacher": 1417,
+          "n_reader": 0,
+          "avg_ce": 0.06190642003091816,
+          "gap_to_200": 0
+        },
+        "0_150": {
+          "n_trajectories": 1473,
+          "n_graphs_used": 665,
+          "n_teacher": 1473,
+          "n_reader": 0,
+          "avg_ce": 0.06727102983171394,
+          "gap_to_200": 0
+        },
+        "0_200": {
+          "n_trajectories": 0,
+          "n_graphs_used": 0,
+          "n_teacher": 0,
+          "n_reader": 0,
+          "avg_ce": null,
+          "gap_to_200": 200
+        }
+      },
+      "total_across_budgets": 3884
+    }
+  },
+  "gaps": [
+    {
+      "class": 1,
+      "budget": "0_200",
+      "current": 0,
+      "target": 200,
+      "gap": 200
+    },
+    {
+      "class": 2,
+      "budget": "0_200",
+      "current": 0,
+      "target": 200,
+      "gap": 200
+    },
+    {
+      "class": 3,
+      "budget": "0_200",
+      "current": 0,
+      "target": 200,
+      "gap": 200
+    },
+    {
+      "class": 6,
+      "budget": "0_200",
+      "current": 0,
+      "target": 200,
+      "gap": 200
+    },
+    {
+      "class": 12,
+      "budget": "0_050",
+      "current": 89,
+      "target": 200,
+      "gap": 111
+    },
+    {
+      "class": 17,
+      "budget": "0_200",
+      "current": 0,
+      "target": 200,
+      "gap": 200
+    },
+    {
+      "class": 18,
+      "budget": "0_200",
+      "current": 0,
+      "target": 200,
+      "gap": 200
+    },
+    {
+      "class": 21,
+      "budget": "0_050",
+      "current": 133,
+      "target": 200,
+      "gap": 67
+    },
+    {
+      "class": 23,
+      "budget": "0_200",
+      "current": 0,
+      "target": 200,
+      "gap": 200
+    },
+    {
+      "class": 24,
+      "budget": "0_050",
+      "current": 182,
+      "target": 200,
+      "gap": 18
+    },
+    {
+      "class": 33,
+      "budget": "0_200",
+      "current": 0,
+      "target": 200,
+      "gap": 200
+    },
+    {
+      "class": 36,
+      "budget": "0_200",
+      "current": 0,
+      "target": 200,
+      "gap": 200
+    }
+  ]
+}
