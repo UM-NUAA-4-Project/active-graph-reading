@@ -1,5 +1,8 @@
 """用 v0 Reader 在指定标签的训练图上生成轨迹。
 
+内存优化：只加载候选图，完全不加载验证集/测试集/非目标训练图。
+数据迁移到 GPU。
+
 使用方式：
   python code/m4/generate_reader_trajectories.py --labels 0,5,12
     --reader-checkpoint m5/checkpoint/best_reader.pt
@@ -9,8 +12,9 @@
 import argparse
 import sys
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Tuple
 
+import pandas as pd
 import torch
 import dgl
 from tqdm import tqdm
@@ -19,7 +23,6 @@ _script_dir = Path(__file__).resolve().parent
 _repo_root = _script_dir.parent
 sys.path.insert(0, str(_repo_root))
 
-from ogb.graphproppred import DglGraphPropPredDataset
 from active_graph_reader.reader.learnable_reader import LearnableReader
 from active_graph_reader.gnn.classifier import GraphClassifier
 from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
@@ -27,6 +30,68 @@ from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
 from m4.teachers.base import Trajectory
 
+
+# ---------------------------------------------------------------------------
+# 候选图收集：仅读标签 CSV + 训练集 split，不加载任何图数据
+# ---------------------------------------------------------------------------
+
+def collect_candidates(root: str, target_labels: List[int],
+                       max_per_label: int) -> Dict[int, List[int]]:
+    """从原始 CSV 读取标签和训练集 split，按标签筛选候选 OGB index。
+
+    完全绕过 DglGraphPropPredDataset —— 不加载 158k 张图，
+    只读 graph-label.csv.gz（~2 MB）和 train.csv.gz。
+    """
+    data_dir = Path(root) / 'ogbg_ppa'
+
+    labels_arr = pd.read_csv(
+        data_dir / 'raw' / 'graph-label.csv.gz',
+        compression='gzip', header=None,
+    ).values.flatten()  # (158100,) int64
+
+    train_idx = pd.read_csv(
+        data_dir / 'split' / 'species' / 'train.csv.gz',
+        compression='gzip', header=None,
+    ).values.flatten()  # (78200,) int64
+
+    candidates = {lbl: [] for lbl in target_labels}
+    for ogb_idx in sorted(train_idx.tolist()):
+        label = int(labels_arr[ogb_idx])
+        if label in candidates and len(candidates[label]) < max_per_label:
+            candidates[label].append(ogb_idx)
+
+    for lbl in target_labels:
+        print(f"  label {lbl}: {len(candidates[lbl])} candidate graphs")
+    return candidates
+
+
+# ---------------------------------------------------------------------------
+# 图加载：仅从 DGL 预编译文件加载指定索引的图
+# ---------------------------------------------------------------------------
+
+def load_graphs_subset(root: str, indices: List[int],
+                       device: torch.device) -> Dict[int, Tuple[dgl.DGLGraph, int]]:
+    """通过 dgl.load_graphs(path, idx_list=indices) 仅加载需要的图。
+    加自环后迁移到 GPU。返回 {ogb_idx: (gpu_graph, label)}。
+    """
+    proc_path = str(Path(root) / 'ogbg_ppa' / 'processed' / 'dgl_data_processed')
+    cpu_graphs, label_dict = dgl.load_graphs(proc_path, idx_list=indices)
+    all_labels = label_dict['labels']  # 始终返回全量标签，不受 idx_list 影响
+
+    cache: Dict[int, Tuple[dgl.DGLGraph, int]] = {}
+    for i, ogb_idx in enumerate(indices):
+        g = dgl.add_self_loop(cpu_graphs[i])
+        g = g.to(device)
+        label = int(all_labels[ogb_idx].item())
+        cache[ogb_idx] = (g, label)
+
+    del cpu_graphs
+    return cache
+
+
+# ---------------------------------------------------------------------------
+# 主流程
+# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description='v0 Reader trajectory generation')
@@ -47,35 +112,35 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     target_labels = [int(x) for x in args.labels.split(',')]
     budget_ratios = [float(x) for x in args.budget_ratios.split(',')]
+    print(f"Device: {device}")
     print(f"Target labels: {target_labels}")
     print(f"Budget ratios: {budget_ratios}")
 
-    # ---- 加载 OGB 数据集 ----
-    print("\n=== Loading OGB dataset ===")
-    dataset = DglGraphPropPredDataset(name='ogbg-ppa', root=args.root)
-    train_idx = dataset.get_idx_split()['train'].tolist()
+    # ---- 1. 仅读标签 CSV + 训练集 split，筛选候选图 ----
+    print("\n=== Collecting candidate graphs (no graph data loaded) ===")
+    candidates = collect_candidates(args.root, target_labels, args.max_graphs_per_label)
+    all_candidates = [idx for idxs in candidates.values() for idx in idxs]
+    print(f"Total candidate graphs: {len(all_candidates)}")
+    if not all_candidates:
+        print("No candidates found. Exiting.")
+        return
 
-    # ---- 按标签收集候选图 ----
-    print("\n=== Collecting candidate graphs ===")
-    candidates = {label: [] for label in target_labels}
-    for ogb_idx in tqdm(train_idx, desc="  Scanning labels"):
-        _, lbl = dataset[ogb_idx]
-        label = lbl.item()
-        if label in candidates and len(candidates[label]) < args.max_graphs_per_label:
-            candidates[label].append(ogb_idx)
-    for label in target_labels:
-        print(f"  label {label}: {len(candidates[label])} graphs")
+    # ---- 2. 仅加载候选图，迁至 GPU ----
+    print("\n=== Loading candidate graphs to GPU ===")
+    graph_cache = load_graphs_subset(args.root, all_candidates, device)
+    print(f"Loaded {len(graph_cache)} graphs to {device}")
 
-    # ---- 加载 reader + classifier ----
+    # ---- 3. 加载 reader + classifier ----
     print("\n=== Loading v0 LearnableReader ===")
     reader_ckpt = torch.load(str(repo_root / args.reader_checkpoint),
                              map_location='cpu', weights_only=False)
-    hidden_dim, n_layers = 0, 0
     sd = reader_ckpt['reader_state_dict']
     hidden_dim = sd['frontier_encoder.node_type_emb.weight'].shape[1]
+    n_layers = 0
     for k in sd:
         if k.startswith('frontier_encoder.convs.'):
             n_layers = max(n_layers, int(k.split('.')[2]) + 1)
+    print(f"  hidden_dim={hidden_dim}, n_layers={n_layers}")
     reader = LearnableReader(edge_feat_dim=7, hidden_dim=hidden_dim,
                              n_layers=n_layers, dropout=0.1).to(device)
     reader.load_state_dict(sd)
@@ -93,16 +158,15 @@ def main():
 
     builder = SubgraphBuilder()
 
-    # ---- 生成轨迹 ----
+    # ---- 4. 生成轨迹 ----
     print("\n=== Generating trajectories ===")
-    all_trajectories = []  # List[List[Trajectory]] — 每个元素是一张图的全部轨迹
-    stats = {r: {l: 0 for l in target_labels} for r in budget_ratios}
+    all_trajectories = []   # List[List[Trajectory]]
+    stats = {r: {lbl: 0 for lbl in target_labels} for r in budget_ratios}
 
     for label in target_labels:
         graph_list = candidates[label]
         for ogb_idx in tqdm(graph_list, desc=f"  label {label}"):
-            g_raw, lbl = dataset[ogb_idx]
-            g_raw = dgl.add_self_loop(g_raw)
+            g_raw, lbl_val = graph_cache[ogb_idx]  # 已在 GPU
             n_nodes = g_raw.num_nodes()
 
             for ratio in budget_ratios:
@@ -128,7 +192,7 @@ def main():
                     logits = classifier(sub_g, nids)
                     pred = logits.argmax().item()
 
-                    if pred == lbl.item():
+                    if pred == lbl_val:
                         trajs.append(Trajectory(
                             graph_idx=ogb_idx,
                             seed_node=seed_node,
@@ -144,7 +208,7 @@ def main():
                     all_trajectories.append(trajs)
                     stats[ratio][label] += len(trajs)
 
-    # ---- 保存 ----
+    # ---- 5. 保存 ----
     output_path = repo_root / args.output
     output_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({'trajectories': all_trajectories}, str(output_path))
@@ -152,7 +216,7 @@ def main():
     print(f"\nSaved {len(all_trajectories)} graph-entries to {output_path}")
     for ratio in budget_ratios:
         total = sum(stats[ratio].values())
-        per_label = ', '.join(f'{l}:{stats[ratio][l]}' for l in target_labels)
+        per_label = ', '.join(f'{lbl}:{stats[ratio][lbl]}' for lbl in target_labels)
         print(f"  r{ratio:.2f}: {total} trajectories ({per_label})")
 
 

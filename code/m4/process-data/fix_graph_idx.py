@@ -29,7 +29,7 @@ if str(_code_dir) not in sys.path:
     sys.path.insert(0, str(_code_dir))
 
 import torch
-from ogb.graphproppred import DglGraphPropPredDataset
+import pandas as pd
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
@@ -49,10 +49,10 @@ def parse_args():
 
 
 def build_mapping(root: str, max_graphs: int):
-    """Build local_idx → ogb_idx mapping from OGB training split."""
+    """Build local_idx → ogb_idx mapping from raw training split CSV."""
     logger.info("Loading OGB training split (root=%s)...", root)
-    dataset = DglGraphPropPredDataset(name='ogbg-ppa', root=root)
-    train_idx = dataset.get_idx_split()['train'].tolist()
+    train_path = Path(root) / 'ogbg_ppa' / 'split' / 'species' / 'train.csv.gz'
+    train_idx = pd.read_csv(train_path, compression='gzip', header=None).values.flatten().tolist()
     if max_graphs > 0:
         train_idx = train_idx[:max_graphs]
         logger.info("Limited to %d training graphs", max_graphs)

@@ -1,6 +1,6 @@
 """Reader 效果验证脚本：在验证集和测试集上评测 LearnableReader vs Random/BFS。
 
-- 每次只加载一个 split，使用完释放
+- 按 split 逐次加载，只用 dgl.load_graphs 加载需要的图（不加载训练集）
 - 每张图给所有节点按 degree 打分，选最高分节点作 best seed、最低分作 worst seed
 - 分别统计 best-seed 和 worst-seed 的准确率
 - 对比 LearnableReader、Random、BFS 三种策略
@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
+import pandas as pd
 import torch
 import dgl
 from tqdm import tqdm
@@ -34,7 +35,6 @@ from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
 from active_graph_reader.gnn.classifier import GraphClassifier
 from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
-from ogb.graphproppred import DglGraphPropPredDataset
 
 BUDGETS_REL = [0.05, 0.10, 0.15]
 FIXED_STRATEGIES = ['random', 'bfs']
@@ -120,7 +120,8 @@ def run_one_seed(
 def evaluate_strategy_split(
     reader,
     strategy_name: str,
-    dataset: DglGraphPropPredDataset,
+    graphs: List[dgl.DGLGraph],
+    labels_tensor: torch.Tensor,
     indices: List[int],
     classifier: GraphClassifier,
     device: torch.device,
@@ -134,11 +135,9 @@ def evaluate_strategy_split(
         'worst': defaultdict(list),
     }
 
-    for idx in tqdm(indices, desc=desc):
-        g_raw, label = dataset[int(idx)]
-        if hasattr(label, 'item'):
-            label = label.item()
-        g_raw = dgl.add_self_loop(g_raw)
+    for i, ogb_idx in enumerate(tqdm(indices, desc=desc)):
+        g_raw = dgl.add_self_loop(graphs[i])
+        label = int(labels_tensor[ogb_idx].item())
         n_nodes = g_raw.num_nodes()
         budgets_abs = [compute_budget(n_nodes, r) for r in budgets_rel_sorted]
 
@@ -149,16 +148,16 @@ def evaluate_strategy_split(
             reader, g_raw, best_seed, label, device, classifier, builder,
             budgets_rel_sorted, budgets_abs,
         )
-        for i, rel_b in enumerate(budgets_rel_sorted):
-            results['best'][rel_b].append(best_rec[i])
+        for j, rel_b in enumerate(budgets_rel_sorted):
+            results['best'][rel_b].append(best_rec[j])
 
         # worst seed
         worst_rec = run_one_seed(
             reader, g_raw, worst_seed, label, device, classifier, builder,
             budgets_rel_sorted, budgets_abs,
         )
-        for i, rel_b in enumerate(budgets_rel_sorted):
-            results['worst'][rel_b].append(worst_rec[i])
+        for j, rel_b in enumerate(budgets_rel_sorted):
+            results['worst'][rel_b].append(worst_rec[j])
 
     return {
         'best': dict(results['best']),
@@ -338,21 +337,25 @@ def main():
         learnable_reader.eval()
         print(f"  Params: {sum(p.numel() for p in learnable_reader.parameters()):,}")
 
-    # ---- 3. 按 split + strategy 分别评测 ----
+    # ---- 3. 按 split + strategy 分别评测（逐 split 加载图，释放训练集） ----
     all_stats: Dict[str, Dict] = {}
+    processed_path = str(Path(args.root) / 'ogbg_ppa' / 'processed' / 'dgl_data_processed')
 
     for split_name in ('valid', 'test'):
         all_stats[split_name] = {}
 
-        print(f"\n{'='*60}")
-        print(f"=== Loading OGBG-PPA dataset ({split_name} split) ===")
-        dataset = DglGraphPropPredDataset(name='ogbg-ppa', root=args.root)
-        split_indices = dataset.get_idx_split()[split_name].tolist()
+        # 从 CSV 读 split 索引（不加载图数据）
+        split_path = Path(args.root) / 'ogbg_ppa' / 'split' / 'species' / f'{split_name}.csv.gz'
+        split_indices = pd.read_csv(split_path, compression='gzip', header=None).values.flatten().tolist()
 
         if args.max_graphs > 0:
             split_indices = split_indices[:args.max_graphs]
 
-        print(f"  {split_name}: {len(split_indices)} graphs")
+        # 仅加载当前 split 的图
+        print(f"\n{'='*60}")
+        print(f"=== Loading {split_name} split ({len(split_indices)} graphs) ===")
+        graphs, label_dict = dgl.load_graphs(processed_path, idx_list=split_indices)
+        print(f"  Loaded {len(graphs)} graphs")
 
         for strategy_name in strategies_to_run:
             print(f"\n  --- {strategy_name} ---")
@@ -365,7 +368,7 @@ def main():
                 reader = FixedStrategyReader(strategy_name)
 
             split_results = evaluate_strategy_split(
-                reader, strategy_name, dataset, split_indices,
+                reader, strategy_name, graphs, label_dict['labels'], split_indices,
                 classifier, device,
                 desc=f"  {split_name.capitalize()} / {strategy_name}",
             )
@@ -378,10 +381,12 @@ def main():
                     print(f"    {kind:5s} budget={b_key}: "
                           f"mean={s['mean']:.4f}, std={s['std']:.4f} (n={s['n']})")
 
-        del dataset
-        gc.collect()
-        if device.type == 'cuda':
-            torch.cuda.empty_cache()
+            gc.collect()
+            if device.type == 'cuda':
+                torch.cuda.empty_cache()
+
+        # 释放当前 split 的图
+        del graphs
 
     # ---- 4. 组装全局 stats ----
     final_stats = {}

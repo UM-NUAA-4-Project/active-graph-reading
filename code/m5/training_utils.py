@@ -1,6 +1,9 @@
 """M5 训练共享工具：轨迹加载、图加载、BC 训练循环、数据划分。
 
 train_bc.py / train_pomdp_bc.py 等脚本共用，避免代码重复。
+
+内存优化：不依赖 DglGraphPropPredDataset（避免加载全量 158k 图）。
+使用 raw CSV 读标签 + dgl.load_graphs(idx_list=...) 按需加载。
 """
 
 import random
@@ -9,6 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
+import pandas as pd
 import torch
 import dgl
 from tqdm import tqdm
@@ -17,7 +21,6 @@ from sklearn.model_selection import train_test_split
 from active_graph_reader.reader.learnable_reader import LearnableReader
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
-from ogb.graphproppred import DglGraphPropPredDataset
 
 TEACHER_NAMES = [
     'gradient', 'structural-degree', 'structural-pagerank',
@@ -59,21 +62,36 @@ def merge_trajectories(data_dir: Path) -> List:
 # ---------------------------------------------------------------------------
 
 def load_graphs_for_trajectories(root: str, needed_graphs: set):
-    """只加载轨迹引用的训练集图，加自环后缓存。"""
-    dataset = DglGraphPropPredDataset(name='ogbg-ppa', root=root)
-    train_indices = set(dataset.get_idx_split()['train'].tolist())
+    """只加载轨迹引用的训练集图，加自环后缓存。
 
-    to_load = needed_graphs & train_indices
-    skipped = needed_graphs - train_indices
+    使用 dgl.load_graphs(idx_list=...) 仅加载需要的图，不加载全量 158k 数据集。
+    """
+    data_dir = Path(root) / 'ogbg_ppa'
+
+    # 读训练集 split（不加载图数据）
+    train_idx = pd.read_csv(
+        data_dir / 'split' / 'species' / 'train.csv.gz',
+        compression='gzip', header=None,
+    ).values.flatten()
+    train_set = set(train_idx.tolist())
+
+    to_load = sorted(needed_graphs & train_set)
+    skipped = needed_graphs - train_set
     if skipped:
         print(f"  WARNING: {len(skipped)} graph_idx not in training set, ignored")
 
-    graph_cache: Dict[int, Tuple[dgl.DGLGraph, int]] = {}
+    if not to_load:
+        return {}
+
+    # 仅加载需要的图
+    proc_path = str(data_dir / 'processed' / 'dgl_data_processed')
     print(f"Loading {len(to_load)} graphs (training set subset)...")
-    for i in tqdm(sorted(to_load), desc="  Loading graphs"):
-        g, lbl = dataset[i]
-        g = dgl.add_self_loop(g)
-        graph_cache[i] = (g, lbl.item())
+    graphs, label_dict = dgl.load_graphs(proc_path, idx_list=to_load)
+
+    graph_cache: Dict[int, Tuple[dgl.DGLGraph, int]] = {}
+    for i, ogb_idx in enumerate(tqdm(to_load, desc="  Loading graphs")):
+        g = dgl.add_self_loop(graphs[i])
+        graph_cache[ogb_idx] = (g, int(label_dict['labels'][ogb_idx].item()))
     return graph_cache
 
 
@@ -209,26 +227,37 @@ def split_trajectories(
 ) -> Tuple[List, List]:
     """按标签对图分层划分，再映射为 train/val 轨迹集合。
 
+    从原始 CSV 读取标签和 split，不加载任何图数据。
     同一图的所有轨迹（不同 seed、不同 teacher、不同 budget）一定分到同一集合，
     避免数据泄漏。
     """
     from m4.teachers.base import Trajectory
 
+    data_dir = Path(root) / 'ogbg_ppa'
+
+    # 读全量标签 + 训练集 split（不加载图数据）
+    labels_arr = pd.read_csv(
+        data_dir / 'raw' / 'graph-label.csv.gz',
+        compression='gzip', header=None,
+    ).values.flatten()  # (158100,) int64
+
+    train_idx = pd.read_csv(
+        data_dir / 'split' / 'species' / 'train.csv.gz',
+        compression='gzip', header=None,
+    ).values.flatten()
+    train_set = set(train_idx.tolist())
+
     # 1. 收集所有被引用的 graph_idx
     graph_ids = sorted({t.graph_idx for t in all_trajs})
 
-    # 2. 从 OGB 训练集加载各图标签
-    dataset = DglGraphPropPredDataset(name='ogbg-ppa', root=root)
-    train_indices = set(dataset.get_idx_split()['train'].tolist())
-
+    # 2. 从标签数组查标签（不加载图数据）
     graph_to_label = {}
     missing = 0
     for gid in graph_ids:
-        if gid not in train_indices:
+        if gid not in train_set:
             missing += 1
             continue
-        _, lbl = dataset[gid]
-        graph_to_label[gid] = lbl.item()
+        graph_to_label[gid] = int(labels_arr[gid])
     if missing:
         print(f"  WARNING: {missing} graph_idx not in training set, excluded from split")
 
@@ -240,12 +269,12 @@ def split_trajectories(
         valid_ids, test_size=val_ratio, stratify=labels,
         random_state=random_seed,
     )
-    train_set = set(train_ids)
-    val_set = set(val_ids)
+    train_set_ids = set(train_ids)
+    val_set_ids = set(val_ids)
 
     # 4. 映射轨迹
-    train_trajs = [t for t in all_trajs if t.graph_idx in train_set]
-    val_trajs = [t for t in all_trajs if t.graph_idx in val_set]
+    train_trajs = [t for t in all_trajs if t.graph_idx in train_set_ids]
+    val_trajs = [t for t in all_trajs if t.graph_idx in val_set_ids]
 
     print(f"Split: {len(train_trajs)} train / {len(val_trajs)} val trajectories "
           f"(from {len(train_ids)} / {len(val_ids)} graphs)")

@@ -4,6 +4,7 @@ POMDP reader 使用信念条件化策略选择节点：
 - 主指标：外部 GraphClassifier 分类准确率（与 random/BFS 公平对比）
 - 副指标：Reader 自主裁判准确率（argmax b_B^total）
 
+按 split 逐次加载，只用 dgl.load_graphs 加载需要的图（不加载训练集）。
 输出 JSON 日志和可视化图像。
 """
 
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
+import pandas as pd
 import torch
 import dgl
 from tqdm import tqdm
@@ -33,7 +35,6 @@ from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
 from active_graph_reader.gnn.classifier import GraphClassifier
 from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
-from ogb.graphproppred import DglGraphPropPredDataset
 
 BUDGETS_REL = [0.05, 0.10, 0.15]
 FIXED_STRATEGIES = ['random', 'bfs']
@@ -147,7 +148,8 @@ def run_one_seed_fixed(
 def evaluate_strategy_split(
     reader,
     strategy_name: str,
-    dataset: DglGraphPropPredDataset,
+    graphs: List[dgl.DGLGraph],
+    labels_tensor: torch.Tensor,
     indices: List[int],
     classifier: GraphClassifier,
     device: torch.device,
@@ -166,11 +168,9 @@ def evaluate_strategy_split(
     }
     is_pomdp = (strategy_name == 'pomdp')
 
-    for idx in tqdm(indices, desc=desc):
-        g_raw, label = dataset[int(idx)]
-        if hasattr(label, 'item'):
-            label = label.item()
-        g_raw = dgl.add_self_loop(g_raw)
+    for i, ogb_idx in enumerate(tqdm(indices, desc=desc)):
+        g_raw = dgl.add_self_loop(graphs[i])
+        label = int(labels_tensor[ogb_idx].item())
         n_nodes = g_raw.num_nodes()
         budgets_abs = [compute_budget(n_nodes, r) for r in budgets_rel_sorted]
 
@@ -183,17 +183,17 @@ def evaluate_strategy_split(
                     reader, g_raw, seed, label, device, classifier, builder,
                     budgets_abs,
                 )
-                for i, rel_b in enumerate(budgets_rel_sorted):
-                    results[seed_type][rel_b].append(ext_rec[i])
-                    belief_results[seed_type][rel_b].append(belief_rec[i])
+                for j, rel_b in enumerate(budgets_rel_sorted):
+                    results[seed_type][rel_b].append(ext_rec[j])
+                    belief_results[seed_type][rel_b].append(belief_rec[j])
             else:
                 reader.reset()
                 rec = run_one_seed_fixed(
                     reader, g_raw, seed, label, device, classifier, builder,
                     budgets_abs,
                 )
-                for i, rel_b in enumerate(budgets_rel_sorted):
-                    results[seed_type][rel_b].append(rec[i])
+                for j, rel_b in enumerate(budgets_rel_sorted):
+                    results[seed_type][rel_b].append(rec[j])
 
     out = {
         'best': dict(results['best']),
@@ -390,22 +390,26 @@ def main():
         pomdp_reader.eval()
         print(f"  Params: {sum(p.numel() for p in pomdp_reader.parameters()):,}")
 
-    # ---- 3. 按 split + strategy 分别评测 ----
+    # ---- 3. 按 split + strategy 分别评测（逐 split 加载图，释放训练集） ----
     all_results: Dict[str, Dict] = {}
     all_belief: Dict[str, Dict] = {}
+    processed_path = str(Path(args.root) / 'ogbg_ppa' / 'processed' / 'dgl_data_processed')
 
     for split_name in ('valid', 'test'):
         all_results[split_name] = {}
 
-        print(f"\n{'='*60}")
-        print(f"=== Loading OGBG-PPA dataset ({split_name} split) ===")
-        dataset = DglGraphPropPredDataset(name='ogbg-ppa', root=args.root)
-        split_indices = dataset.get_idx_split()[split_name].tolist()
+        # 从 CSV 读 split 索引（不加载图数据）
+        split_path = Path(args.root) / 'ogbg_ppa' / 'split' / 'species' / f'{split_name}.csv.gz'
+        split_indices = pd.read_csv(split_path, compression='gzip', header=None).values.flatten().tolist()
 
         if args.max_graphs > 0:
             split_indices = split_indices[:args.max_graphs]
 
-        print(f"  {split_name}: {len(split_indices)} graphs")
+        # 仅加载当前 split 的图
+        print(f"\n{'='*60}")
+        print(f"=== Loading {split_name} split ({len(split_indices)} graphs) ===")
+        graphs, label_dict = dgl.load_graphs(processed_path, idx_list=split_indices)
+        print(f"  Loaded {len(graphs)} graphs")
 
         for strategy_name in strategies_to_run:
             print(f"\n  --- {strategy_name} ---")
@@ -418,7 +422,7 @@ def main():
                 reader = FixedStrategyReader(strategy_name)
 
             split_results = evaluate_strategy_split(
-                reader, strategy_name, dataset, split_indices,
+                reader, strategy_name, graphs, label_dict['labels'], split_indices,
                 classifier, device,
                 desc=f"  {split_name.capitalize()} / {strategy_name}",
             )
@@ -456,7 +460,8 @@ def main():
                     'worst': split_results['belief_worst'],
                 }
 
-        del dataset
+        # 释放当前 split 的图
+        del graphs
         gc.collect()
         if device.type == 'cuda':
             torch.cuda.empty_cache()
