@@ -1,7 +1,7 @@
 """POMDPReader: 证据信念 POMDP 图阅读器（顶层编排）。
 
 组件：
-  gsae             — GSAE (3 层 GNN + encoder + decoder)
+  gsae             — GSAE (2 层 GNN + encoder + decoder)
   evidence_net     — 证据头
   belief_updater   — DRBPN LSTM 循环信念
   policy_mlp       — ReaderMLP(128 + k_evidence, 128)
@@ -46,12 +46,12 @@ class POMDPReader(BaseReader, nn.Module):
     hidden_dim : int       GNN 隐层维度，默认 300
     k_state : int          语义潜在维度，默认 128
     k_evidence : int       证据维度（类别数），默认 37
-    n_layers : int         GNN 层数，默认 3
+    n_layers : int         GNN 层数，默认 2
     dropout : float        Dropout，默认 0.5
     """
 
     def __init__(self, edge_feat_dim=7, hidden_dim=300, k_state=128,
-                 k_evidence=37, n_layers=3, dropout=0.5):
+                 k_evidence=37, n_layers=2, dropout=0.5):
         super().__init__()
 
         self.k_evidence = k_evidence
@@ -65,9 +65,7 @@ class POMDPReader(BaseReader, nn.Module):
 
         self.evidence_net = EvidenceNetwork(k_state=k_state, k_evidence=k_evidence)
 
-        self.belief_updater = LSTMBeliefUpdater(
-            k_evidence=k_evidence, lstm_hidden=128, action_emb_dim=128,
-        )
+        self.belief_updater = LSTMBeliefUpdater(k_evidence=k_evidence, action_emb_dim=128)
 
         self.frontier_proj = nn.Linear(hidden_dim, 128)  # 300 -> 128
 
@@ -167,7 +165,7 @@ class POMDPReader(BaseReader, nn.Module):
         return self.final_classifier(o_B, self.gsae, self.evidence_net, alpha_lstm)
 
     def init_from_fclass(self, checkpoint_path: str, device='cpu'):
-        """从 f_class checkpoint 初始化 GSAE 的 3 层 GNN。"""
+        """从 f_class checkpoint 初始化 GSAE 的 2 层 GNN。"""
         self.gsae.init_from_fclass(checkpoint_path, device)
 
     def train(self, mode: bool = True):

@@ -82,7 +82,7 @@ def test_evidence_network():
 
 def test_belief_updater():
     print("\n[Test 3] LSTMBeliefUpdater multi-step + reset...")
-    updater = LSTMBeliefUpdater(k_evidence=5, lstm_hidden=64, action_emb_dim=64)
+    updater = LSTMBeliefUpdater(k_evidence=5, action_emb_dim=64)
     updater.reset()
 
     b = torch.ones(1, 5) / 5
