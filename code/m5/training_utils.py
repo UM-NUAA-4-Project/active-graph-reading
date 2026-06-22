@@ -183,7 +183,14 @@ def infer_reader_config(state_dict: dict) -> Tuple[int, int]:
 
 
 def edl_loss(evidence, alpha, S, y_onehot, k_evidence, lambda_kl=0.01):
-    """EDL loss (Sensoy et al. 2018).
+    """EDL loss — CE on belief mass + KL regularization.
+
+    CE on b = e/S replaces the original MSE. MSE gradient is diluted by
+    1/S ≈ 1/K when evidence is near zero, causing the model to collapse
+    to the uniform prior. CE ∝ -log(b) has strong gradient when b → 0,
+    naturally breaking the deadlock.
+
+    KL( Dir(α̃) || Dir(1) ) regularizes against overconfident evidence.
 
     Parameters
     ----------
@@ -198,9 +205,9 @@ def edl_loss(evidence, alpha, S, y_onehot, k_evidence, lambda_kl=0.01):
     -------
     loss : scalar Tensor
     """
-    b = evidence / S.unsqueeze(-1)  # (B, K) 信念 = e/S
+    b = evidence / S.unsqueeze(-1)  # (B, K) 信念 mass ∈ Δ^{K-1}
 
-    mse = ((y_onehot - b) ** 2).sum(dim=-1) * S  # (B,)
+    ce = -(y_onehot * torch.log(b + 1e-8)).sum(dim=-1)  # (B,)
 
     alpha_tilde = y_onehot + (1 - y_onehot) * alpha
     S_tilde = alpha_tilde.sum(dim=-1, keepdim=True)
@@ -212,7 +219,7 @@ def edl_loss(evidence, alpha, S, y_onehot, k_evidence, lambda_kl=0.01):
         - torch.lgamma(torch.tensor(float(k_evidence), device=alpha.device))
         + ((alpha_tilde - 1) * (torch.digamma(alpha_tilde) - torch.digamma(S_tilde))).sum(dim=-1)
     )
-    return (mse + lambda_kl * kl).mean()
+    return (ce + lambda_kl * kl).mean()
 
 
 # ---------------------------------------------------------------------------
