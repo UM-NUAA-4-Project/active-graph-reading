@@ -130,7 +130,7 @@ def main():
     # 2. 创建 GSAE + EvidenceNet
     print("\n=== Creating models ===")
     gsae = GSAE(edge_feat_dim=7, hidden_dim=args.hidden_dim, k_state=128,
-                n_layers=3, dropout=0.5).to(device)
+                n_layers=2, dropout=0.5).to(device)
     if args.fclass_init:
         print(f"  Initializing GSAE from {args.fclass_init}")
         gsae.init_from_fclass(str(repo_root / args.fclass_init), device)

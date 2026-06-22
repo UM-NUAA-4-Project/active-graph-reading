@@ -199,7 +199,7 @@ def main():
     # 2. 创建 POMDPReader + 加载 Phase 0+1 checkpoint
     print("\n=== Creating POMDPReader ===")
     reader = POMDPReader(edge_feat_dim=7, hidden_dim=300, k_state=128,
-                         k_evidence=37, n_layers=3, dropout=0.5).to(device)
+                         k_evidence=37, n_layers=2, dropout=0.5).to(device)
 
     ckpt_path = repo_root / args.gsae_checkpoint
     if ckpt_path.exists():
