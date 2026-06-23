@@ -1,8 +1,8 @@
 """Phase 0+1: GSAE + EvidenceNetwork 联合训练。
 
-Loss = ||v̂ - v||² + λ · EDL_loss(e, y)
+Loss = CrossEntropy(b, y)
 
-可选 --fclass-init 从 f_class 初始化 GSAE 前 3 层。
+EvidenceNetwork 吸收原 GSAE encoder，形成 300→128→37 两层投影。
 """
 
 import argparse
@@ -17,6 +17,7 @@ sys.path.insert(0, str(_repo_root))
 sys.path.insert(0, str(_m5_dir))
 
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from active_graph_reader.reader.gsae import GSAE
@@ -27,19 +28,17 @@ from active_graph_reader.gnn.frontier.graph_builder import FrontierGraphBuilder
 
 from training_utils import (
     TEACHER_NAMES, BUDGET_RATIOS,
-    merge_trajectories, load_graphs_for_trajectories, edl_loss,
+    merge_trajectories, load_graphs_for_trajectories,
 )
 
 
 def train_one_epoch(gsae, evidence_net, optimizer, graph_cache, train_trajs,
-                    batch_size, device, lambda_edl, lambda_kl):
+                    batch_size, device):
     gsae.train()
     evidence_net.train()
     builder = FrontierGraphBuilder()
-    sum_rec = 0.0
     sum_ce = 0.0
-    sum_kl = 0.0
-    sum_total = 0.0
+    sum_correct = 0
     total_steps = 0
 
     pbar = tqdm(range(0, len(train_trajs), batch_size), desc="  Training")
@@ -52,8 +51,7 @@ def train_one_epoch(gsae, evidence_net, optimizer, graph_cache, train_trajs,
 
         for traj in batch_trajs:
             g, label = graph_cache[traj.graph_idx]
-            y = torch.zeros(evidence_net.k_evidence, device=device)
-            y[label] = 1.0
+            label_t = torch.tensor(label, device=device)
 
             state = GraphState(g, seed_node=traj.seed_node)
             traj_losses = []
@@ -62,22 +60,14 @@ def train_one_epoch(gsae, evidence_net, optimizer, graph_cache, train_trajs,
                 subgraph = builder.build(state)
                 gsae_out = gsae(subgraph)
 
-                rec_loss = ((gsae_out.v_hat - gsae_out.v) ** 2).mean()
+                ev_out = evidence_net(gsae_out.v)
+                b = ev_out.b.squeeze(0)  # (K,)
+                ce_loss = F.cross_entropy(b.unsqueeze(0), label_t.unsqueeze(0))
 
-                ev_out = evidence_net(gsae_out.z)
-                edl, ce_t, kl_t = edl_loss(
-                    ev_out.e, ev_out.alpha, ev_out.S,
-                    y.unsqueeze(0), evidence_net.k_evidence, lambda_kl,
-                    return_components=True,
-                )
+                traj_losses.append(ce_loss)
 
-                step_loss = rec_loss + lambda_edl * edl
-                traj_losses.append(step_loss)
-
-                sum_rec += rec_loss.item()
-                sum_ce += ce_t.item()
-                sum_kl += kl_t.item()
-                sum_total += step_loss.item()
+                sum_ce += ce_loss.item()
+                sum_correct += int(b.argmax().item() == label)
 
                 reveal_node(state, node)
 
@@ -97,17 +87,13 @@ def train_one_epoch(gsae, evidence_net, optimizer, graph_cache, train_trajs,
         total_steps += batch_steps
         n = max(total_steps, 1)
         pbar.set_postfix({
-            'rec': f'{sum_rec / n:.4f}',
             'ce': f'{sum_ce / n:.4f}',
-            'kl': f'{sum_kl / n:.4f}',
-            'total': f'{sum_total / n:.4f}',
+            'acc': f'{sum_correct / n:.4f}',
         })
 
     return {
-        'rec': sum_rec / max(total_steps, 1),
         'ce': sum_ce / max(total_steps, 1),
-        'kl': sum_kl / max(total_steps, 1),
-        'total': sum_total / max(total_steps, 1),
+        'acc': sum_correct / max(total_steps, 1),
     }
 
 
@@ -121,8 +107,6 @@ def main():
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--hidden-dim', type=int, default=300)
-    parser.add_argument('--lambda-edl', type=float, default=1.0)
-    parser.add_argument('--lambda-kl', type=float, default=0.01)
     parser.add_argument('--limit-trajs', type=int, default=0, help='0=all')
     parser.add_argument('--output-dir', default='m5/phase01/')
     parser.add_argument('--seed', type=int, default=42)
@@ -155,7 +139,7 @@ def main():
         print(f"  Initializing GSAE from {args.fclass_init}")
         gsae.init_from_fclass(str(repo_root / args.fclass_init), device)
 
-    evidence_net = EvidenceNetwork(k_state=128, k_evidence=37).to(device)
+    evidence_net = EvidenceNetwork(hidden_dim=args.hidden_dim, k_evidence=37).to(device)
 
     total_params = sum(p.numel() for p in gsae.parameters()) + \
                    sum(p.numel() for p in evidence_net.parameters())
@@ -163,16 +147,30 @@ def main():
 
     optimizer = torch.optim.Adam(
         list(gsae.parameters()) + list(evidence_net.parameters()), lr=args.lr)
-    training_log = []
 
-    # 3. 训练
-    for epoch in range(args.epochs):
+    # 断点恢复：自动检测 output_dir 中最新的 checkpoint
+    start_epoch = 0
+    training_log = []
+    existing = sorted(output_dir.glob('checkpoint_epoch*.pt'))
+    if existing:
+        latest = existing[-1]
+        print(f"\n=== Resuming from {latest} ===")
+        ckpt = torch.load(str(latest), map_location=device, weights_only=False)
+        gsae.load_state_dict(ckpt['gsae_state_dict'])
+        evidence_net.load_state_dict(ckpt['evidence_state_dict'])
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        training_log = ckpt.get('training_log', [])
+        start_epoch = ckpt['epoch'] + 1
+        print(f"  Resumed at epoch {start_epoch + 1}/{args.epochs}")
+
+    # 训练
+    for epoch in range(start_epoch, args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
         avg = train_one_epoch(
             gsae, evidence_net, optimizer, graph_cache, all_trajs,
-            args.batch_size, device, args.lambda_edl, args.lambda_kl,
+            args.batch_size, device,
         )
-        print(f"  rec={avg['rec']:.4f}  ce={avg['ce']:.4f}  kl={avg['kl']:.4f}  total={avg['total']:.4f}")
+        print(f"  ce={avg['ce']:.4f}  acc={avg['acc']:.4f}")
 
         training_log.append({'epoch': epoch + 1, **avg})
 
@@ -185,8 +183,6 @@ def main():
             'config': {
                 'hidden_dim': args.hidden_dim,
                 'lr': args.lr,
-                'lambda_edl': args.lambda_edl,
-                'lambda_kl': args.lambda_kl,
             },
         }
         ckpt_path = output_dir / f'checkpoint_epoch{epoch + 1}.pt'

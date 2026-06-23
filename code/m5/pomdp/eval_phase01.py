@@ -1,11 +1,13 @@
-"""Phase 0+1 评估脚本：加载 checkpoint，输出所有损失成员的平均值。
+"""Phase 0+1 评估脚本：加载 checkpoint，计算 CE loss 和准确率。
 
 Usage:
   python m5/pomdp/eval_phase01.py \
     --checkpoint m5/phase01/checkpoint_epoch1.pt \
     --root D:\\ogb-master\\dataset
+    --data-dir m4/data/stage7_filtered \
+    --device cuda:0 \
 
-输出：rec_loss | CE | KL | total_loss 的全局平均值，以及证据统计（e_max, u_mean）。
+输出：CE loss | accuracy | 证据统计（e_max, u_mean）。
 """
 
 import argparse
@@ -19,6 +21,7 @@ sys.path.insert(0, str(_repo_root))
 sys.path.insert(0, str(_m5_dir))
 
 import torch
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from active_graph_reader.reader.gsae import GSAE
@@ -27,20 +30,18 @@ from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
 from active_graph_reader.gnn.frontier.graph_builder import FrontierGraphBuilder
 
-from training_utils import merge_trajectories, load_graphs_for_trajectories, edl_loss
+from training_utils import merge_trajectories, load_graphs_for_trajectories
 
 
 @torch.no_grad()
-def evaluate(gsae, evidence_net, graph_cache, trajs, device, lambda_kl):
-    """返回各损失成员及证据统计的平均值。"""
+def evaluate(gsae, evidence_net, graph_cache, trajs, device):
+    """返回 CE loss 及证据统计的平均值。"""
     gsae.eval()
     evidence_net.eval()
     builder = FrontierGraphBuilder()
 
-    total_rec = 0.0
     total_ce = 0.0
-    total_kl = 0.0
-    total_loss = 0.0
+    total_correct = 0
     total_steps = 0
     e_max_sum = 0.0
     u_mean_sum = 0.0
@@ -48,8 +49,7 @@ def evaluate(gsae, evidence_net, graph_cache, trajs, device, lambda_kl):
     pbar = tqdm(trajs, desc="  Evaluating")
     for traj in pbar:
         g, label = graph_cache[traj.graph_idx]
-        y = torch.zeros(evidence_net.k_evidence, device=device)
-        y[label] = 1.0
+        label_t = torch.tensor(label, device=device)
 
         state = GraphState(g, seed_node=traj.seed_node)
 
@@ -57,28 +57,12 @@ def evaluate(gsae, evidence_net, graph_cache, trajs, device, lambda_kl):
             subgraph = builder.build(state)
             gsae_out = gsae(subgraph)
 
-            rec = ((gsae_out.v_hat - gsae_out.v) ** 2).mean()
+            ev_out = evidence_net(gsae_out.v)
+            b = ev_out.b.squeeze(0)  # (K,)
+            ce = F.cross_entropy(b.unsqueeze(0), label_t.unsqueeze(0))
 
-            ev_out = evidence_net(gsae_out.z)
-            b = ev_out.e / ev_out.S.unsqueeze(-1)
-
-            ce = -(y.unsqueeze(0) * torch.log(b + 1e-8)).sum(dim=-1).mean()
-
-            alpha_tilde = y.unsqueeze(0) + (1 - y.unsqueeze(0)) * ev_out.alpha
-            S_tilde = alpha_tilde.sum(dim=-1, keepdim=True)
-            kl = (
-                torch.lgamma(S_tilde.squeeze(-1))
-                - torch.lgamma(alpha_tilde).sum(dim=-1)
-                - torch.lgamma(torch.tensor(float(evidence_net.k_evidence), device=device))
-                + ((alpha_tilde - 1) * (torch.digamma(alpha_tilde) - torch.digamma(S_tilde))).sum(dim=-1)
-            ).mean()
-
-            loss = rec + ce + lambda_kl * kl
-
-            total_rec += rec.item()
             total_ce += ce.item()
-            total_kl += kl.item()
-            total_loss += loss.item()
+            total_correct += int(b.argmax().item() == label.item())
             total_steps += 1
             e_max_sum += ev_out.e.max().item()
             u_mean_sum += ev_out.u.mean().item()
@@ -87,10 +71,8 @@ def evaluate(gsae, evidence_net, graph_cache, trajs, device, lambda_kl):
 
     n = max(total_steps, 1)
     return {
-        'rec_loss': total_rec / n,
         'ce': total_ce / n,
-        'kl': total_kl / n,
-        'total_loss': total_loss / n,
+        'acc': total_correct / n,
         'e_max': e_max_sum / n,
         'u_mean': u_mean_sum / n,
         'n_steps': total_steps,
@@ -115,8 +97,7 @@ def main():
                       weights_only=False)
     cfg = ckpt['config']
     print(f"Checkpoint: epoch {ckpt['epoch']}")
-    print(f"Config: hidden_dim={cfg['hidden_dim']}, lr={cfg['lr']}, "
-          f"lambda_edl={cfg['lambda_edl']}, lambda_kl={cfg['lambda_kl']}")
+    print(f"Config: hidden_dim={cfg['hidden_dim']}, lr={cfg['lr']}")
 
     # 加载数据
     data_dir = repo_root / args.data_dir
@@ -133,7 +114,7 @@ def main():
                 n_layers=2, dropout=0.5).to(device)
     gsae.load_state_dict(ckpt['gsae_state_dict'])
 
-    evidence_net = EvidenceNetwork(k_state=128, k_evidence=37).to(device)
+    evidence_net = EvidenceNetwork(hidden_dim=cfg['hidden_dim'], k_evidence=37).to(device)
     evidence_net.load_state_dict(ckpt['evidence_state_dict'])
 
     n_params = sum(p.numel() for p in gsae.parameters()) + \
@@ -142,14 +123,11 @@ def main():
 
     # 评估
     print(f"\n=== Evaluating on {len(all_trajs)} trajectories ===")
-    results = evaluate(gsae, evidence_net, graph_cache, all_trajs,
-                       device, cfg['lambda_kl'])
+    results = evaluate(gsae, evidence_net, graph_cache, all_trajs, device)
 
     print(f"\n--- Results ---")
-    print(f"  rec_loss   = {results['rec_loss']:.4f}")
     print(f"  CE         = {results['ce']:.4f}")
-    print(f"  KL         = {results['kl']:.4f}")
-    print(f"  total      = {results['total_loss']:.4f}")
+    print(f"  Accuracy   = {results['acc']:.4f}")
     print(f"  e_max      = {results['e_max']:.4f}  (max evidence per step)")
     print(f"  u_mean     = {results['u_mean']:.4f}  (mean uncertainty)")
     print(f"  n_steps    = {results['n_steps']}")

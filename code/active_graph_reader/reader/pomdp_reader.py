@@ -63,7 +63,7 @@ class POMDPReader(BaseReader, nn.Module):
             k_state=k_state, n_layers=n_layers, dropout=dropout,
         )
 
-        self.evidence_net = EvidenceNetwork(k_state=k_state, k_evidence=k_evidence)
+        self.evidence_net = EvidenceNetwork(hidden_dim=hidden_dim, k_evidence=k_evidence)
 
         self.belief_updater = LSTMBeliefUpdater(k_evidence=k_evidence, action_emb_dim=128)
 
@@ -110,7 +110,7 @@ class POMDPReader(BaseReader, nn.Module):
                 return torch.empty(0), torch.empty(0), [], None, None
             return torch.empty(0), torch.empty(0), []
 
-        ev_out = self.evidence_net(self._last_gsae_out.z)
+        ev_out = self.evidence_net(self._last_gsae_out.v)
 
         device = ev_out.e.device
         b_prev = self._current_belief.to(device)

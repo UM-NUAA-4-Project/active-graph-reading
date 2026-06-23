@@ -151,23 +151,39 @@ def main():
     reader = POMDPReader(edge_feat_dim=7, hidden_dim=300, k_state=128,
                          k_evidence=37, n_layers=2, dropout=0.5).to(device)
 
-    ckpt_path = repo_root / args.bootstrap_checkpoint
-    if ckpt_path.exists():
-        print(f"  Loading from {ckpt_path}")
-        ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
+    # 断点恢复：优先检查 Phase 3 自身的 checkpoint
+    start_epoch = 0
+    training_log = []
+    existing = sorted(output_dir.glob('checkpoint_epoch*.pt'))
+
+    if existing:
+        latest = existing[-1]
+        print(f"\n=== Resuming from {latest} ===")
+        ckpt = torch.load(str(latest), map_location=device, weights_only=False)
         reader.load_state_dict(ckpt['reader_state_dict'])
-        print(f"  Checkpoint epoch: {ckpt.get('epoch', 'N/A')}")
+        training_log = ckpt.get('training_log', [])
+        start_epoch = ckpt['epoch'] + 1
+        optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        print(f"  Resumed at epoch {start_epoch + 1}/{args.epochs}")
     else:
-        print(f"  WARNING: {ckpt_path} not found, training from scratch")
+        # 全新训练：加载 Phase 2 checkpoint 作为起点
+        ckpt_path = repo_root / args.bootstrap_checkpoint
+        if ckpt_path.exists():
+            print(f"  Loading from {ckpt_path}")
+            ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
+            reader.load_state_dict(ckpt['reader_state_dict'])
+            print(f"  Checkpoint epoch: {ckpt.get('epoch', 'N/A')}")
+        else:
+            print(f"  WARNING: {ckpt_path} not found, training from scratch")
+
+        optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
 
     total_params = sum(p.numel() for p in reader.parameters())
     print(f"  Total params: {total_params:,}")
 
-    optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
-    training_log = []
-
     # 3. REINFORCE 训练
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
         avg = train_one_epoch(
             reader, optimizer, graph_cache, all_trajs,

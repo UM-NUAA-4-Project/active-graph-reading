@@ -1,7 +1,8 @@
-"""GSAE (Graph Semantic AutoEncoder): 2 层 GNN + encoder + decoder。
+"""GSAE (Graph Semantic AutoEncoder): 2 层 GNN + attention pooling。
 
-从 f_class 预训练权重初始化前 2 层 GNN，通过 GSAE encoder 将 300 维图嵌入
-压缩到 128 维语义潜在向量 z，decoder 重构回 v̂。
+从 f_class 预训练权重初始化前 2 层 GNN，通过结构感知 attention pooling
+将节点嵌入聚合为 300 维图嵌入 v。encoder/decoder 已移除，编码功能合并到
+EvidenceNetwork 中。
 """
 
 from dataclasses import dataclass
@@ -16,11 +17,11 @@ from ..gnn.frontier.graph_builder import FrontierSubgraph
 
 @dataclass
 class GSAEOutput:
-    z: torch.Tensor              # (1, 128) 语义潜在向量
-    v: torch.Tensor              # (1, 300) 图嵌入（pool V_revealed）
-    v_hat: torch.Tensor          # (1, 300) decoder 重构
-    frontier_embeds: torch.Tensor  # (N_f, 300) frontier 节点嵌入（未降维）
-    frontier_original_ids: list   # frontier 节点原图 ID
+    z: torch.Tensor = None              # 保留字段，恒为 None（encoder 已移除）
+    v: torch.Tensor = None              # (1, 300) 图嵌入（pool V_revealed）
+    v_hat: torch.Tensor = None          # 保留字段，恒为 None（decoder 已移除）
+    frontier_embeds: torch.Tensor = None  # (N_f, 300) frontier 节点嵌入（未降维）
+    frontier_original_ids: list = None   # frontier 节点原图 ID
     frontier_struct: torch.Tensor = None  # (N_f, 3) frontier 节点结构特征
 
 
@@ -98,13 +99,16 @@ class StructAttentionPool(nn.Module):
 
 
 class GSAE(nn.Module):
-    """3 层 GIN GNN + autoencoder 压缩。
+    """2-3 层 GIN GNN + attention pooling。
+
+    encoder/decoder 已移除，编码功能合并到 EvidenceNetwork（Linear 300→128→37）。
+    GSAE 现在只输出图嵌入 v（300 维）和 frontier 节点嵌入。
 
     Parameters
     ----------
     edge_feat_dim : int  边特征维度（PPA: 7）
     hidden_dim : int     隐层维度，默认 300
-    k_state : int        语义潜在维度，默认 128
+    k_state : int        保留参数（兼容旧 checkpoint），不再使用
     n_layers : int       GNN 层数，默认 3
     dropout : float      Dropout，默认 0.5
     """
@@ -126,9 +130,6 @@ class GSAE(nn.Module):
         self.bns = nn.ModuleList([
             nn.BatchNorm1d(hidden_dim) for _ in range(n_layers)
         ])
-
-        self.encoder = nn.Linear(hidden_dim, k_state)   # 300 -> 128
-        self.decoder = nn.Linear(k_state, hidden_dim)    # 128 -> 300
 
         self.attn_pool = StructAttentionPool(dim_h=hidden_dim, dim_struct=3)
 
@@ -165,10 +166,10 @@ class GSAE(nn.Module):
         if n_total == 0:
             device = self.node_type_emb.weight.device
             return GSAEOutput(
-                z=torch.zeros(1, self.k_state, device=device),
+                z=None,
                 v=torch.zeros(1, self.hidden_dim, device=device),
-                v_hat=torch.zeros(1, self.hidden_dim, device=device),
-                frontier_embeds=torch.empty(0, self.hidden_dim),
+                v_hat=None,
+                frontier_embeds=torch.empty(0, self.hidden_dim, device=device),
                 frontier_original_ids=[],
             )
 
@@ -198,14 +199,11 @@ class GSAE(nn.Module):
         mask[:n_revealed] = True
         v = self.attn_pool(h, struct_feat, mask).unsqueeze(0)  # (1, 300)
 
-        z = self.encoder(v)
-        v_hat = self.decoder(z)
-
         frontier_embeds = h[n_revealed:]
         frontier_struct = struct_feat[n_revealed:] if n_total > 0 else torch.empty(0, 3)
 
         return GSAEOutput(
-            z=z, v=v, v_hat=v_hat,
+            z=None, v=v, v_hat=None,
             frontier_embeds=frontier_embeds,
             frontier_original_ids=frontier,
             frontier_struct=frontier_struct,

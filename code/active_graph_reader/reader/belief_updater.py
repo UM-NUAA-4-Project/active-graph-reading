@@ -72,13 +72,13 @@ class LSTMBeliefUpdater(nn.Module):
         #   - α_k≈S/2 时 σ_k 取峰值 → 竞争中的类别最开放
         #   - α_k→0 或 α_k→S 时 σ_k→0 → 边缘类和决胜类都保守
         #   - σ_k ∝ 1/√S → 总证据越多整体越谨慎
+        self._alpha_accum = self._alpha_accum.to(e.device)
+
         S_prev = self._alpha_accum.sum()
         var_k = (self._alpha_accum * (S_prev - self._alpha_accum)
                  / (S_prev * S_prev * (S_prev + 1) + 1e-6))
         sigma_k = var_k.sqrt()                                     # (K,) 逐类不确定性
         kappa = sigma_k                                            # (K,) 逐类 Kalman 增益
-
-        self._alpha_accum = self._alpha_accum.to(e.device)
         self._alpha_accum = self._alpha_accum + kappa * e.squeeze(0) * gate.squeeze(0)
         self._alpha_accum = torch.clamp(self._alpha_accum, min=1e-6)  # Dirichlet 参数需 > 0
 

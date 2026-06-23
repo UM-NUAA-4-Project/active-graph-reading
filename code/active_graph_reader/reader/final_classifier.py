@@ -46,7 +46,7 @@ class FinalClassifier(nn.Module):
         FinalOutput
         """
         gsae_out = gsae(o_B)
-        ev_out = evidence_net(gsae_out.z)
+        ev_out = evidence_net(gsae_out.v)
 
         if alpha_lstm is not None:
             Kc = alpha_lstm.shape[0]

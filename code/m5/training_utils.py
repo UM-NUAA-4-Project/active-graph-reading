@@ -277,11 +277,29 @@ def split_trajectories(
     valid_ids = sorted(graph_to_label.keys())
     labels = [graph_to_label[gid] for gid in valid_ids]
 
-    # 3. 分层划分
-    train_ids, val_ids = train_test_split(
-        valid_ids, test_size=val_ratio, stratify=labels,
-        random_state=random_seed,
-    )
+    # 3. 分层划分：稀有类（仅1个图）全部放入训练集，其余按标签分层
+    from collections import Counter
+    label_counts = Counter(labels)
+    rare_labels = {lb for lb, cnt in label_counts.items() if cnt < 2}
+    if rare_labels:
+        forced_train = [gid for gid in valid_ids if graph_to_label[gid] in rare_labels]
+        stratify_ids = [gid for gid in valid_ids if graph_to_label[gid] not in rare_labels]
+        stratify_labels = [graph_to_label[gid] for gid in stratify_ids]
+        print(f"  {len(rare_labels)} rare label(s) with <2 graphs → forced to train ({len(forced_train)} graphs)")
+    else:
+        forced_train = []
+        stratify_ids = valid_ids
+        stratify_labels = labels
+
+    if len(stratify_ids) > 0:
+        train_ids, val_ids = train_test_split(
+            stratify_ids, test_size=val_ratio, stratify=stratify_labels,
+            random_state=random_seed,
+        )
+        train_ids = list(train_ids) + forced_train
+    else:
+        train_ids = forced_train
+        val_ids = []
     train_set_ids = set(train_ids)
     val_set_ids = set(val_ids)
 

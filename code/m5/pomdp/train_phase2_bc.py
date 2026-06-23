@@ -218,30 +218,46 @@ def main():
         train_trajs, val_trajs = all_trajs, []
         print(f"\nUsing all {len(train_trajs)} trajectories for training (no val split)")
 
-    # 2. 创建 POMDPReader + 加载 Phase 0+1 checkpoint
+    # 2. 创建 POMDPReader
     print("\n=== Creating POMDPReader ===")
     reader = POMDPReader(edge_feat_dim=7, hidden_dim=300, k_state=128,
                          k_evidence=37, n_layers=2, dropout=0.5).to(device)
 
-    ckpt_path = repo_root / args.gsae_checkpoint
-    if ckpt_path.exists():
-        print(f"  Loading GSAE+Evidence from {ckpt_path}")
-        ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
-        reader.gsae.load_state_dict(ckpt['gsae_state_dict'])
-        reader.evidence_net.load_state_dict(ckpt['evidence_state_dict'])
-        print(f"  Checkpoint epoch: {ckpt.get('epoch', 'N/A')}")
+    # 断点恢复：优先检查 Phase 2 自身的 checkpoint
+    start_epoch = 0
+    training_log = []
+    existing = sorted(output_dir.glob('checkpoint_epoch*.pt'))
+
+    if existing:
+        latest = existing[-1]
+        print(f"\n=== Resuming from {latest} ===")
+        ckpt = torch.load(str(latest), map_location=device, weights_only=False)
+        reader.load_state_dict(ckpt['reader_state_dict'])
+        training_log = ckpt.get('training_log', [])
+        start_epoch = ckpt['epoch'] + 1
+        optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        print(f"  Resumed at epoch {start_epoch + 1}/{args.epochs}")
     else:
-        print(f"  WARNING: {ckpt_path} not found, training from scratch")
+        # 全新训练：加载 Phase 0+1 checkpoint 初始化 GSAE + EvidenceNet
+        ckpt_path = repo_root / args.gsae_checkpoint
+        if ckpt_path.exists():
+            print(f"  Loading GSAE+Evidence from {ckpt_path}")
+            ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
+            reader.gsae.load_state_dict(ckpt['gsae_state_dict'])
+            reader.evidence_net.load_state_dict(ckpt['evidence_state_dict'])
+            print(f"  Checkpoint epoch: {ckpt.get('epoch', 'N/A')}")
+        else:
+            print(f"  WARNING: {ckpt_path} not found, training from scratch")
+
+        optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
 
     total_params = sum(p.numel() for p in reader.parameters())
     print(f"  Total params: {total_params:,}")
 
-    optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
-    training_log = []
-
     # 3. 训练
     print(f"  Train trajectories: {len(train_trajs)}")
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
         train = train_one_epoch(
             reader, optimizer, graph_cache, train_trajs,

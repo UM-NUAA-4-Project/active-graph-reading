@@ -47,7 +47,7 @@ def make_synthetic_graph(n_nodes=30, edge_feat_dim=7, seed=42):
 
 
 def test_gsae_forward():
-    print("\n[Test 1] GSAE forward + reconstruction...")
+    print("\n[Test 1] GSAE forward...")
     g = make_synthetic_graph(30, seed=1)
     state = GraphState(g, seed_node=0)
     subgraph = FrontierGraphBuilder().build(state)
@@ -56,23 +56,21 @@ def test_gsae_forward():
     gsae.eval()
     out = gsae(subgraph)
 
-    assert out.z.shape == (1, 32), f"z shape {out.z.shape}"
+    assert out.z is None, f"z should be None (encoder removed), got {type(out.z)}"
     assert out.v.shape == (1, 64), f"v shape {out.v.shape}"
-    assert out.v_hat.shape == (1, 64), f"v_hat shape {out.v_hat.shape}"
+    assert out.v_hat is None, f"v_hat should be None (decoder removed), got {type(out.v_hat)}"
     assert out.frontier_embeds.shape[0] > 0, "frontier should not be empty"
     assert out.frontier_embeds.shape[1] == 64, f"frontier_embeds dim {out.frontier_embeds.shape[1]}"
 
-    rec_loss = ((out.v_hat - out.v) ** 2).mean().item()
-    print(f"  z: {out.z.shape}, v: {out.v.shape}, frontier: {out.frontier_embeds.shape[0]} nodes")
-    print(f"  L_rec = {rec_loss:.6f} [OK]")
+    print(f"  v: {out.v.shape}, frontier: {out.frontier_embeds.shape[0]} nodes [OK]")
 
 
 def test_evidence_network():
     print("\n[Test 2] EvidenceNetwork b + u = 1...")
-    net = EvidenceNetwork(k_state=32, k_evidence=5)
+    net = EvidenceNetwork(hidden_dim=64, k_evidence=5)
     for _ in range(5):
-        z = torch.randn(3, 32)
-        out = net(z)
+        v = torch.randn(3, 64)
+        out = net(v)
         assert out.e.shape == (3, 5)
         assert (out.e >= 0).all(), "evidence must be non-negative"
         assert torch.allclose(out.b.sum(dim=-1) + out.u, torch.ones(3), atol=1e-5), \
@@ -109,7 +107,7 @@ def test_final_classifier():
     subgraph = FrontierGraphBuilder().build(state)
 
     gsae = GSAE(edge_feat_dim=7, hidden_dim=64, k_state=32, n_layers=3, dropout=0.0)
-    ev_net = EvidenceNetwork(k_state=32, k_evidence=5)
+    ev_net = EvidenceNetwork(hidden_dim=64, k_evidence=5)
     fc = FinalClassifier()
 
     gsae.eval(); ev_net.eval()
