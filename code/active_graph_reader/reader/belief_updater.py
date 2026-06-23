@@ -89,7 +89,7 @@ class LSTMBeliefUpdater(nn.Module):
     @property
     def alpha_accum(self):
         """当前 Dirichlet 累加参数（供 FinalClassifier 路径 A 使用）。"""
-        return self._alpha_accum.clone()
+        return self._alpha_accum
 
     @property
     def current_u(self):

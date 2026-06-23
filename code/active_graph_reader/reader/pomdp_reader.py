@@ -90,13 +90,16 @@ class POMDPReader(BaseReader, nn.Module):
     def name(self) -> str:
         return 'pomdp'
 
-    def forward(self, graph_state: GraphState, sample: bool = False):
+    def forward(self, graph_state: GraphState, sample: bool = False, action_override=None):
         """单步推理。
 
         When sample=False (default):
             Returns: (scores, probs, frontier_nodes)
         When sample=True:
             Returns: (scores, probs, frontier_nodes, action_idx, log_prob)
+
+        action_override: int or None. BC 训练时传入 teacher 选择的节点 ID，
+            用于缓存正确的动作 embedding 供下一步 LSTM 使用。
         """
         subgraph = self.frontier_builder.build(graph_state)
         self._last_gsae_out = self.gsae(subgraph)
@@ -140,6 +143,15 @@ class POMDPReader(BaseReader, nn.Module):
             emb_300 = self._last_gsae_out.frontier_embeds[action_idx:action_idx + 1]
             self._prev_action_emb = self.frontier_proj(emb_300).squeeze(0)
             return scores, probs, self._last_frontier_ids, action_idx, log_prob
+
+        # BC 训练：缓存 teacher 动作的 embedding 供下一步 LSTM
+        if action_override is not None and self._last_gsae_out is not None:
+            try:
+                idx = self._last_frontier_ids.index(action_override)
+                emb_300 = self._last_gsae_out.frontier_embeds[idx:idx + 1]
+                self._prev_action_emb = self.frontier_proj(emb_300).squeeze(0)
+            except ValueError:
+                pass
 
         return scores, probs, self._last_frontier_ids
 
