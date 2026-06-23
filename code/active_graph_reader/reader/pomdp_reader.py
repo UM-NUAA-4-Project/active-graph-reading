@@ -69,7 +69,7 @@ class POMDPReader(BaseReader, nn.Module):
 
         self.frontier_proj = nn.Linear(hidden_dim, 128)  # 300 -> 128
 
-        self.policy_mlp = ReaderMLP(input_dim=128 + k_evidence, hidden_dim=128, dropout=dropout)
+        self.policy_mlp = ReaderMLP(input_dim=128 + k_evidence + 3, hidden_dim=128, dropout=dropout)
 
         self.final_classifier = FinalClassifier()
 
@@ -122,8 +122,10 @@ class POMDPReader(BaseReader, nn.Module):
 
         frontier_128 = self.frontier_proj(self._last_gsae_out.frontier_embeds)  # (N_f, 128)
 
+        struct_v = self._last_gsae_out.frontier_struct.to(device)  # (N_f, 3)
+
         b_expanded = b_t.expand(frontier_128.size(0), -1)  # (N_f, k_evidence)
-        policy_input = torch.cat([frontier_128, b_expanded], dim=-1)  # (N_f, 128 + k_evidence)
+        policy_input = torch.cat([frontier_128, b_expanded, struct_v], dim=-1)  # (N_f, 128 + K + 3)
 
         scores = self.policy_mlp(policy_input)
         probs = F.softmax(scores, dim=0)

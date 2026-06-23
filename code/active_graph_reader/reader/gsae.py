@@ -21,6 +21,7 @@ class GSAEOutput:
     v_hat: torch.Tensor          # (1, 300) decoder 重构
     frontier_embeds: torch.Tensor  # (N_f, 300) frontier 节点嵌入（未降维）
     frontier_original_ids: list   # frontier 节点原图 ID
+    frontier_struct: torch.Tensor = None  # (N_f, 3) frontier 节点结构特征
 
 
 def compute_structural_features(g, n_revealed: int):
@@ -201,9 +202,11 @@ class GSAE(nn.Module):
         v_hat = self.decoder(z)
 
         frontier_embeds = h[n_revealed:]
+        frontier_struct = struct_feat[n_revealed:] if n_total > 0 else torch.empty(0, 3)
 
         return GSAEOutput(
             z=z, v=v, v_hat=v_hat,
             frontier_embeds=frontier_embeds,
             frontier_original_ids=frontier,
+            frontier_struct=frontier_struct,
         )
