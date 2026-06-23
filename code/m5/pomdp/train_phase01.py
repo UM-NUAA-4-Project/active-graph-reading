@@ -36,7 +36,10 @@ def train_one_epoch(gsae, evidence_net, optimizer, graph_cache, train_trajs,
     gsae.train()
     evidence_net.train()
     builder = FrontierGraphBuilder()
-    total_loss = 0.0
+    sum_rec = 0.0
+    sum_ce = 0.0
+    sum_kl = 0.0
+    sum_total = 0.0
     total_steps = 0
 
     pbar = tqdm(range(0, len(train_trajs), batch_size), desc="  Training")
@@ -62,11 +65,19 @@ def train_one_epoch(gsae, evidence_net, optimizer, graph_cache, train_trajs,
                 rec_loss = ((gsae_out.v_hat - gsae_out.v) ** 2).mean()
 
                 ev_out = evidence_net(gsae_out.z)
-                edl = edl_loss(ev_out.e, ev_out.alpha, ev_out.S,
-                               y.unsqueeze(0), evidence_net.k_evidence, lambda_kl)
+                edl, ce_t, kl_t = edl_loss(
+                    ev_out.e, ev_out.alpha, ev_out.S,
+                    y.unsqueeze(0), evidence_net.k_evidence, lambda_kl,
+                    return_components=True,
+                )
 
                 step_loss = rec_loss + lambda_edl * edl
                 traj_losses.append(step_loss)
+
+                sum_rec += rec_loss.item()
+                sum_ce += ce_t.item()
+                sum_kl += kl_t.item()
+                sum_total += step_loss.item()
 
                 reveal_node(state, node)
 
@@ -83,12 +94,21 @@ def train_one_epoch(gsae, evidence_net, optimizer, graph_cache, train_trajs,
         optimizer.step()
         optimizer.zero_grad()
 
-        total_loss += batch_loss.item() * len(batch_losses)
         total_steps += batch_steps
+        n = max(total_steps, 1)
+        pbar.set_postfix({
+            'rec': f'{sum_rec / n:.4f}',
+            'ce': f'{sum_ce / n:.4f}',
+            'kl': f'{sum_kl / n:.4f}',
+            'total': f'{sum_total / n:.4f}',
+        })
 
-        pbar.set_postfix({'loss': f'{batch_loss.item():.4f}'})
-
-    return total_loss / max(total_steps, 1)
+    return {
+        'rec': sum_rec / max(total_steps, 1),
+        'ce': sum_ce / max(total_steps, 1),
+        'kl': sum_kl / max(total_steps, 1),
+        'total': sum_total / max(total_steps, 1),
+    }
 
 
 def main():
@@ -148,13 +168,13 @@ def main():
     # 3. 训练
     for epoch in range(args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
-        avg_loss = train_one_epoch(
+        avg = train_one_epoch(
             gsae, evidence_net, optimizer, graph_cache, all_trajs,
             args.batch_size, device, args.lambda_edl, args.lambda_kl,
         )
-        print(f"  Avg loss: {avg_loss:.4f}")
+        print(f"  rec={avg['rec']:.4f}  ce={avg['ce']:.4f}  kl={avg['kl']:.4f}  total={avg['total']:.4f}")
 
-        training_log.append({'epoch': epoch + 1, 'avg_loss': avg_loss})
+        training_log.append({'epoch': epoch + 1, **avg})
 
         ckpt = {
             'epoch': epoch,

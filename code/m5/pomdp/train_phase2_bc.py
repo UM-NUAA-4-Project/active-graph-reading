@@ -39,7 +39,10 @@ def train_one_epoch(reader, optimizer, graph_cache, train_trajs,
         for p in reader.gsae.parameters():
             p.requires_grad = False
 
-    total_loss = 0.0
+    sum_bc = 0.0
+    sum_belief = 0.0
+    sum_total = 0.0
+    n_trajs = 0
 
     pbar = tqdm(range(0, len(train_trajs), batch_size), desc="  Training")
     for batch_start in pbar:
@@ -86,6 +89,10 @@ def train_one_epoch(reader, optimizer, graph_cache, train_trajs,
                 bc_loss = torch.stack(step_losses).mean()
                 traj_loss = bc_loss + beta_belief * belief_loss
                 batch_losses.append(traj_loss)
+                sum_bc += bc_loss.item()
+                sum_belief += belief_loss.item()
+                sum_total += traj_loss.item()
+                n_trajs += 1
 
         if not batch_losses:
             continue
@@ -95,17 +102,27 @@ def train_one_epoch(reader, optimizer, graph_cache, train_trajs,
         optimizer.step()
         optimizer.zero_grad()
 
-        total_loss += batch_loss.item() * len(batch_losses)
-        pbar.set_postfix({'loss': f'{batch_loss.item():.4f}'})
+        n = max(n_trajs, 1)
+        pbar.set_postfix({
+            'bc': f'{sum_bc / n:.4f}',
+            'belief': f'{sum_belief / n:.4f}',
+            'total': f'{sum_total / n:.4f}',
+        })
 
-    return total_loss / max(len(train_trajs), 1)
+    return {
+        'bc': sum_bc / max(n_trajs, 1),
+        'belief': sum_belief / max(n_trajs, 1),
+        'total': sum_total / max(n_trajs, 1),
+    }
 
 
 @torch.no_grad()
 def val_one_epoch(reader, graph_cache, val_trajs, batch_size, device, beta_belief):
-    """单轮 BC 验证（POMDP），返回平均 loss。"""
+    """单轮 BC 验证（POMDP），返回各 loss 均值。"""
     reader.eval()
-    total_loss = 0.0
+    sum_bc = 0.0
+    sum_belief = 0.0
+    sum_total = 0.0
     n_trajs = 0
 
     pbar = tqdm(range(0, len(val_trajs), batch_size), desc="  Validating")
@@ -141,12 +158,15 @@ def val_one_epoch(reader, graph_cache, val_trajs, batch_size, device, beta_belie
             belief_loss = F.cross_entropy(final_out.b_total, y.unsqueeze(0))
 
             if step_losses:
-                bc_loss = torch.stack(step_losses).mean()
-                traj_loss = bc_loss + beta_belief * belief_loss
-                total_loss += traj_loss.item()
+                bc_val = torch.stack(step_losses).mean().item()
+                bl_val = belief_loss.item()
+                sum_bc += bc_val
+                sum_belief += bl_val
+                sum_total += bc_val + beta_belief * bl_val
                 n_trajs += 1
 
-    return total_loss / max(n_trajs, 1)
+    n = max(n_trajs, 1)
+    return {'bc': sum_bc / n, 'belief': sum_belief / n, 'total': sum_total / n}
 
 
 def main():
@@ -221,21 +241,21 @@ def main():
     print(f"  Train trajectories: {len(train_trajs)}")
     for epoch in range(args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
-        train_loss = train_one_epoch(
+        train = train_one_epoch(
             reader, optimizer, graph_cache, train_trajs,
             args.batch_size, device, args.beta_belief, args.freeze_gsae,
         )
-        print(f"  Train loss: {train_loss:.4f}")
+        print(f"  Train: bc={train['bc']:.4f}  belief={train['belief']:.4f}  total={train['total']:.4f}")
 
-        log_entry = {'epoch': epoch + 1, 'train_loss': train_loss}
+        log_entry = {'epoch': epoch + 1, **{f'train_{k}': v for k, v in train.items()}}
 
         if val_trajs:
-            val_loss = val_one_epoch(
+            val = val_one_epoch(
                 reader, graph_cache, val_trajs,
                 args.batch_size, device, args.beta_belief,
             )
-            print(f"  Val loss:   {val_loss:.4f}")
-            log_entry['val_loss'] = val_loss
+            print(f"  Val:   bc={val['bc']:.4f}  belief={val['belief']:.4f}  total={val['total']:.4f}")
+            log_entry.update({f'val_{k}': v for k, v in val.items()})
 
         training_log.append(log_entry)
 

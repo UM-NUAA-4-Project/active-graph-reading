@@ -36,8 +36,11 @@ def compute_budget(n_nodes, ratio):
 def train_one_epoch(reader, optimizer, graph_cache, train_trajs,
                     batch_size, device, beta_belief, budgets_rel):
     reader.train()
-    total_reward = 0
-    total_trajs = 0
+    sum_rl = 0.0
+    sum_aux = 0.0
+    sum_total = 0.0
+    sum_reward = 0
+    n_trajs = 0
 
     pbar = tqdm(range(0, len(train_trajs), batch_size), desc="  Training")
     for batch_start in pbar:
@@ -45,13 +48,11 @@ def train_one_epoch(reader, optimizer, graph_cache, train_trajs,
         batch_trajs = train_trajs[batch_start:batch_end]
 
         batch_losses = []
-        batch_rewards = []
 
         for traj in batch_trajs:
             g, label = graph_cache[traj.graph_idx]
             y = torch.tensor(label, device=device)
 
-            # 随机选一个 budget ratio
             idx = traj.graph_idx ^ traj.seed_node
             br = budgets_rel[idx % len(budgets_rel)]
             B = compute_budget(g.num_nodes(), br)
@@ -80,7 +81,11 @@ def train_one_epoch(reader, optimizer, graph_cache, train_trajs,
                 aux_loss = F.cross_entropy(final_out.b_total, y.unsqueeze(0))
                 traj_loss = rl_loss + beta_belief * aux_loss
                 batch_losses.append(traj_loss)
-                batch_rewards.append(R)
+                sum_rl += rl_loss.item()
+                sum_aux += aux_loss.item()
+                sum_total += traj_loss.item()
+                sum_reward += R
+                n_trajs += 1
 
         if not batch_losses:
             continue
@@ -90,13 +95,20 @@ def train_one_epoch(reader, optimizer, graph_cache, train_trajs,
         optimizer.step()
         optimizer.zero_grad()
 
-        total_reward += sum(batch_rewards)
-        total_trajs += len(batch_rewards)
-        avg_r = total_reward / total_trajs if total_trajs > 0 else 0
-        pbar.set_postfix({'loss': f'{batch_loss.item():.4f}',
-                          'avg_R': f'{avg_r:.2f}'})
+        n = max(n_trajs, 1)
+        pbar.set_postfix({
+            'rl': f'{sum_rl / n:.4f}',
+            'aux': f'{sum_aux / n:.4f}',
+            'total': f'{sum_total / n:.4f}',
+            'avg_R': f'{sum_reward / n:.2f}',
+        })
 
-    return 0.0  # loss is reward-based, just track avg_R
+    return {
+        'rl': sum_rl / max(n_trajs, 1),
+        'aux': sum_aux / max(n_trajs, 1),
+        'total': sum_total / max(n_trajs, 1),
+        'avg_R': sum_reward / max(n_trajs, 1),
+    }
 
 
 def main():
@@ -157,12 +169,13 @@ def main():
     # 3. REINFORCE 训练
     for epoch in range(args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
-        train_one_epoch(
+        avg = train_one_epoch(
             reader, optimizer, graph_cache, all_trajs,
             args.batch_size, device, args.beta_belief, args.budgets_rel,
         )
+        print(f"  rl={avg['rl']:.4f}  aux={avg['aux']:.4f}  total={avg['total']:.4f}  avg_R={avg['avg_R']:.2f}")
 
-        training_log.append({'epoch': epoch + 1})
+        training_log.append({'epoch': epoch + 1, **avg})
 
         ckpt = {
             'epoch': epoch,

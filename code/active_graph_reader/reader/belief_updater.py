@@ -62,8 +62,13 @@ class LSTMBeliefUpdater(nn.Module):
         g_t = torch.tanh(self.gate_g(h))         # (1, K) 候选方向
         gate = i_t * g_t                          # (1, K) gate_τ ∈ (-1, 1)
 
+        # DRBPN 不确定性比率：先验不确定时多信新证据，当前不确定时多信先验
+        S_prev = self._alpha_accum.sum()
+        u_prev = self.k_evidence / (S_prev + 1e-6)
+        kappa = u_prev / (u + 1e-6)
+
         self._alpha_accum = self._alpha_accum.to(e.device)
-        self._alpha_accum = self._alpha_accum + e.squeeze(0) * gate.squeeze(0)
+        self._alpha_accum = self._alpha_accum + kappa * e.squeeze(0) * gate.squeeze(0)
         self._alpha_accum = torch.clamp(self._alpha_accum, min=1e-6)  # Dirichlet 参数需 > 0
 
         S = self._alpha_accum.sum()

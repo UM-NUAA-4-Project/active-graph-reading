@@ -182,7 +182,8 @@ def infer_reader_config(state_dict: dict) -> Tuple[int, int]:
     return hidden_dim, n_layers
 
 
-def edl_loss(evidence, alpha, S, y_onehot, k_evidence, lambda_kl=0.01):
+def edl_loss(evidence, alpha, S, y_onehot, k_evidence, lambda_kl=0.01,
+             return_components=False):
     """EDL loss — CE on belief mass + KL regularization.
 
     CE on b = e/S replaces the original MSE. MSE gradient is diluted by
@@ -200,10 +201,12 @@ def edl_loss(evidence, alpha, S, y_onehot, k_evidence, lambda_kl=0.01):
     y_onehot : Tensor (B, K)  one-hot 标签
     k_evidence : int          类别数
     lambda_kl : float         KL 正则权重
+    return_components : bool  若 True，返回 (total, ce, kl) 三个标量 Tensor
 
     Returns
     -------
-    loss : scalar Tensor
+    loss : scalar Tensor（return_components=False）
+    (loss, ce, kl) : tuple（return_components=True）
     """
     b = evidence / S.unsqueeze(-1)  # (B, K) 信念 mass ∈ Δ^{K-1}
 
@@ -219,7 +222,10 @@ def edl_loss(evidence, alpha, S, y_onehot, k_evidence, lambda_kl=0.01):
         - torch.lgamma(torch.tensor(float(k_evidence), device=alpha.device))
         + ((alpha_tilde - 1) * (torch.digamma(alpha_tilde) - torch.digamma(S_tilde))).sum(dim=-1)
     )
-    return (ce + lambda_kl * kl).mean()
+    total = (ce + lambda_kl * kl).mean()
+    if return_components:
+        return total, ce.detach().mean(), kl.detach().mean()
+    return total
 
 
 # ---------------------------------------------------------------------------
