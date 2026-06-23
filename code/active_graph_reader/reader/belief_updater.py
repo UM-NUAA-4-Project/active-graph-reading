@@ -52,6 +52,10 @@ class LSTMBeliefUpdater(nn.Module):
         -------
         b_t : Tensor (1, K)  更新后的信念
         """
+        # 确保 LSTM 隐状态与输入在同一设备（reset 后 _h/_c 在 CPU 上）
+        self._h = self._h.to(b_prev.device)
+        self._c = self._c.to(b_prev.device)
+
         u_t = u.unsqueeze(0).unsqueeze(-1) if u.dim() == 0 else u.view(1, -1)
         lstm_input = torch.cat([b_prev, e, u_t, emb_a_prev], dim=-1)  # (1, 203)
 
@@ -64,12 +68,15 @@ class LSTMBeliefUpdater(nn.Module):
 
         # DRBPN 逐类不确定性调制：
         # Var(b_k) = α_k·(S-α_k) / (S²·(S+1))  — Dirichlet 边际方差
-        # 高证据类方差小→κ小→不易被新证据扰动；低证据类方差大→κ大→开放吸收
+        # κ_k = σ_k 直接用作增益（不除以 u）：
+        #   - α_k≈S/2 时 σ_k 取峰值 → 竞争中的类别最开放
+        #   - α_k→0 或 α_k→S 时 σ_k→0 → 边缘类和决胜类都保守
+        #   - σ_k ∝ 1/√S → 总证据越多整体越谨慎
         S_prev = self._alpha_accum.sum()
         var_k = (self._alpha_accum * (S_prev - self._alpha_accum)
                  / (S_prev * S_prev * (S_prev + 1) + 1e-6))
         sigma_k = var_k.sqrt()                                     # (K,) 逐类不确定性
-        kappa = sigma_k / (u + 1e-6)                               # (K,) 逐类 Kalman 增益
+        kappa = sigma_k                                            # (K,) 逐类 Kalman 增益
 
         self._alpha_accum = self._alpha_accum.to(e.device)
         self._alpha_accum = self._alpha_accum + kappa * e.squeeze(0) * gate.squeeze(0)

@@ -118,7 +118,7 @@ class POMDPReader(BaseReader, nn.Module):
             ev_out.e, ev_out.u,
             a_prev.unsqueeze(0),
         )
-        self._current_belief = b_t.squeeze(0).detach().cpu()
+        self._current_belief = b_t.squeeze(0)
 
         frontier_128 = self.frontier_proj(self._last_gsae_out.frontier_embeds)  # (N_f, 128)
 
@@ -138,7 +138,7 @@ class POMDPReader(BaseReader, nn.Module):
             log_prob = dist.log_prob(action_idx)
             # cache action embedding for sampled action
             emb_300 = self._last_gsae_out.frontier_embeds[action_idx:action_idx + 1]
-            self._prev_action_emb = self.frontier_proj(emb_300).detach().squeeze(0).cpu()
+            self._prev_action_emb = self.frontier_proj(emb_300).squeeze(0)
             return scores, probs, self._last_frontier_ids, action_idx, log_prob
 
         return scores, probs, self._last_frontier_ids
