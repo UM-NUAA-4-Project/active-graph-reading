@@ -8,7 +8,7 @@ class ReaderMLP(nn.Module):
 
     Parameters
     ----------
-    input_dim : int   输入维度（LearnableReader=128, POMDPReader=165）
+    input_dim : int   输入维度（LearnableReader=128, POMDPReader=169）
     hidden_dim : int  隐层维度，默认 128
     dropout : float   Dropout，默认 0.1
     """

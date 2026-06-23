@@ -62,10 +62,14 @@ class LSTMBeliefUpdater(nn.Module):
         g_t = torch.tanh(self.gate_g(h))         # (1, K) 候选方向
         gate = i_t * g_t                          # (1, K) gate_τ ∈ (-1, 1)
 
-        # DRBPN 不确定性比率：先验不确定时多信新证据，当前不确定时多信先验
+        # DRBPN 逐类不确定性调制：
+        # Var(b_k) = α_k·(S-α_k) / (S²·(S+1))  — Dirichlet 边际方差
+        # 高证据类方差小→κ小→不易被新证据扰动；低证据类方差大→κ大→开放吸收
         S_prev = self._alpha_accum.sum()
-        u_prev = self.k_evidence / (S_prev + 1e-6)
-        kappa = u_prev / (u + 1e-6)
+        var_k = (self._alpha_accum * (S_prev - self._alpha_accum)
+                 / (S_prev * S_prev * (S_prev + 1) + 1e-6))
+        sigma_k = var_k.sqrt()                                     # (K,) 逐类不确定性
+        kappa = sigma_k / (u + 1e-6)                               # (K,) 逐类 Kalman 增益
 
         self._alpha_accum = self._alpha_accum.to(e.device)
         self._alpha_accum = self._alpha_accum + kappa * e.squeeze(0) * gate.squeeze(0)
@@ -79,3 +83,9 @@ class LSTMBeliefUpdater(nn.Module):
     def alpha_accum(self):
         """当前 Dirichlet 累加参数（供 FinalClassifier 路径 A 使用）。"""
         return self._alpha_accum.clone()
+
+    @property
+    def current_u(self):
+        """当前不确定度 u_t = K / S_t。"""
+        S = self._alpha_accum.sum()
+        return self.k_evidence / S.clamp(min=1)

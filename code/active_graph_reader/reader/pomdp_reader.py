@@ -14,7 +14,7 @@
       → GSAE → z, v, v_hat, frontier_embeds(300)
       → EvidenceNetwork → e, b, u
       → LSTMBeliefUpdater → b_t
-      → [frontier_embeds(128) || b_t] → ReaderMLP → scores → probs
+      → [frontier_embeds(128) || b_t || struct_v || u_t] → ReaderMLP → scores → probs
 
 B 步后：
   FinalClassifier(b_B, o_B) → y_hat, R
@@ -69,7 +69,7 @@ class POMDPReader(BaseReader, nn.Module):
 
         self.frontier_proj = nn.Linear(hidden_dim, 128)  # 300 -> 128
 
-        self.policy_mlp = ReaderMLP(input_dim=128 + k_evidence + 3, hidden_dim=128, dropout=dropout)
+        self.policy_mlp = ReaderMLP(input_dim=128 + k_evidence + 3 + 1, hidden_dim=128, dropout=dropout)
 
         self.final_classifier = FinalClassifier()
 
@@ -123,9 +123,11 @@ class POMDPReader(BaseReader, nn.Module):
         frontier_128 = self.frontier_proj(self._last_gsae_out.frontier_embeds)  # (N_f, 128)
 
         struct_v = self._last_gsae_out.frontier_struct.to(device)  # (N_f, 3)
+        u_t = self.belief_updater.current_u.to(device)             # scalar
 
         b_expanded = b_t.expand(frontier_128.size(0), -1)  # (N_f, k_evidence)
-        policy_input = torch.cat([frontier_128, b_expanded, struct_v], dim=-1)  # (N_f, 128 + K + 3)
+        u_expanded = u_t.expand(frontier_128.size(0), 1)   # (N_f, 1)
+        policy_input = torch.cat([frontier_128, b_expanded, struct_v, u_expanded], dim=-1)  # (N_f, 128+K+3+1)
 
         scores = self.policy_mlp(policy_input)
         probs = F.softmax(scores, dim=0)
