@@ -39,7 +39,7 @@ def train_one_epoch(gsae, evidence_net, optimizer, graph_cache, train_trajs,
     builder = FrontierGraphBuilder()
     sum_ce = 0.0
     sum_correct = 0
-    total_steps = 0
+    total_trajs = 0
 
     pbar = tqdm(range(0, len(train_trajs), batch_size), desc="  Training")
     for batch_start in pbar:
@@ -47,34 +47,26 @@ def train_one_epoch(gsae, evidence_net, optimizer, graph_cache, train_trajs,
         batch_trajs = train_trajs[batch_start:batch_end]
 
         batch_losses = []
-        batch_steps = 0
 
         for traj in batch_trajs:
             g, label = graph_cache[traj.graph_idx]
             label_t = torch.tensor(label, device=device)
 
             state = GraphState(g, seed_node=traj.seed_node)
-            traj_losses = []
-
             for node in traj.reveal_order:
-                subgraph = builder.build(state)
-                gsae_out = gsae(subgraph)
-
-                ev_out = evidence_net(gsae_out.v)
-                b = ev_out.b.squeeze(0)  # (K,)
-                ce_loss = F.cross_entropy(b.unsqueeze(0), label_t.unsqueeze(0))
-
-                traj_losses.append(ce_loss)
-
-                sum_ce += ce_loss.item()
-                sum_correct += int(b.argmax().item() == label)
-
                 reveal_node(state, node)
 
-            if traj_losses:
-                traj_loss = torch.stack(traj_losses).mean()
-                batch_losses.append(traj_loss)
-                batch_steps += len(traj_losses)
+            # 只用最终子图（B 步揭示后）计算损失
+            subgraph = builder.build(state)
+            gsae_out = gsae(subgraph)
+            ev_out = evidence_net(gsae_out.v)
+            b = ev_out.b.squeeze(0)  # (K,)
+            ce_loss = F.cross_entropy(b.unsqueeze(0), label_t.unsqueeze(0))
+
+            batch_losses.append(ce_loss)
+            sum_ce += ce_loss.item()
+            sum_correct += int(b.argmax().item() == label)
+            total_trajs += 1
 
         if not batch_losses:
             continue
@@ -84,16 +76,15 @@ def train_one_epoch(gsae, evidence_net, optimizer, graph_cache, train_trajs,
         optimizer.step()
         optimizer.zero_grad()
 
-        total_steps += batch_steps
-        n = max(total_steps, 1)
+        n = max(total_trajs, 1)
         pbar.set_postfix({
             'ce': f'{sum_ce / n:.4f}',
             'acc': f'{sum_correct / n:.4f}',
         })
 
     return {
-        'ce': sum_ce / max(total_steps, 1),
-        'acc': sum_correct / max(total_steps, 1),
+        'ce': sum_ce / max(total_trajs, 1),
+        'acc': sum_correct / max(total_trajs, 1),
     }
 
 

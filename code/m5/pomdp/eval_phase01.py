@@ -52,22 +52,21 @@ def evaluate(gsae, evidence_net, graph_cache, trajs, device):
         label_t = torch.tensor(label, device=device)
 
         state = GraphState(g, seed_node=traj.seed_node)
-
         for node in traj.reveal_order:
-            subgraph = builder.build(state)
-            gsae_out = gsae(subgraph)
-
-            ev_out = evidence_net(gsae_out.v)
-            b = ev_out.b.squeeze(0)  # (K,)
-            ce = F.cross_entropy(b.unsqueeze(0), label_t.unsqueeze(0))
-
-            total_ce += ce.item()
-            total_correct += int(b.argmax().item() == label)
-            total_steps += 1
-            e_max_sum += ev_out.e.max().item()
-            u_mean_sum += ev_out.u.mean().item()
-
             reveal_node(state, node)
+
+        # 只用最终子图评估
+        subgraph = builder.build(state)
+        gsae_out = gsae(subgraph)
+        ev_out = evidence_net(gsae_out.v)
+        b = ev_out.b.squeeze(0)  # (K,)
+        ce = F.cross_entropy(b.unsqueeze(0), label_t.unsqueeze(0))
+
+        total_ce += ce.item()
+        total_correct += int(b.argmax().item() == label)
+        total_steps += 1
+        e_max_sum += ev_out.e.max().item()
+        u_mean_sum += ev_out.u.mean().item()
 
     n = max(total_steps, 1)
     return {
@@ -75,7 +74,7 @@ def evaluate(gsae, evidence_net, graph_cache, trajs, device):
         'acc': total_correct / n,
         'e_max': e_max_sum / n,
         'u_mean': u_mean_sum / n,
-        'n_steps': total_steps,
+        'n_trajs': total_steps,
     }
 
 
