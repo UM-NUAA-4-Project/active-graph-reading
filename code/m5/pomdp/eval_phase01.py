@@ -62,7 +62,7 @@ def evaluate(gsae, evidence_net, graph_cache, trajs, device):
             ce = F.cross_entropy(b.unsqueeze(0), label_t.unsqueeze(0))
 
             total_ce += ce.item()
-            total_correct += int(b.argmax().item() == label.item())
+            total_correct += int(b.argmax().item() == label)
             total_steps += 1
             e_max_sum += ev_out.e.max().item()
             u_mean_sum += ev_out.u.mean().item()
