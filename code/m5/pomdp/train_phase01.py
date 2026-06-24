@@ -108,7 +108,7 @@ def main():
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--hidden-dim', type=int, default=300)
     parser.add_argument('--limit-trajs', type=int, default=0, help='0=all')
-    parser.add_argument('--output-dir', default='m5/phase01/')
+    parser.add_argument('--output-dir', default='m5/pomdp/phase01/')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 
@@ -158,7 +158,11 @@ def main():
         ckpt = torch.load(str(latest), map_location=device, weights_only=False)
         gsae.load_state_dict(ckpt['gsae_state_dict'])
         evidence_net.load_state_dict(ckpt['evidence_state_dict'])
-        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        try:
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        except ValueError:
+            print("  WARNING: optimizer state incompatible (old checkpoint format?), "
+                  "starting with fresh optimizer")
         training_log = ckpt.get('training_log', [])
         start_epoch = ckpt['epoch'] + 1
         print(f"  Resumed at epoch {start_epoch + 1}/{args.epochs}")

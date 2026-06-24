@@ -236,7 +236,10 @@ def main():
         training_log = ckpt.get('training_log', [])
         start_epoch = ckpt['epoch'] + 1
         optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
-        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        try:
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        except ValueError:
+            print("  WARNING: optimizer state incompatible, starting with fresh optimizer")
         print(f"  Resumed at epoch {start_epoch + 1}/{args.epochs}")
     else:
         # 全新训练：加载 Phase 0+1 checkpoint 初始化 GSAE + EvidenceNet
