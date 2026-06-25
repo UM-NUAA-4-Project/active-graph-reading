@@ -157,7 +157,7 @@ class GSAE(nn.Module):
         """编码 FrontierSubgraph，返回节点嵌入和图嵌入。
 
         改动 A：输入端增加 3 维结构特征（归一化度 + 归一化前沿度 + 局部聚类系数）
-        改动 B：结构感知 attention pooling 替代 mean（仅对 revealed 节点加权求和）
+        改动 B：结构感知 attention pooling 替代 mean
         """
         g = subgraph.g
         n_revealed = subgraph.n_revealed
@@ -185,8 +185,9 @@ class GSAE(nn.Module):
         else:
             struct_feat = torch.zeros(n_total, 3, device=device)
 
-        # 所有节点初始化为零向量，信息完全由 GNN 消息传递从拓扑和边特征中学习
-        h = torch.zeros(n_total, self.hidden_dim, device=device)
+        node_types = torch.zeros(n_total, dtype=torch.long, device=device)
+        node_types[n_revealed:] = 1
+        h = self.node_type_emb(node_types)
 
         for i in range(self.n_layers):
             h = self.convs[i](g, h, edge_feat)

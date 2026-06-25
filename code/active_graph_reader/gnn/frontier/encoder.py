@@ -64,8 +64,9 @@ class FrontierNodesEncoder(nn.Module):
         n_total = g.num_nodes()
         edge_feat = g.edata['feat']
 
-        # 所有节点初始化为零向量，信息由 GNN 消息传递从拓扑和边特征中学习
-        h = torch.zeros(n_total, self.hidden_dim, device=device)
+        node_types = torch.zeros(n_total, dtype=torch.long, device=device)
+        node_types[n_revealed:] = 1
+        h = self.node_type_emb(node_types)
 
         # GNN 前向传播
         for i in range(self.n_layers):
