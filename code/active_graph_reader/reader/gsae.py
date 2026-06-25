@@ -176,14 +176,14 @@ class GSAE(nn.Module):
 
         device = self.node_type_emb.weight.device
 
+        if self.use_struct:
+            struct_feat = compute_structural_features(g, n_revealed)  # CPU 上计算
+        else:
+            struct_feat = torch.zeros(n_total, 3)
+
         g = g.to(device)
         edge_feat = g.edata['feat']
-
-        if self.use_struct:
-            struct_feat = compute_structural_features(g, n_revealed)
-            struct_feat = struct_feat.to(device)
-        else:
-            struct_feat = torch.zeros(n_total, 3, device=device)
+        struct_feat = struct_feat.to(device)
 
         node_types = torch.zeros(n_total, dtype=torch.long, device=device)
         node_types[n_revealed:] = 1
