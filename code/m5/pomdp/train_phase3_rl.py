@@ -124,6 +124,7 @@ def main():
                         default=[0.05, 0.10, 0.15])
     parser.add_argument('--limit-trajs', type=int, default=0)
     parser.add_argument('--output-dir', default='m5/phase3/')
+    parser.add_argument('--no-struct', action='store_true', help='禁用结构特征+结构注意力池化')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 
@@ -149,7 +150,8 @@ def main():
     # 2. 加载 POMDPReader
     print("\n=== Loading POMDPReader ===")
     reader = POMDPReader(edge_feat_dim=7, hidden_dim=300, k_state=128,
-                         k_evidence=37, n_layers=2, dropout=0.5).to(device)
+                         k_evidence=37, n_layers=2, dropout=0.5,
+                         use_struct=not args.no_struct).to(device)
 
     # 断点恢复：优先检查 Phase 3 自身的 checkpoint
     start_epoch = 0

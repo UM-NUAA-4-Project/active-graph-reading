@@ -114,15 +114,16 @@ class GSAE(nn.Module):
     """
 
     def __init__(self, edge_feat_dim=7, hidden_dim=300, k_state=128,
-                 n_layers=3, dropout=0.5):
+                 n_layers=3, dropout=0.5, use_struct=True):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.k_state = k_state
         self.n_layers = n_layers
         self.dropout = dropout
+        self.use_struct = use_struct
 
-        self.node_type_emb = nn.Embedding(2, hidden_dim)  # 0=revealed, 1=frontier
-        self.struct_proj = nn.Linear(3, hidden_dim)        # 3 维结构特征 → hidden_dim
+        self.node_type_emb = nn.Embedding(2, hidden_dim)  # 保留兼容，forward 中未使用
+        self.struct_proj = nn.Linear(3, hidden_dim)        # 保留兼容
 
         self.convs = nn.ModuleList([
             GINELayer(hidden_dim, edge_feat_dim) for _ in range(n_layers)
@@ -175,12 +176,14 @@ class GSAE(nn.Module):
 
         device = self.node_type_emb.weight.device
 
-        # 结构特征在 CPU 上计算（小子图，避免 GPU launch overhead）
-        struct_feat = compute_structural_features(g, n_revealed)
-
         g = g.to(device)
         edge_feat = g.edata['feat']
-        struct_feat = struct_feat.to(device)
+
+        if self.use_struct:
+            struct_feat = compute_structural_features(g, n_revealed)
+            struct_feat = struct_feat.to(device)
+        else:
+            struct_feat = torch.zeros(n_total, 3, device=device)
 
         # 所有节点初始化为零向量，信息完全由 GNN 消息传递从拓扑和边特征中学习
         h = torch.zeros(n_total, self.hidden_dim, device=device)
@@ -193,12 +196,14 @@ class GSAE(nn.Module):
             else:
                 h = F.dropout(h, p=self.dropout, training=self.training)
 
-        # 结构感知 attention pooling（全子图：revealed + frontier）
-        mask = torch.ones(n_total, dtype=torch.bool, device=device)
-        v = self.attn_pool(h, struct_feat, mask).unsqueeze(0)  # (1, 300)
+        if self.use_struct:
+            mask = torch.ones(n_total, dtype=torch.bool, device=device)
+            v = self.attn_pool(h, struct_feat, mask).unsqueeze(0)  # (1, 300)
+        else:
+            v = h.mean(dim=0, keepdim=True)  # (1, 300) 简单均值池化
 
         frontier_embeds = h[n_revealed:]
-        frontier_struct = struct_feat[n_revealed:] if n_total > 0 else torch.empty(0, 3)
+        frontier_struct = struct_feat[n_revealed:]
 
         return GSAEOutput(
             z=None, v=v, v_hat=None,

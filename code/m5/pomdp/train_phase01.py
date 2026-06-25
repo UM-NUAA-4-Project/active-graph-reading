@@ -100,6 +100,7 @@ def main():
     parser.add_argument('--hidden-dim', type=int, default=300)
     parser.add_argument('--limit-trajs', type=int, default=0, help='0=all')
     parser.add_argument('--output-dir', default='m5/pomdp/phase01/')
+    parser.add_argument('--no-struct', action='store_true', help='禁用结构特征+结构注意力池化')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 
@@ -124,8 +125,9 @@ def main():
 
     # 2. 创建 GSAE + EvidenceNet
     print("\n=== Creating models ===")
+    use_struct = not args.no_struct
     gsae = GSAE(edge_feat_dim=7, hidden_dim=args.hidden_dim, k_state=128,
-                n_layers=2, dropout=0.5).to(device)
+                n_layers=2, dropout=0.5, use_struct=use_struct).to(device)
     if args.fclass_init:
         print(f"  Initializing GSAE from {args.fclass_init}")
         gsae.init_from_fclass(str(repo_root / args.fclass_init), device)

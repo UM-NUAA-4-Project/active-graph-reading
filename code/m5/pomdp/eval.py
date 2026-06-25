@@ -379,6 +379,7 @@ def main():
         pomdp_reader = POMDPReader(
             edge_feat_dim=7, hidden_dim=300, k_state=128, k_evidence=37,
             n_layers=3, dropout=0.5,
+            use_struct=not args.no_struct if hasattr(args, 'no_struct') else True,
         ).to(device)
         ckpt_path = repo_root / args.checkpoint
         if ckpt_path.exists():

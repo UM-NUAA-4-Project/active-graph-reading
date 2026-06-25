@@ -48,10 +48,11 @@ class POMDPReader(BaseReader, nn.Module):
     k_evidence : int       证据维度（类别数），默认 37
     n_layers : int         GNN 层数，默认 2
     dropout : float        Dropout，默认 0.5
+    use_struct : bool      是否使用结构特征 + 结构注意力池化（默认 True）
     """
 
     def __init__(self, edge_feat_dim=7, hidden_dim=300, k_state=128,
-                 k_evidence=37, n_layers=2, dropout=0.5):
+                 k_evidence=37, n_layers=2, dropout=0.5, use_struct=True):
         super().__init__()
 
         self.k_evidence = k_evidence
@@ -61,6 +62,7 @@ class POMDPReader(BaseReader, nn.Module):
         self.gsae = GSAE(
             edge_feat_dim=edge_feat_dim, hidden_dim=hidden_dim,
             k_state=k_state, n_layers=n_layers, dropout=dropout,
+            use_struct=use_struct,
         )
 
         self.evidence_net = EvidenceNetwork(hidden_dim=hidden_dim, k_evidence=k_evidence)

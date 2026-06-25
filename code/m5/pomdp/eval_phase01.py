@@ -84,6 +84,7 @@ def main():
     parser.add_argument('--data-dir', default='m4/data/stage5_filtered')
     parser.add_argument('--root', default=r'D:\ogb-master\dataset')
     parser.add_argument('--device', default='cuda:0')
+    parser.add_argument('--no-struct', action='store_true', help='禁用结构特征+结构注意力池化')
     parser.add_argument('--limit-trajs', type=int, default=0)
     args = parser.parse_args()
 
@@ -110,7 +111,7 @@ def main():
 
     # 创建模型并加载权重
     gsae = GSAE(edge_feat_dim=7, hidden_dim=cfg['hidden_dim'], k_state=128,
-                n_layers=2, dropout=0.5).to(device)
+                n_layers=2, dropout=0.5, use_struct=not args.no_struct).to(device)
     gsae.load_state_dict(ckpt['gsae_state_dict'])
 
     evidence_net = EvidenceNetwork(hidden_dim=cfg['hidden_dim'], k_evidence=37).to(device)
