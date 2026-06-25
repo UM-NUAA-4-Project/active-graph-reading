@@ -182,9 +182,8 @@ class GSAE(nn.Module):
         edge_feat = g.edata['feat']
         struct_feat = struct_feat.to(device)
 
-        node_types = torch.zeros(n_total, dtype=torch.long, device=device)
-        node_types[n_revealed:] = 1
-        h = self.node_type_emb(node_types) + self.struct_proj(struct_feat)
+        # 所有节点初始化为零向量，信息完全由 GNN 消息传递从拓扑和边特征中学习
+        h = torch.zeros(n_total, self.hidden_dim, device=device)
 
         for i in range(self.n_layers):
             h = self.convs[i](g, h, edge_feat)
@@ -194,9 +193,8 @@ class GSAE(nn.Module):
             else:
                 h = F.dropout(h, p=self.dropout, training=self.training)
 
-        # 结构感知 attention pooling（仅 V_revealed 节点）
-        mask = torch.zeros(n_total, dtype=torch.bool, device=device)
-        mask[:n_revealed] = True
+        # 结构感知 attention pooling（全子图：revealed + frontier）
+        mask = torch.ones(n_total, dtype=torch.bool, device=device)
         v = self.attn_pool(h, struct_feat, mask).unsqueeze(0)  # (1, 300)
 
         frontier_embeds = h[n_revealed:]
