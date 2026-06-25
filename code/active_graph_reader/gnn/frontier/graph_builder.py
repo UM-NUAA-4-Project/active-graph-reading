@@ -1,6 +1,6 @@
 """FrontierGraphBuilder：从 GraphState 构建扩展子图。
 
-扩展子图 = V_revealed ∪ frontier_nodes + revealed↔revealed 边（双向）+ revealed→frontier 边（单向）
+扩展子图 = V_revealed ∪ frontier_nodes + revealed↔revealed 边（双向）+ revealed↔frontier 边（双向）
 与 encoder/subgraph_builder.py 的 SubgraphBuilder 模式一致。
 """
 
@@ -37,9 +37,9 @@ class FrontierGraphBuilder:
 
     构建内容：
     - 节点：V_revealed ∪ frontier_nodes（升序排列）
-    - 边：revealed↔revealed（双向）+ revealed→frontier（单向）
-    - 边特征：复制自原图 edge_feat，存入 g.edata['feat']
-    - 无节点特征（由 FrontierNodesEncoder 分配可训练 type embedding）
+    - 边：revealed↔revealed（双向）+ revealed↔frontier（双向）
+    - 边特征：复制自原图 edge_feat，存入 g.edata['feat']，反向边复用特征
+    - 无节点特征（由 encoder 分配可训练 type embedding）
     """
 
     def build(self, state: GraphState) -> FrontierSubgraph:
@@ -84,7 +84,7 @@ class FrontierGraphBuilder:
             feat_parts.append(feat_r)
             feat_parts.append(feat_r)  # repeat for reverse
 
-        # revealed → frontier 边（单向）
+        # revealed ↔ frontier 边（双向）
         if state.frontier_edges:
             fr_keys = list(state.frontier_edges)
             fr_ids = [state._edge_key_to_id[(min(u, v), max(u, v))] for u, v in fr_keys]
@@ -95,8 +95,11 @@ class FrontierGraphBuilder:
             v_f = old_to_new[fr_t[:, 1]]
 
             src_parts.append(u_f)
+            src_parts.append(v_f)  # reverse: frontier → revealed
             dst_parts.append(v_f)
+            dst_parts.append(u_f)  # reverse
             feat_parts.append(feat_f)
+            feat_parts.append(feat_f)  # repeat for reverse
 
         # 构建 DGL 图
         if len(src_parts) == 0:

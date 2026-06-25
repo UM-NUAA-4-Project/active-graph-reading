@@ -198,10 +198,11 @@ class GSAE(nn.Module):
                 h = F.dropout(h, p=self.dropout, training=self.training)
 
         if self.use_struct:
-            mask = torch.ones(n_total, dtype=torch.bool, device=device)
+            mask = torch.zeros(n_total, dtype=torch.bool, device=device)
+            mask[:n_revealed] = True
             v = self.attn_pool(h, struct_feat, mask).unsqueeze(0)  # (1, 300)
         else:
-            v = h.mean(dim=0, keepdim=True)  # (1, 300) 简单均值池化
+            v = h[:n_revealed].mean(dim=0, keepdim=True)  # (1, 300) 简单均值池化
 
         frontier_embeds = h[n_revealed:]
         frontier_struct = struct_feat[n_revealed:]
