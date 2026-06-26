@@ -51,25 +51,25 @@ Goal: make the project concrete enough that a first benchmark and baseline imple
 - [X]  Freeze v0 protocol: `G_0` = Plan D with k=1 random seed (incident edge list / neighbor IDs visible; no raw node-feature assumption); action = `reveal_node(v)` revealing v as observed, edge features to already-revealed nodes, and incident edge list / neighbor IDs so the frontier can expand; unit cost; budget = number of revealed nodes, reported also as fraction of total nodes per graph.
 - [X]  Implement reveal process and partial-graph representation.
 - [X]  Implement three policies under the v0 action: uniform random over frontier; BFS from seed; max known-frontier degree (edges from a frontier node back into the revealed subgraph, not true graph degree).
-- [ ]  Average each policy over multiple random seeds per graph.
-- [ ]  Plot budget-performance curves vs. the full-graph upper bound.
-- [ ]  Kill-criterion check: if BFS-from-seed reaches ~90% of full-graph accuracy at <10% reveal ratio, the dataset is too easy — switch dataset or harden `G_0` before M4.
+- [X]  Average each policy over multiple random seeds per graph.
+- [X]  Plot budget-performance curves vs. the full-graph upper bound.
+- [X]  Kill-criterion check: if BFS-from-seed reaches ~90% of full-graph accuracy at <10% reveal ratio, the dataset is too easy — switch dataset or harden `G_0` before M4.
 
 ### M4: Teacher / Trajectory Baselines
 
 **Target**: after first benchmark protocol works**Status**: not started
 
-- [ ]  Generate trajectories from random, BFS, degree / centrality, and heuristic policies.
-- [ ]  Score trajectories by final prediction quality or information gain.
-- [ ]  Estimate oracle / upper-bound headroom without leaking labels into the test-time policy.
-- [ ]  Decide whether trajectory distillation is worth pursuing.
+- [X]  Generate trajectories from random, BFS, degree / centrality, and heuristic policies.
+- [X]  Score trajectories by final prediction quality or information gain.
+- [X]  Estimate oracle / upper-bound headroom without leaking labels into the test-time policy.
+- [X]  Decide whether trajectory distillation is worth pursuing.
 
 ### M5: First Learned Reading Policy
 
 **Target**: after M4 shows headroom**Status**: not started
 
-- [ ]  Train a policy to imitate useful reading trajectories.
-- [ ]  Compare learned reading against random / heuristic baselines under matched budget.
+- [X]  Train a policy to imitate useful reading trajectories.
+- [X]  Compare learned reading against random / heuristic baselines under matched budget.
 - [ ]  Evaluate robustness across budget values and graph sizes.
 - [ ]  Decide paper framing and target venue.
 

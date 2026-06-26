@@ -1,123 +1,55 @@
-"""T4: Hybrid Teacher.
-
-Combines T1 (gradient attribution) and T3 (structural topology) scores
-via weighted combination:
-
-    s_v = α · s_v^{grad} + (1-α) · s_v^{struct}
-
-Alpha can be fixed or randomly sampled per graph for diversity.
-
-Reference: M4-implementation.md §3.2 Teacher T4.
-"""
+"""T4: 混合 Teacher — α·gradient + (1-α)·structural。"""
 
 import logging
-import random
 from typing import Optional
 
 import torch
-import torch.nn as nn
 import dgl
 
-from m4.teachers.base import Teacher
-from m4.teachers.gradient_teacher import GradientTeacher
-from m4.teachers.structural_teacher import StructuralTeacher
+from .base import Teacher
+from .gradient_teacher import GradientTeacher
+from .structural_teacher import StructuralTeacher
 
 logger = logging.getLogger(__name__)
 
 
 class HybridTeacher(Teacher):
-    """T4: Weighted combination of gradient and structural teacher scores.
+    """T4 (hybrid): 加权组合梯度归因和结构重要性。
 
-    Parameters
-    ----------
-    gradient_teacher : GradientTeacher
-        T1 instance for gradient-based scores.
-    structural_teacher : StructuralTeacher
-        T3 instance for topology-based scores.
-    alpha : float or tuple of (min, max) or None
-        - float (e.g. 0.5): fixed weight for gradient component.
-        - tuple (e.g. (0.3, 0.7)): uniformly sampled per score_nodes() call.
-        - None: defaults to fixed 0.5.
+    score = α · norm(grad_scores) + (1-α) · norm(struct_scores)
     """
 
-    def __init__(
-        self,
-        gradient_teacher: Optional[GradientTeacher] = None,
-        structural_teacher: Optional[StructuralTeacher] = None,
-        alpha=None,
-    ):
-        self._grad_teacher = gradient_teacher or GradientTeacher(aggregate='mean')
-        self._struct_teacher = structural_teacher or StructuralTeacher(method='degree')
-
-        if alpha is None:
-            alpha = 0.5
-        if isinstance(alpha, (int, float)):
-            self._alpha_fixed = float(alpha)
-            self._alpha_range = None
-        else:
-            self._alpha_fixed = None
-            self._alpha_range = (float(alpha[0]), float(alpha[1]))
+    def __init__(self, alpha: float = 0.5, struct_method: str = 'degree'):
+        if not (0.0 <= alpha <= 1.0):
+            raise ValueError(f"alpha 必须在 [0, 1] 范围内，实际: {alpha}")
+        self.alpha = alpha
+        self._grad_teacher = GradientTeacher()
+        self._struct_teacher = StructuralTeacher(method=struct_method)
 
     @property
     def name(self) -> str:
-        return 'hybrid'
-
-    def _params_dict(self) -> dict:
-        alpha_val = self._alpha_fixed if self._alpha_fixed is not None else f'{self._alpha_range[0]}-{self._alpha_range[1]}'
-        return {
-            'alpha': alpha_val,
-            'gradient': self._grad_teacher.name,
-            'structural': self._struct_teacher.name,
-        }
-
-    # ------------------------------------------------------------------
-    # score_nodes
-    # ------------------------------------------------------------------
+        return f'hybrid-a{self.alpha:.2f}'
 
     def score_nodes(
         self,
         graph: dgl.DGLGraph,
-        classifier: nn.Module,
+        classifier: torch.nn.Module,
         label: Optional[int] = None,
     ) -> torch.Tensor:
-        """Compute hybrid scores: α × gradient + (1-α) × structural.
-
-        Returns tensor of shape (|V|,).
-        """
-        # Resolve alpha
-        if self._alpha_range is not None:
-            alpha = random.uniform(*self._alpha_range)
-        else:
-            alpha = self._alpha_fixed
-
-        # Compute component scores
         grad_scores = self._grad_teacher.score_nodes(graph, classifier, label)
-        struct_scores = self._struct_teacher.score_nodes(graph, classifier=None, label=None)
+        struct_scores = self._struct_teacher.score_nodes(graph)
 
-        # Normalize each to [0, 1] before combining (avoids scale mismatch)
-        grad_norm = self._minmax_norm(grad_scores)
-        struct_norm = self._minmax_norm(struct_scores)
+        # 归一化
+        grad_norm = self._normalize(grad_scores)
+        struct_norm = self._normalize(struct_scores)
 
-        combined = alpha * grad_norm + (1.0 - alpha) * struct_norm
-
-        logger.debug(
-            "Hybrid: α=%.2f, grad_range=[%.3f, %.3f], struct_range=[%.3f, %.3f]",
-            alpha,
-            float(grad_scores.min()), float(grad_scores.max()),
-            float(struct_scores.min()), float(struct_scores.max()),
-        )
-
-        return combined
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
+        return self.alpha * grad_norm + (1.0 - self.alpha) * struct_norm
 
     @staticmethod
-    def _minmax_norm(scores: torch.Tensor) -> torch.Tensor:
-        """Normalize scores to [0, 1] via min-max scaling."""
-        smin = scores.min()
-        smax = scores.max()
-        if smax - smin < 1e-8:
-            return torch.ones_like(scores) * 0.5
-        return (scores - smin) / (smax - smin)
+    def _normalize(t: torch.Tensor) -> torch.Tensor:
+        t_max = t.max()
+        t_min = t.min()
+        denom = t_max - t_min
+        if denom > 0:
+            return (t - t_min) / denom
+        return torch.zeros_like(t) if t_max == 0 else torch.ones_like(t)

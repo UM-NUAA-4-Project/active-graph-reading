@@ -20,12 +20,11 @@ from typing import Optional
 import dgl
 
 from .config import RevealConfig
-from .dataloader.loader import PPADataset, get_graph_stats
+from .data.loader import PPADataset, get_graph_stats
 from .engine.graph_state import GraphState
 from .engine.reveal_loop import RevealLoop
-from .strategies.registry import get_strategy, list_strategies
-from .cost.registry import get_cost_model, list_cost_models
-from .utils.logging import get_logger, set_verbosity
+from .reader.fixed.registry import get_strategy, list_strategies
+from .core.logging import get_logger, set_verbosity
 
 logger = get_logger()
 
@@ -37,7 +36,6 @@ logger = get_logger()
 def run_experiment(
     dgl_graph: dgl.DGLGraph,
     strategy: str = 'random',
-    cost_model: str = 'unit',
     budget: Optional[int] = None,
     max_ratio: Optional[float] = None,
     seed_node: Optional[int] = None,
@@ -51,8 +49,6 @@ def run_experiment(
         完整图（所有节点、边、特征已知）。
     strategy : str
         策略名称: 'random', 'bfs', 'max-frontier-degree'。
-    cost_model : str
-        成本模型名称: 'unit'（v0 默认）。
     budget : int or None
         揭示节点数上限。None 表示揭示所有可达节点。
     max_ratio : float or None
@@ -77,16 +73,14 @@ def run_experiment(
     # 构造配置并验证
     config = RevealConfig(
         strategy=strategy,
-        cost_model=cost_model,
         budget=budget,
         max_ratio=max_ratio,
         seed_node=seed_node,
         verbose=verbose,
     )
 
-    # 获取策略和成本模型实例（通过注册表）
+    # 获取策略实例
     strat_instance = get_strategy(config.strategy)
-    cost_instance = get_cost_model(config.cost_model)
 
     # 解析种子节点
     if config.seed_node is None:
@@ -97,7 +91,7 @@ def run_experiment(
     state = GraphState(dgl_graph, seed_node=config.seed_node)
 
     # 构建并运行揭示循环
-    loop = RevealLoop(state, strat_instance, cost_instance)
+    loop = RevealLoop(state, strat_instance)
     stats = loop.run(budget=config.budget, max_ratio=config.max_ratio)
 
     return stats
@@ -171,7 +165,7 @@ def demo_all_strategies(args):
 
     # ---- 加载数据集 --------------------------------------------------------
     print("\n[1] 加载 OGBG-PPA 数据集...")
-    ds = PPADataset()
+    ds = PPADataset(root=args.root)
 
     # ---- 选取示例图 --------------------------------------------------------
     graph_idx = args.graph_index if args.graph_index is not None else ds.train_indices[0]
@@ -257,8 +251,9 @@ def build_parser() -> argparse.ArgumentParser:
                         choices=['random', 'bfs', 'max-frontier-degree'],
                         help='前沿边揭示策略 (默认: random)')
 
-    parser.add_argument('--cost-model', type=str, default='unit',
-                        help='成本模型名称 (默认: unit)')
+    # ---- 数据路径 ----------------------------------------------------------
+    parser.add_argument('--root', type=str, default=r'D:\ogb-master\dataset',
+                        help='OGB 数据集根目录')
 
     # ---- 预算参数 ----------------------------------------------------------
     parser.add_argument('--budget', type=int, default=None,
@@ -282,7 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
                         help='仅运行指定策略的单次揭示')
 
     parser.add_argument('--list-strategies', action='store_true',
-                        help='列出所有可用的策略和成本模型')
+                        help='列出所有可用的策略')
 
     parser.add_argument('--verbose', action='store_true', default=True,
                         help='输出详细日志 (默认)')
@@ -298,13 +293,10 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
 
-    # ---- 列出策略 / 成本模型 ------------------------------------------------
+    # ---- 列出策略 ----------------------------------------------------------
     if args.list_strategies:
         print("可用策略:")
         for name, cls in sorted(list_strategies().items()):
-            print(f"  {name:<25} → {cls.__name__}")
-        print("\n可用成本模型:")
-        for name, cls in sorted(list_cost_models().items()):
             print(f"  {name:<25} → {cls.__name__}")
         return
 
@@ -328,21 +320,20 @@ def main():
         return
 
     # ---- 单策略模式 --------------------------------------------------------
-    ds = PPADataset()
+    ds = PPADataset(root=args.root)
     graph_idx = args.graph_index if args.graph_index is not None else ds.train_indices[0]
     g, label = ds[graph_idx]
 
     stats = run_experiment(
         g,
         strategy=args.strategy,
-        cost_model=args.cost_model,
         budget=args.budget,
         max_ratio=args.max_ratio,
         seed_node=args.seed,
         verbose=args.verbose,
     )
 
-    print(f"\n策略: {stats['strategy']}, 成本模型: {stats['cost_model']}")
+    print(f"\n策略: {stats['strategy']}")
     print(f"图 #{graph_idx}: |V|={stats['n_total']}, |E|={stats['n_edges_total']}")
     print(f"揭示: {stats['n_revealed']}/{stats['n_total']} "
           f"({stats['reveal_ratio']:.2%})")

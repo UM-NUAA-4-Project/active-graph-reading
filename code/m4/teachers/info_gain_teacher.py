@@ -1,221 +1,170 @@
-"""T2: Information Gain Teacher.
-
-At each reveal step, scores frontier candidates by the entropy reduction
-they would produce if revealed: IG(v) = H(p_t) - H(p_{t|v}).
-
-Overrides generate_trajectory() because scoring is interleaved with
-reveal (not pre-computed). Candidates are batched into a single
-classifier forward per step for efficiency.
-
-Reference: BALD (Houlsby et al., NeurIPS 2011); Fuchsgruber et al.,
-"Uncertainty for Active Learning on Graphs", ICML 2024.
-"""
+"""T2: 信息增益 Teacher — 每步模拟揭示所有 frontier 候选，选熵降最大的节点。"""
 
 import logging
-from typing import List, Optional, Set
+from typing import List, Optional, Tuple
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import dgl
 
-from m4.teachers.base import Teacher
-from m4.trajectory import Trajectory
-
-# Ensure active_graph_reader imports work.
-import sys
-from pathlib import Path
-_script_dir = Path(__file__).resolve().parent.parent.parent
-if str(_script_dir) not in sys.path:
-    sys.path.insert(0, str(_script_dir))
-
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
-from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
+from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
+from .base import Teacher, Trajectory
 
 logger = logging.getLogger(__name__)
 
 
 class InfoGainTeacher(Teacher):
-    """T2: Scores frontier nodes by simulated entropy reduction.
+    """T2 (info-gain): 选使 classifier entropy 下降最多的 frontier node。
 
-    Parameters
-    ----------
-    temperature : float
-        Softmax temperature. τ < 1 sharpens the distribution and
-        amplifies information gain signals (default 1.0 = no sharpening).
+    每步对所有 frontier 候选模拟揭示 → 构建子图 → 批量分类器推理 →
+    选 IG(v) = H(current) - H(after_reveal_v) 最大的节点。
+    IG ≤ 0 的候选被排除。
     """
 
-    def __init__(self, temperature: float = 1.0):
-        self.temperature = temperature
+    def __init__(
+        self,
+        classifier: torch.nn.Module,
+        subgraph_builder: SubgraphBuilder,
+        device: str = 'cpu',
+    ):
+        self._classifier = classifier
+        self._subgraph_builder = subgraph_builder
+        self._device = device
 
     @property
     def name(self) -> str:
         return 'info-gain'
 
-    def _params_dict(self) -> dict:
-        return {'temperature': self.temperature}
-
-    # ------------------------------------------------------------------
-    # score_nodes (not the primary interface for T2)
-    # ------------------------------------------------------------------
-
     def score_nodes(
         self,
         graph: dgl.DGLGraph,
-        classifier: nn.Module,
+        classifier: Optional[torch.nn.Module] = None,
         label: Optional[int] = None,
     ) -> torch.Tensor:
-        """Not used by T2 -- scoring is per-step in generate_trajectory()."""
-        raise NotImplementedError(
-            "T2 scores frontier nodes per-step. Use generate_trajectory()."
-        )
-
-    # ------------------------------------------------------------------
-    # generate_trajectory (overrides base)
-    # ------------------------------------------------------------------
+        """T2 不使用静态分数。"""
+        return torch.zeros(graph.num_nodes())
 
     def generate_trajectory(
         self,
         graph: dgl.DGLGraph,
-        classifier: nn.Module,
-        graph_idx: int,
-        label: int,
+        scores: torch.Tensor,  # ignored
         seed_node: int,
         budget: int,
-        subgraph_builder: SubgraphBuilder,
-    ) -> Trajectory:
-        """Generate trajectory using per-step information gain selection."""
-        state = GraphState(graph, seed_node=seed_node)
-        n_nodes = graph.num_nodes()
+        edge_key_to_id: Optional[dict] = None,
+    ) -> Tuple[Trajectory, GraphState]:
+        state = GraphState(graph, seed_node, edge_key_to_id=edge_key_to_id)
+        reveal_order: List[int] = []
 
-        # Record G_0
-        sub_g, orig_ids = subgraph_builder.build(state)
-        h_current, conf = self._entropy_and_conf(classifier, sub_g)
-        node_scores = torch.zeros(n_nodes)
-        node_scores[seed_node] = 1.0  # dummy score for seed
-
-        traj = Trajectory(
-            graph_idx=graph_idx,
-            seed_node=seed_node,
-            budget_used=0,
-            reveal_order=[],
-            scores_per_step=[node_scores[seed_node].item()],
-            confidence_per_step=[conf],
-            entropy_per_step=[h_current],
-            teacher_type=self.name,
-            teacher_params=self._params_dict(),
-            label=label,
-        )
-
-        # Main loop
-        while traj.budget_used < budget:
+        for _step in range(budget):
             if state.is_frontier_empty:
                 break
 
-            frontier_nodes = list({rv for (_ru, rv) in state.frontier_edges})
+            frontier_nodes = state.get_frontier_nodes()
             if not frontier_nodes:
                 break
 
-            # Build candidate subgraphs: one per frontier node
-            candidate_subs = []
+            # 当前熵 H(p_t)
+            if len(state.V_revealed) == 1 and len(state.revealed_edge_keys) == 0:
+                # G_0 状态无法构建有意义子图（无边），跳过熵计算
+                # 直接用第一个 frontier 节点
+                next_node = frontier_nodes[0]
+                reveal_order.append(next_node)
+                reveal_node(state, next_node)
+                continue
+
+            cur_g, _ = self._subgraph_builder.build(state)
+            H_current = self._entropy(cur_g)
+
+            # 为每个候选构建模拟子图并批量评估
+            candidate_gs = []
             for v in frontier_nodes:
-                cand_state = _copy_state(state)
-                reveal_node(cand_state, v)
-                sub_g, _ = subgraph_builder.build(cand_state)
-                candidate_subs.append(sub_g)
+                cg = self._build_candidate_subgraph(state, v)
+                candidate_gs.append(cg)
 
-            # Batch forward
-            batch_g = dgl.batch(candidate_subs)
-            batch_node_ids = torch.zeros(batch_g.num_nodes(), dtype=torch.long)
+            batched = dgl.batch(candidate_gs).to(self._device)
+            node_ids = torch.zeros(batched.num_nodes(), dtype=torch.long,
+                                   device=self._device)
             with torch.no_grad():
-                batch_logits = classifier(batch_g, batch_node_ids)
-            entropies = self._batched_entropy(batch_logits)  # (K,)
+                logits = self._classifier(batched, node_ids)
+            probs = F.softmax(logits, dim=-1)
+            entropies = -(probs * torch.log(probs + 1e-8)).sum(dim=-1)
 
-            # Information gain: H(current) - H(after reveal)
-            ig_values = h_current - entropies
+            # 选 IG 最大的
+            best_node = None
+            best_ig = -float('inf')
+            for i, v in enumerate(frontier_nodes):
+                ig = H_current - float(entropies[i])
+                if ig > best_ig:
+                    best_ig = ig
+                    best_node = v
 
-            # Select best (highest IG; exclude negative IG candidates)
-            best_idx = int(ig_values.argmax().item())
-            if ig_values[best_idx] <= 0:
-                # No candidate reduces entropy; pick highest-scoring anyway
-                pass
+            if best_node is None or best_ig <= 0:
+                break
 
-            best_v = frontier_nodes[best_idx]
-            best_ig = float(ig_values[best_idx].item())
-            best_entropy = float(entropies[best_idx].item())
+            reveal_order.append(best_node)
+            reveal_node(state, best_node)
 
-            # Execute actual reveal
-            reveal_node(state, best_v)
-            traj.reveal_order.append(best_v)
-            traj.budget_used += 1
-            traj.scores_per_step.append(best_ig)
-            traj.entropy_per_step.append(best_entropy)
-
-            # Update current state entropy
-            sub_g, orig_ids = subgraph_builder.build(state)
-            h_current, conf = self._entropy_and_conf(classifier, sub_g)
-            traj.confidence_per_step.append(conf)
-
-            # Store IG as node score for bookkeeping
-            node_scores[best_v] = best_ig
-
-        # Final prediction
-        sub_g, orig_ids = subgraph_builder.build(state)
-        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long)
-        with torch.no_grad():
-            logits = classifier(sub_g, node_ids)
-            pred = int(logits.argmax(dim=1).item())
-        traj.final_pred = pred
-        traj.is_correct = (pred == label)
-
-        return traj
+        n_revealed = len(state.V_revealed)
+        traj = Trajectory(
+            graph_idx=-1,
+            seed_node=seed_node,
+            reveal_ratio=n_revealed / max(state.n_nodes_total, 1),
+            reveal_order=reveal_order,
+            final_pred=-1,
+            is_correct=True,
+            teacher_type=self.name,
+        )
+        return traj, state
 
     # ------------------------------------------------------------------
-    # Helpers
+    # helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _entropy_and_conf(classifier, sub_g):
-        """Return (entropy, confidence) for a single subgraph."""
-        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long)
+    def _entropy(self, sub_g: dgl.DGLGraph) -> float:
+        sub_g = sub_g.to(self._device)
+        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long,
+                               device=self._device)
         with torch.no_grad():
-            logits = classifier(sub_g, node_ids)
-            probs = F.softmax(logits, dim=1)
-            conf = float(probs.max(dim=1).values.item())
-            ent = float(-(probs * probs.log()).sum(dim=1).item())
-        return ent, conf
+            logits = self._classifier(sub_g, node_ids)
+        probs = F.softmax(logits, dim=-1)
+        return float(-(probs * torch.log(probs + 1e-8)).sum())
 
-    def _batched_entropy(self, logits: torch.Tensor) -> torch.Tensor:
-        """Compute per-graph entropy from batched logits.
+    def _build_candidate_subgraph(
+        self, state: GraphState, v: int,
+    ) -> dgl.DGLGraph:
+        """构建 V_revealed ∪ {v} 的模拟子图（不修改 state）。"""
+        nodes = sorted(set(state.V_revealed) | {v})
+        n_nodes = len(nodes)
 
-        Parameters
-        ----------
-        logits : (batch_size, n_classes)
+        # 收集边：已有揭示边 + 连接 v 的前沿边
+        edge_keys = set(state.revealed_edge_keys)
+        for u, w in state.frontier_edges:
+            if (u == v and w in state.V_revealed) or (w == v and u in state.V_revealed):
+                edge_keys.add((min(u, w), max(u, w)))
 
-        Returns
-        -------
-        torch.Tensor of shape (batch_size,)
-        """
-        probs = F.softmax(logits / self.temperature, dim=1)
-        # Use natural log for entropy in nats
-        return -(probs * probs.log()).sum(dim=1)
+        edge_keys = list(edge_keys)
+        if not edge_keys:
+            return dgl.graph(([], []), num_nodes=n_nodes)
 
+        edge_ids = [state._edge_key_to_id[k] for k in edge_keys]
+        edge_feats = state.edge_feat[edge_ids]
+        device = edge_feats.device
 
-# ------------------------------------------------------------------
-# Fast GraphState copy (bypasses __init__ to avoid re-running _init_g0)
-# ------------------------------------------------------------------
+        edge_pairs = torch.tensor(edge_keys, dtype=torch.long, device=device)
+        max_old = max(nodes)
+        old_to_new = torch.full((max_old + 1,), -1, dtype=torch.long, device=device)
+        old_to_new[nodes] = torch.arange(n_nodes, device=device)
 
-def _copy_state(state: GraphState) -> GraphState:
-    """Create a shallow copy of GraphState with copied mutable collections."""
-    new_state = GraphState.__new__(GraphState)
-    for slot in GraphState.__slots__:
-        val = getattr(state, slot)
-        setattr(new_state, slot, val)
-    # Deep-copy mutable collections (shared DGLGraph reference is safe)
-    new_state.V_revealed = set(state.V_revealed)
-    new_state.frontier_edges = set(state.frontier_edges)
-    new_state.revealed_edge_feats = dict(state.revealed_edge_feats)
-    new_state._frontier_degree = dict(state._frontier_degree)
-    new_state.reveal_history = list(state.reveal_history)
-    return new_state
+        u_new = old_to_new[edge_pairs[:, 0]]
+        v_new = old_to_new[edge_pairs[:, 1]]
+        K = u_new.shape[0]
+        src = torch.empty(2 * K, dtype=torch.long, device=device)
+        dst = torch.empty(2 * K, dtype=torch.long, device=device)
+        src[0::2], src[1::2] = u_new, v_new
+        dst[0::2], dst[1::2] = v_new, u_new
+
+        sub_g = dgl.graph((src, dst), num_nodes=n_nodes)
+        sub_g.edata['feat'] = edge_feats.repeat_interleave(2, dim=0)
+        return sub_g

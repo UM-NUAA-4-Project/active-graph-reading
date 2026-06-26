@@ -1,0 +1,5 @@
+Rank	Method	        Ext. data	        Test Accuracy	          Validation Accuracy		Hardware	                    Date
+12	GIN+virtual node	No	              0.7037 ± 0.0107	        0.6678 ± 0.0105		    GeForce RTX 2080 (11GB GPU)	May 1, 2020
+15	GIN	              No	              0.6892 ± 0.0100       	0.6562 ± 0.0107	      GeForce RTX 2080 (11GB GPU)	May 1, 2020
+
+  Full-graph-dataset:  0.6209 at epoch 94 | Train: 0.9707 | Test: 0.6560 | Gap: 0.3148

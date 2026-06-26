@@ -14,6 +14,7 @@ Usage:
   python train_full_graph.py                          # defaults
   python train_full_graph.py --epochs 50 --device cuda:0
   python train_full_graph.py --eval-only --load best_model.pt
+  python train_full_graph.py --resume best_model.pt   # continue from best checkpoint
 """
 
 import argparse
@@ -22,7 +23,7 @@ import logging
 from pathlib import Path
 
 # Ensure mycode/ is on the path so that imports like
-# "from active_graph_reader.encoder.classifier import GraphClassifier" work.
+# "from active_graph_reader.gnn.classifier import GraphClassifier" work.
 _script_dir = Path(__file__).resolve().parent
 _parent_dir = _script_dir.parent
 if str(_parent_dir) not in sys.path:
@@ -38,7 +39,7 @@ from tqdm import tqdm
 
 from ogb.graphproppred import DglGraphPropPredDataset, Evaluator, collate_dgl
 
-from active_graph_reader.encoder.classifier import GraphClassifier
+from active_graph_reader.gnn.classifier import GraphClassifier
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
@@ -53,7 +54,10 @@ DEFAULTS = dict(
     batch_size=32,
     epochs=100,
     lr=0.001,
-    device='auto',
+    weight_decay=5e-4,
+    scheduler_patience=10,
+    early_stop_patience=15,
+    device='cuda:0',
     output_dir=None,       # defaults to script directory
 )
 
@@ -66,14 +70,31 @@ def parse_args():
     p.add_argument('--batch-size', type=int, default=DEFAULTS['batch_size'])
     p.add_argument('--epochs', type=int, default=DEFAULTS['epochs'])
     p.add_argument('--lr', type=float, default=DEFAULTS['lr'])
+    p.add_argument('--weight-decay', type=float, default=DEFAULTS['weight_decay'])
+    p.add_argument('--scheduler-patience', type=int, default=DEFAULTS['scheduler_patience'])
+    p.add_argument('--early-stop-patience', type=int, default=DEFAULTS['early_stop_patience'])
     p.add_argument('--device', type=str, default=DEFAULTS['device'])
     p.add_argument('--output-dir', type=str, default=DEFAULTS['output_dir'])
     p.add_argument('--eval-only', action='store_true',
                    help='Skip training, evaluate saved model only')
     p.add_argument('--load', type=str, default='',
                    help='Path to saved model for eval-only mode')
-    p.add_argument('--root', type=str, default='dataset',
-                   help='OGB dataset root directory (default: dataset)')
+    p.add_argument('--resume', type=str, default='',
+                   help='Resume training from best_model.pt checkpoint')
+    p.add_argument('--root', type=str, default=r'D:\ogb-master\dataset',
+                   help='OGB dataset root directory (default: /mnt/d/ogb-master/dataset)')
+    p.add_argument('--label-smoothing', type=float, default=0.0,
+                   help='Label smoothing for CrossEntropyLoss (default: 0.0)')
+    p.add_argument('--class-weight', action=argparse.BooleanOptionalAction, default=True,
+                   help='Use inverse-frequency class weights (default: True)')
+    p.add_argument('--finetune-epochs', type=int, default=0,
+                   help='Fine-tune best model for N epochs with lower LR (0=skip)')
+    p.add_argument('--finetune-from', type=str, default='',
+                   help='Skip main training, load this model and fine-tune directly')
+    p.add_argument('--finetune-lr', type=float, default=1e-4,
+                   help='Learning rate for fine-tuning phase (default: 1e-4)')
+    p.add_argument('--finetune-patience', type=int, default=10,
+                   help='Early-stop patience for fine-tuning (default: 10)')
     return p.parse_args()
 
 
@@ -117,10 +138,10 @@ def prepare_data(batch_size: int, root: str):
 # Training / Evaluation
 # ---------------------------------------------------------------------------
 
-def train_one_epoch(model, loader, optimizer, device):
+def train_one_epoch(model, loader, optimizer, device, class_weights=None, label_smoothing=0.0):
     model.train()
     total_loss = 0.0
-    total_graphs = 0
+    correct, total_graphs = 0, 0
 
     for batch_g, labels in tqdm(loader, desc="train", leave=False):
         batch_g = batch_g.to(device)
@@ -132,14 +153,18 @@ def train_one_epoch(model, loader, optimizer, device):
         node_ids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
         optimizer.zero_grad()
         logits = model(batch_g, node_ids)
-        loss = nn.functional.cross_entropy(logits, labels.view(-1))
+        loss = nn.functional.cross_entropy(logits, labels.view(-1),
+                                              label_smoothing=label_smoothing,
+                                              weight=class_weights)
         loss.backward()
         optimizer.step()
 
         total_loss += loss.item() * labels.size(0)
+        preds = logits.argmax(dim=1)
+        correct += (preds == labels.view(-1)).sum().item()
         total_graphs += labels.size(0)
 
-    return total_loss / max(total_graphs, 1)
+    return total_loss / max(total_graphs, 1), correct / max(total_graphs, 1)
 
 
 @torch.no_grad()
@@ -166,18 +191,25 @@ def evaluate(model, loader, evaluator, device):
     return evaluator.eval({'y_true': y_true, 'y_pred': y_pred})
 
 
-def save_checkpoint(model, optimizer, epoch, path):
+def save_checkpoint(model, optimizer, scheduler, epoch, path):
     torch.save({
         'model_state_dict': model.state_dict(),
         'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
         'epoch': epoch,
     }, path)
     logger.info("Checkpoint saved to %s (epoch %d)", path, epoch)
 
 
-def save_best_model(model, path, val_acc):
-    torch.save({'model_state_dict': model.state_dict(), 'val_acc': val_acc}, path)
-    logger.info("Best model saved to %s (val_acc=%.4f)", path, val_acc)
+def save_best_model(model, optimizer, scheduler, epoch, path, val_acc):
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'epoch': epoch,
+        'val_acc': val_acc,
+    }, path)
+    logger.info("Best model saved to %s (epoch=%d, val_acc=%.4f)", path, epoch, val_acc)
 
 
 # ---------------------------------------------------------------------------
@@ -203,6 +235,22 @@ def main():
     loaders, n_classes, edge_feat_dim = prepare_data(args.batch_size, args.root)
     evaluator = Evaluator('ogbg-ppa')
 
+    # Compute class weights from training labels (inverse frequency)
+    if args.class_weight:
+        train_labels = []
+        for g, lbl in loaders['train'].dataset:
+            train_labels.append(lbl.item() if hasattr(lbl, 'item') else int(lbl))
+        label_counts = np.bincount(train_labels)
+        n_samples = len(train_labels)
+        n_classes = len(label_counts)
+        # inverse-frequency weight: tail classes get higher weight
+        class_weights = n_samples / (n_classes * np.maximum(label_counts, 1))
+        class_weights = torch.tensor(class_weights, dtype=torch.float, device=device)
+        logger.info("Class weights: min=%.3f max=%.3f",
+                    class_weights.min().item(), class_weights.max().item())
+    else:
+        class_weights = None
+
     # Model
     logger.info("Creating GraphClassifier (hidden=%d, layers=%d, dropout=%.1f)",
                 args.hidden_dim, args.n_layers, args.dropout)
@@ -214,7 +262,11 @@ def main():
         dropout=args.dropout,
     ).to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='max', factor=0.5,
+        patience=args.scheduler_patience, min_lr=1e-6,
+    )
 
     # -----------------------------------------------------------------------
     # Eval-only mode
@@ -233,44 +285,175 @@ def main():
         return
 
     # -----------------------------------------------------------------------
-    # Training loop
+    # Skip main training → directly fine-tune from a saved model
     # -----------------------------------------------------------------------
-    best_val = -1.0
-    train_curve, valid_curve, test_curve = [], [], []
+    metric = evaluator.eval_metric
 
-    for epoch in range(1, args.epochs + 1):
-        logger.info("===== Epoch %d / %d =====", epoch, args.epochs)
+    if args.finetune_from:
+        ft_from_path = Path(args.finetune_from)
+        if not ft_from_path.exists():
+            logger.error("Finetune-from checkpoint not found: %s", ft_from_path)
+            sys.exit(1)
+        ckpt = torch.load(ft_from_path, map_location=device)
+        model.load_state_dict(ckpt['model_state_dict'])
+        best_val = ckpt.get('val_acc', -1.0)
+        best_model_path = ft_from_path  # for reference in fine-tune phase
+        logger.info("Loaded model from %s (val_acc=%.4f), skipping main training",
+                    ft_from_path, best_val)
+        # Jump directly to fine-tuning (skip main training loop + evaluation)
+        if args.finetune_epochs <= 0:
+            logger.warning("--finetune-from set but --finetune-epochs=0, nothing to do")
+            return
+    else:
+        # -------------------------------------------------------------------
+        # Training loop
+        # -------------------------------------------------------------------
+        start_epoch = 1
+        best_val = -1.0
+        if args.resume:
+            resume_path = Path(args.resume)
+            if not resume_path.exists():
+                logger.error("Resume checkpoint not found: %s", resume_path)
+                sys.exit(1)
+            ckpt = torch.load(resume_path, map_location=device)
+            model.load_state_dict(ckpt['model_state_dict'])
+            start_epoch = ckpt.get('epoch', 0) + 1
+            best_val = ckpt.get('val_acc', -1.0)
+            if 'optimizer_state_dict' in ckpt:
+                optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            if 'scheduler_state_dict' in ckpt:
+                scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+            logger.info("Resumed from %s (epoch %d, best_val=%.4f)", resume_path, start_epoch - 1, best_val)
 
-        train_loss = train_one_epoch(model, loaders['train'], optimizer, device)
-        train_perf = evaluate(model, loaders['train'], evaluator, device)
-        valid_perf = evaluate(model, loaders['valid'], evaluator, device)
+        valid_curve = []
+        no_improve_steps = 0
+
+        for epoch in range(start_epoch, args.epochs + 1):
+            logger.info("===== Epoch %d / %d =====", epoch, args.epochs)
+
+            train_loss, train_acc = train_one_epoch(
+                model, loaders['train'], optimizer, device, class_weights, args.label_smoothing)
+            valid_perf = evaluate(model, loaders['valid'], evaluator, device)
+            val_acc = valid_perf[metric]
+
+            logger.info("train_loss=%.4f train_acc=%.4f | valid_%s=%.4f | gap=%.4f",
+                        train_loss, train_acc, metric, val_acc, train_acc - val_acc)
+
+            valid_curve.append(val_acc)
+            scheduler.step(val_acc)
+
+            if epoch % 5 == 0:
+                save_checkpoint(model, optimizer, scheduler, epoch, checkpoint_path)
+
+            if val_acc > best_val:
+                best_val = val_acc
+                no_improve_steps = 0
+                save_best_model(model, optimizer, scheduler, epoch, best_model_path, best_val)
+            else:
+                no_improve_steps += 1
+
+            if no_improve_steps >= args.early_stop_patience:
+                logger.info("Early stopping at epoch %d — no improvement for %d epochs",
+                            epoch, args.early_stop_patience)
+                break
+
+        # Final evaluation — load best model and evaluate once
+        best_epoch = int(np.argmax(valid_curve)) + start_epoch
+        ckpt = torch.load(best_model_path, map_location=device)
+        model.load_state_dict(ckpt['model_state_dict'])
         test_perf = evaluate(model, loaders['test'], evaluator, device)
+        train_perf = evaluate(model, loaders['train'], evaluator, device)
 
-        metric = evaluator.eval_metric
-        logger.info("train_loss=%.4f | train_%s=%.4f | valid_%s=%.4f | test_%s=%.4f",
-                    train_loss, metric, train_perf[metric], metric,
-                    valid_perf[metric], metric, test_perf[metric])
+        torch.save({
+            'valid': valid_curve,
+            'train_final': train_perf[metric],
+            'test_final': test_perf[metric],
+            'best_epoch': best_epoch,
+            'best_val': best_val,
+            'start_epoch': start_epoch,
+        }, output_dir / 'curves.pt')
 
-        train_curve.append(train_perf[metric])
-        valid_curve.append(valid_perf[metric])
-        test_curve.append(test_perf[metric])
+        logger.info("Training finished. Best val: %.4f at epoch %d | Train: %.4f | Test: %.4f | Gap: %.4f",
+                    best_val, best_epoch,
+                    train_perf[metric], test_perf[metric],
+                    train_perf[metric] - test_perf[metric])
 
-        # Checkpoint every 5 epochs
-        if epoch % 5 == 0:
-            save_checkpoint(model, optimizer, epoch, checkpoint_path)
+    # -----------------------------------------------------------------------
+    # Fine-tuning phase: load best model, train with lower LR from scratch
+    # -----------------------------------------------------------------------
+    if args.finetune_epochs > 0:
+        logger.info("=" * 60)
+        logger.info("Starting fine-tuning phase (%d epochs, lr=%.1e)",
+                    args.finetune_epochs, args.finetune_lr)
 
-        # Best model
-        if valid_perf[metric] > best_val:
-            best_val = valid_perf[metric]
-            save_best_model(model, best_model_path, best_val)
+        ft_best_path = output_dir / 'best_model_ft.pt'
 
-    # Save curves
-    torch.save({'train': train_curve, 'valid': valid_curve, 'test': test_curve},
-               output_dir / 'curves.pt')
+        # Load best model weights (discard old optimizer/scheduler state)
+        best_ckpt = torch.load(best_model_path, map_location=device)
+        model.load_state_dict(best_ckpt['model_state_dict'])
+        logger.info("Loaded best model (val_acc=%.4f) for fine-tuning", best_ckpt.get('val_acc', -1))
 
-    best_epoch = int(np.argmax(valid_curve)) + 1
-    logger.info("Training finished. Best val: %.4f at epoch %d, Test: %.4f",
-                valid_curve[best_epoch - 1], best_epoch, test_curve[best_epoch - 1])
+        ft_optimizer = optim.AdamW(model.parameters(), lr=args.finetune_lr,
+                                    weight_decay=args.weight_decay)
+        ft_scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            ft_optimizer, mode='max', factor=0.5,
+            patience=args.finetune_patience // 2, min_lr=1e-7,
+        )
+
+        ft_best_val = best_val
+        ft_no_improve = 0
+        ft_valid_curve = []
+
+        for epoch in range(1, args.finetune_epochs + 1):
+            logger.info("===== Fine-tune Epoch %d / %d =====", epoch, args.finetune_epochs)
+
+            train_loss, train_acc = train_one_epoch(
+                model, loaders['train'], ft_optimizer, device,
+                class_weights, args.label_smoothing)
+            valid_perf = evaluate(model, loaders['valid'], evaluator, device)
+            val_acc = valid_perf[metric]
+
+            logger.info("ft_train_loss=%.4f ft_train_acc=%.4f | ft_valid_%s=%.4f | gap=%.4f",
+                        train_loss, train_acc, metric, val_acc, train_acc - val_acc)
+
+            ft_valid_curve.append(val_acc)
+            ft_scheduler.step(val_acc)
+
+            if val_acc > ft_best_val:
+                ft_best_val = val_acc
+                ft_no_improve = 0
+                torch.save({
+                    'model_state_dict': model.state_dict(),
+                    'epoch': epoch,
+                    'val_acc': ft_best_val,
+                }, ft_best_path)
+                logger.info("Fine-tune best saved (epoch=%d, val_acc=%.4f)", epoch, ft_best_val)
+            else:
+                ft_no_improve += 1
+
+            if ft_no_improve >= args.finetune_patience:
+                logger.info("Fine-tune early stop at epoch %d", epoch)
+                break
+
+        # Final evaluation — load best fine-tuned model
+        if ft_best_path.exists():
+            ft_ckpt = torch.load(ft_best_path, map_location=device)
+            model.load_state_dict(ft_ckpt['model_state_dict'])
+            ft_test_perf = evaluate(model, loaders['test'], evaluator, device)
+            ft_train_perf = evaluate(model, loaders['train'], evaluator, device)
+
+            ft_epoch = ft_ckpt['epoch']
+            torch.save({
+                'valid': ft_valid_curve,
+                'train_final': ft_train_perf[metric],
+                'test_final': ft_test_perf[metric],
+                'best_epoch': ft_epoch,
+                'best_val': ft_best_val,
+            }, output_dir / 'curves_ft.pt')
+
+            logger.info("Fine-tuning finished. Best val: %.4f (Δ=%.4f) at epoch %d | Train: %.4f | Test: %.4f",
+                        ft_best_val, ft_best_val - best_val, ft_epoch,
+                        ft_train_perf[metric], ft_test_perf[metric])
 
 
 if __name__ == '__main__':

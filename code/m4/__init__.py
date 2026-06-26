@@ -1,6 +1,16 @@
-"""M4: Teacher / Trajectory baseline.
+"""M4: Teacher 轨迹生成模块。"""
 
-Generates high-quality teacher reading trajectories for downstream M5
-behavior cloning training. Includes trajectory scoring, filtering,
-oracle upper-bound estimation, and distillation feasibility analysis.
-"""
+from .teachers.base import Teacher, Trajectory
+from .teachers.gradient_teacher import GradientTeacher
+from .teachers.structural_teacher import StructuralTeacher
+from .teachers.hybrid_teacher import HybridTeacher
+from .teachers.info_gain_teacher import InfoGainTeacher
+from .graph_meta import GraphMeta, precompute_graph_meta
+from .trajectory_generator import TrajectoryGenerator
+
+__all__ = [
+    'Teacher', 'Trajectory',
+    'GradientTeacher', 'StructuralTeacher', 'HybridTeacher', 'InfoGainTeacher',
+    'GraphMeta', 'precompute_graph_meta',
+    'TrajectoryGenerator',
+]

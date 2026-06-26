@@ -1,428 +1,203 @@
-"""M4 main script: generate, score, filter, and analyze teacher trajectories.
+"""M4 Teacher 轨迹生成 CLI 入口。
 
-End-to-end pipeline:
-  1. Load frozen classifier (clean full-graph GIN, no adapters)
-  2. Initialize teachers (T1 gradient, T2 info-gain, T3-degree, T3-pagerank)
-  3. Generate trajectories on train/valid sets
-  4. Score and filter
-  5. Oracle upper-bound estimation
-  6. Feasibility analysis → M5 route recommendation
-
-Usage:
-  python -m m4.generate_trajectories --pretrained best_model.pt --device cuda:0
-  python -m m4.generate_trajectories --pretrained best_model.pt --quick --device cpu
+使用方式：
+  python code/m4/generate_trajectories.py --root /mnt/data --load code/m3/best_model_ft.pt 
+  --device cuda:0 --n-seeds 50 --k-shards 10 --shard-idx 1
 """
 
 import argparse
-import json
 import logging
-import random
 import sys
-import time
-from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional
 
-import dgl
-import numpy as np
+_script_dir = Path(__file__).resolve().parent
+_parent_dir = _script_dir.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
+
 import torch
+import dgl
+from tqdm import tqdm
 
-# Ensure myworkplace/code/ is on sys.path
-_script_dir = Path(__file__).resolve().parent.parent
-if str(_script_dir) not in sys.path:
-    sys.path.insert(0, str(_script_dir))
+from ogb.graphproppred import DglGraphPropPredDataset
 
-from active_graph_reader.dataloader.loader import PPADataset
-from active_graph_reader.encoder.classifier import GraphClassifier
-from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
-from active_graph_reader.engine.graph_state import GraphState
-from active_graph_reader.engine.reveal_loop import RevealLoop
-from active_graph_reader.strategies.registry import get_strategy
-from active_graph_reader.cost.registry import get_cost_model
-
+from active_graph_reader.gnn.classifier import GraphClassifier
+from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
 from m4.teachers.gradient_teacher import GradientTeacher
 from m4.teachers.structural_teacher import StructuralTeacher
 from m4.teachers.hybrid_teacher import HybridTeacher
-from m4.teachers.info_gain_teacher import InfoGainTeacher
 from m4.trajectory_generator import TrajectoryGenerator
-from m4.trajectory_scorer import TrajectoryScorer
-from m4.trajectory_filter import TrajectoryFilter
-from m4.oracle_estimator import OracleEstimator
-from m4.feasibility_analyzer import FeasibilityAnalyzer
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-)
+from m4.teachers.info_gain_teacher import InfoGainTeacher
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# CLI
-# ============================================================================
-
 def parse_args():
-    p = argparse.ArgumentParser(
-        description='M4: Teacher trajectory generation and analysis',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    p.add_argument('--pretrained', type=str, required=True,
-                   help='Path to best_model.pt from full-graph training')
-    p.add_argument('--root', type=str, default='dataset',
-                   help='OGB dataset root directory')
-    p.add_argument('--device', type=str, default='cpu',
-                   help='Device for computation')
-
-    # Data scope
-    p.add_argument('--train-graphs', type=int, default=0,
-                   help='Number of training graphs (0 = skip train, for quick mode)')
-    p.add_argument('--valid-graphs', type=int, default=500,
-                   help='Number of validation graphs')
-    p.add_argument('--test-graphs', type=int, default=0,
-                   help='Number of test graphs (0 = skip)')
-
-    # Generation params
-    p.add_argument('--budgets', type=int, nargs='+', default=[5, 10, 15, 20],
-                   help='Budget values')
-    p.add_argument('--seeds-per-graph', type=int, default=3,
-                   help='Random seeds per graph')
-    p.add_argument('--skip-t2', action='store_true',
-                   help='Skip T2 (info-gain) teacher — expensive')
-    p.add_argument('--top-k', type=int, default=3,
-                   help='Max trajectories per graph after filtering')
-
-    # Output
+    p = argparse.ArgumentParser(description='M4 Teacher Trajectory Generation')
+    p.add_argument('--root', type=str, default=r'D:\ogb-master\dataset',
+                   help='OGB dataset root')
+    p.add_argument('--load', type=str, required=True,
+                   help='Path to frozen classifier (best_model.pt)')
+    p.add_argument('--device', type=str, default='cuda:0',
+                   help='Device (cuda:0 / cpu)')
+    p.add_argument('--reveal-ratios', type=float, nargs='+',
+                   default=[0.10, 0.15, 0.20],
+                   help='Reveal ratios (e.g. 0.01 0.05 0.10)')
+    p.add_argument('--n-seeds', type=int, default=5,
+                   help='Number of top-scored seeds per teacher per graph')
+    p.add_argument('--max-graphs', type=int, default=0,
+                   help='Limit number of training graphs (0 = all)')
     p.add_argument('--output-dir', type=str, default=None,
-                   help='Output directory (default: m4_output/)')
-    p.add_argument('--save-interval', type=int, default=500,
-                   help='Save checkpoint every N trajectories')
-
-    # Modes
-    p.add_argument('--quick', action='store_true',
-                   help='Quick mode: 200 valid graphs, budgets=[5,10], 1 seed, skip T2')
-    p.add_argument('--seed', type=int, default=42,
-                   help='Global random seed')
-
+                   help='Output directory (default: m4/output)')
+    p.add_argument('--teachers', type=str, nargs='+',
+                   default=['gradient', 'structural-degree', 'structural-pagerank',
+                            'hybrid-0.3', 'hybrid-0.7'],
+                   help='Teachers to use')
+    p.add_argument('--k-shards', type=int, default=1,
+                   help='Split training set into k shards (default: 1 = all at once)')
+    p.add_argument('--shard-idx', type=int, nargs='+', default=None,
+                   help='Process only this/these shards (1-indexed). '
+                        'Accepts multiple: --shard-idx 1 3 5')
+    p.add_argument('--graph-batch-size', type=int, default=32,
+                   help='Mini-batch size for cross-graph validation (default: 32)')
     return p.parse_args()
 
 
-# ============================================================================
-# Baseline accuracy computation
-# ============================================================================
-
-@torch.no_grad()
-def compute_baseline_acc(
-    strategy_name: str,
-    dataset: PPADataset,
-    indices: List[int],
-    classifier,
-    subgraph_builder: SubgraphBuilder,
-    budgets: List[int],
-    seeds_per_graph: int = 3,
-    seed_offset: int = 0,
-) -> Dict[int, float]:
-    """Compute baseline accuracy for a fixed strategy (random, BFS, etc.).
-
-    Returns {budget: accuracy}.
-    """
-    strategy = get_strategy(strategy_name)
-    cost_model = get_cost_model('unit')
-
-    results = defaultdict(list)
-
-    for idx in indices:
-        g_raw, label = dataset[idx]
-        g = dgl.add_self_loop(g_raw)
-        n_nodes = g.num_nodes()
-        rng = random.Random(idx * 31 + seed_offset * 17)
-
-        for _ in range(seeds_per_graph):
-            seed_node = rng.randint(0, max(n_nodes - 1, 0))
-
-            for budget in budgets:
-                state = GraphState(g, seed_node=seed_node)
-                loop = RevealLoop(state, strategy, cost_model)
-                loop.run(budget=budget)
-
-                sub_g, orig_ids = subgraph_builder.build(state)
-                node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long)
-                logits = classifier(sub_g, node_ids)
-                pred = int(logits.argmax(dim=1).item())
-                results[budget].append(1.0 if pred == label else 0.0)
-
-    return {b: np.mean(accs) for b, accs in sorted(results.items())}
+def build_teacher(name: str, classifier=None, subgraph_builder=None, device='cpu'):
+    if name == 'gradient':
+        return GradientTeacher()
+    elif name == 'structural-degree':
+        return StructuralTeacher(method='degree')
+    elif name == 'structural-pagerank':
+        return StructuralTeacher(method='pagerank')
+    elif name.startswith('hybrid-'):
+        alpha = float(name.split('-')[1])
+        return HybridTeacher(alpha=alpha)
+    elif name == 'info-gain':
+        return InfoGainTeacher(classifier=classifier, subgraph_builder=subgraph_builder,
+                               device=device)
+    else:
+        raise ValueError(f"Unknown teacher: {name}")
 
 
-# ============================================================================
-# Main
-# ============================================================================
+def split_into_shards(train_idx, k):
+    """将 train_idx 均分为 k 片。"""
+    n = len(train_idx)
+    shard_size = (n + k - 1) // k  # ceil division
+    shards = []
+    for i in range(k):
+        start = i * shard_size
+        end = min(start + shard_size, n)
+        if start >= n:
+            break
+        shards.append(train_idx[start:end])
+    return shards
+
 
 def main():
     args = parse_args()
 
-    if args.quick:
-        args.valid_graphs = min(args.valid_graphs, 200)
-        args.budgets = [5, 10]
-        args.seeds_per_graph = 1
-        args.skip_t2 = True
-        args.train_graphs = 0
+    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
+    logger.info("Device: %s", device)
 
-    torch.manual_seed(args.seed)
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-
-    device = torch.device(args.device)
-
-    # Output directory
-    output_dir = Path(args.output_dir) if args.output_dir else Path(__file__).parent.parent / 'data' / 'trajectories'
+    output_dir = Path(args.output_dir) if args.output_dir else _script_dir / 'output'
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # ------------------------------------------------------------------
-    # 1. Load data
-    # ------------------------------------------------------------------
-    logger.info("Loading OGBG-PPA dataset...")
-    dataset = PPADataset()
-    n_classes = int(dataset.num_classes)
-    edge_feat_dim = 7  # PPA edge feature dimension
-
-    valid_indices = dataset.valid_indices[:args.valid_graphs]
-    train_indices = dataset.train_indices[:args.train_graphs] if args.train_graphs else []
-    test_indices = dataset.test_indices[:args.test_graphs] if args.test_graphs else []
-
-    # ------------------------------------------------------------------
-    # 2. Load frozen classifier
-    # ------------------------------------------------------------------
-    logger.info("Loading frozen classifier from %s", args.pretrained)
+    # 加载冻结分类器
+    logger.info("Loading frozen classifier from %s...", args.load)
+    ckpt = torch.load(args.load, map_location=device)
     classifier = GraphClassifier(
-        edge_feat_dim=edge_feat_dim,
-        n_classes=n_classes,
+        edge_feat_dim=7, n_classes=37, hidden_dim=300, n_layers=5, dropout=0.5,
     ).to(device)
-    classifier.load_pretrained(args.pretrained, device=str(device))
+    classifier.load_state_dict(ckpt['model_state_dict'])
+    val_acc = ckpt.get('val_acc', 0.0)
+    logger.info("Loaded classifier (val_acc=%.4f)", val_acc)
     classifier.eval()
-    for p in classifier.parameters():
-        p.requires_grad = False
-    logger.info("Classifier frozen (%d params)", sum(p.numel() for p in classifier.parameters()))
+
+    # 加载训练集 → 提取子集 → 释放原始数据 → 加自环
+    logger.info("Loading OGBG-PPA train split (root=%s)...", args.root)
+    dataset = DglGraphPropPredDataset(name='ogbg-ppa', root=args.root)
+    split = dataset.get_idx_split()
+    train_idx = split['train'].tolist()
+    if args.max_graphs > 0:
+        train_idx = train_idx[:args.max_graphs]
+        logger.info("Limited to %d training graphs", args.max_graphs)
+
+    logger.info("Extracting training subset (%d graphs)...", len(train_idx))
+    train_dataset = [dataset[int(i)] for i in tqdm(train_idx, desc="Extract train")]
+    del dataset
+
+    for i in tqdm(range(len(train_dataset)), desc="self-loops"):
+        train_dataset[i] = (dgl.add_self_loop(train_dataset[i][0]), train_dataset[i][1])
+
+    # 显式映射：OGB index → train_dataset 位置
+    ogb_to_local = {ogb: pos for pos, ogb in enumerate(train_idx)}
+    logger.info("Built ogb_to_local mapping: %d entries", len(ogb_to_local))
 
     subgraph_builder = SubgraphBuilder()
 
-    # ------------------------------------------------------------------
-    # 3. Compute baselines
-    # ------------------------------------------------------------------
-    logger.info("Computing baseline accuracies on %d validation graphs...", len(valid_indices))
-    all_indices = list(valid_indices) + list(train_indices) + list(test_indices)
-    eval_indices = valid_indices if valid_indices else all_indices[:100]
-
-    random_acc = compute_baseline_acc(
-        'random', dataset, eval_indices, classifier, subgraph_builder,
-        args.budgets, seeds_per_graph=args.seeds_per_graph, seed_offset=0,
-    )
-    bfs_acc = compute_baseline_acc(
-        'bfs', dataset, eval_indices, classifier, subgraph_builder,
-        args.budgets, seeds_per_graph=args.seeds_per_graph, seed_offset=0,
-    )
-    logger.info("Random baseline: %s", {b: f'{v:.4f}' for b, v in random_acc.items()})
-    logger.info("BFS baseline:     %s", {b: f'{v:.4f}' for b, v in bfs_acc.items()})
-
-    # ------------------------------------------------------------------
-    # 4. Initialize teachers
-    # ------------------------------------------------------------------
-    teachers = [
-        GradientTeacher(aggregate='mean'),
-        StructuralTeacher(method='degree'),
-        StructuralTeacher(method='pagerank'),
-        HybridTeacher(alpha=0.3),   # T4: structural-leaning
-        HybridTeacher(alpha=0.7),   # T4: gradient-leaning
-    ]
-
-    if not args.skip_t2:
-        # T2 is expensive — only add for validation set
-        teachers.append(InfoGainTeacher(temperature=1.0))
-        logger.info("T2 (info-gain) teacher enabled")
-    else:
-        logger.info("T2 (info-gain) teacher skipped")
-
+    teachers = [build_teacher(name, classifier=classifier, subgraph_builder=subgraph_builder,
+                              device=str(device)) for name in args.teachers]
     logger.info("Teachers: %s", [t.name for t in teachers])
-
-    # ------------------------------------------------------------------
-    # 5. Generate trajectories
-    # ------------------------------------------------------------------
     generator = TrajectoryGenerator(
         teachers=teachers,
         classifier=classifier,
         subgraph_builder=subgraph_builder,
-        dataset=dataset,
         device=str(device),
+        graph_batch_size=args.graph_batch_size,
     )
 
-    all_trajs = []
-    for split_name, split_indices in [
-        ('train', train_indices),
-        ('valid', valid_indices),
-        ('test', test_indices),
-    ]:
-        if not split_indices:
-            continue
+    shard_list = split_into_shards(train_idx, args.k_shards)
+    k_total = len(shard_list)
+    logger.info("Training set split into %d shards (~%d graphs each)", k_total, len(shard_list[0]))
 
-        logger.info("Generating %s trajectories (%d graphs)...", split_name, len(split_indices))
-        trajs = generator.generate_all(
-            indices=split_indices,
-            budgets=args.budgets,
-            seeds_per_graph=args.seeds_per_graph,
-            output_dir=str(output_dir / 'raw'),
-            checkpoint_file=str(output_dir / f'checkpoint_{split_name}.json'),
-            save_interval=args.save_interval,
-            seed_offset={'train': 0, 'valid': 1000, 'test': 2000}[split_name],
-        )
-        all_trajs.extend(trajs)
+    if args.shard_idx is not None:
+        for si in args.shard_idx:
+            if not (1 <= si <= k_total):
+                raise ValueError(f"--shard-idx={si} out of range [1, {k_total}]")
+        shards = {si: shard_list[si - 1] for si in sorted(set(args.shard_idx))}
+        logger.info("Processing %d shard(s): %s (%d graphs total)",
+                     len(shards), sorted(shards.keys()),
+                     sum(len(s) for s in shards.values()))
+    else:
+        shards = {i + 1: s for i, s in enumerate(shard_list)}
 
-    if not all_trajs:
-        logger.error("No trajectories generated. Check dataset indices and budgets.")
-        sys.exit(1)
+    for ratio in args.reveal_ratios:
+        ratio_str = f"{ratio:.3f}".replace('.', '_')
+        logger.info("=== Reveal ratio = %.3f ===", ratio)
 
-    logger.info("Total raw trajectories: %d", len(all_trajs))
+        for shard_i, shard_idx in sorted(shards.items()):
+            logger.info("--- Shard %d/%d (%d graphs) ---", shard_i, k_total, len(shard_idx))
+            result = generator.generate_all(
+                dataset=train_dataset,
+                train_idx=shard_idx,
+                reveal_ratio=ratio,
+                n_seeds=args.n_seeds,
+                ogb_to_local=ogb_to_local,
+            )
 
-    # ------------------------------------------------------------------
-    # 6. Score trajectories
-    # ------------------------------------------------------------------
-    logger.info("Scoring trajectories...")
-    scorer = TrajectoryScorer(w_be=0.5, w_ig=0.3, w_stability=0.2)
+            total_trajs = 0
+            for teacher_name, per_graph in result.items():
+                count = sum(len(trajs) for trajs in per_graph)
+                total_trajs += count
+                logger.info("  %s: %d trajectories", teacher_name, count)
+            for teacher in teachers:
+                failures = sum(1 for trajs in result[teacher.name] if len(trajs) == 0)
+                logger.info("  %20s  failures: %d", teacher.name, failures)
 
-    # Collect graph sizes for budget efficiency normalization
-    graph_sizes = {}
-    for traj in all_trajs:
-        if traj.graph_idx not in graph_sizes:
-            g_raw, _ = dataset[traj.graph_idx]
-            graph_sizes[traj.graph_idx] = g_raw.num_nodes()
-
-    scored = scorer.score_all(all_trajs, graph_sizes=graph_sizes)
-    logger.info("Scored %d trajectories", len(scored))
-
-    # Save scored trajectories
-    scored_dir = output_dir / 'scored'
-    scored_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(scored, scored_dir / 'scored_trajectories.pt')
-
-    # ------------------------------------------------------------------
-    # 7. Filter trajectories
-    # ------------------------------------------------------------------
-    logger.info("Filtering trajectories (top_k=%d)...", args.top_k)
-    traj_filter = TrajectoryFilter(top_k=args.top_k, require_diversity=True)
-    filtered_trajs = traj_filter.filter(scored)
-
-    filtered_dir = output_dir / 'filtered'
-    filtered_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(filtered_trajs, filtered_dir / 'filtered_trajectories.pt')
-    logger.info("Filtered trajectories saved: %d", len(filtered_trajs))
-
-    # ------------------------------------------------------------------
-    # 8. Oracle upper-bound estimation
-    # ------------------------------------------------------------------
-    logger.info("Estimating oracle upper bounds...")
-    oracle = OracleEstimator(classifier, subgraph_builder, device=str(device))
-
-    # Type II: from gradient teacher trajectories
-    oracle_type2 = oracle.estimate_type2(all_trajs, teacher_name='gradient')
-    logger.info("Oracle Type II (gradient): %s", {b: f'{v:.4f}' for b, v in oracle_type2.items()})
-
-    # Type I: on a small subset (expensive)
-    oracle_type1_subset = eval_indices[:50]
-    type1_by_budget = defaultdict(list)
-    for idx in oracle_type1_subset:
-        g_raw, label = dataset[idx]
-        g = dgl.add_self_loop(g_raw)
-        n_nodes = g.num_nodes()
-        seed_node = random.randint(0, max(n_nodes - 1, 0))
-        for budget in args.budgets:
-            is_correct, _ = oracle.estimate_type1(g, label, seed_node, budget)
-            type1_by_budget[budget].append(1.0 if is_correct else 0.0)
-
-    oracle_type1 = {b: np.mean(accs) for b, accs in sorted(type1_by_budget.items())}
-    logger.info("Oracle Type I (label-aware, %d graphs): %s",
-                len(oracle_type1_subset), {b: f'{v:.4f}' for b, v in oracle_type1.items()})
-
-    # Headroom
-    headroom = oracle.headroom_analysis(oracle_type2, bfs_acc, random_acc)
-    logger.info("Headroom (oracle vs BFS): max=%.4f, verdict=%s",
-                headroom['max_headroom_bfs'], headroom['verdict'])
-
-    # ------------------------------------------------------------------
-    # 9. Feasibility analysis
-    # ------------------------------------------------------------------
-    logger.info("Running feasibility analysis...")
-    analyzer = FeasibilityAnalyzer(dfi_threshold_high=0.5, dfi_threshold_low=0.3)
-    dfi_result = analyzer.analyze(
-        oracle_acc=oracle_type2,
-        bfs_acc=bfs_acc,
-        scored_trajectories=scored,
-        trajectories=all_trajs,
-    )
-
-    # ------------------------------------------------------------------
-    # 10. Save report
-    # ------------------------------------------------------------------
-    report = {
-        'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
-        'config': {
-            'pretrained': args.pretrained,
-            'n_train_graphs': len(train_indices),
-            'n_valid_graphs': len(valid_indices),
-            'n_test_graphs': len(test_indices),
-            'budgets': args.budgets,
-            'seeds_per_graph': args.seeds_per_graph,
-            'top_k': args.top_k,
-            'teachers': [t.name for t in teachers],
-        },
-        'baselines': {
-            'random': {str(b): round(v, 4) for b, v in random_acc.items()},
-            'bfs': {str(b): round(v, 4) for b, v in bfs_acc.items()},
-        },
-        'oracle': {
-            'type1_label_aware': {str(b): round(v, 4) for b, v in oracle_type1.items()},
-            'type2_gradient': {str(b): round(v, 4) for b, v in oracle_type2.items()},
-        },
-        'headroom': {
-            'max_headroom_bfs': round(headroom['max_headroom_bfs'], 4),
-            'max_headroom_random': round(headroom['max_headroom_random'], 4),
-            'verdict': headroom['verdict'],
-        },
-        'feasibility': {
-            'dfi': dfi_result['dfi'],
-            'recommendation': dfi_result['recommendation'],
-            'components': dfi_result['components'],
-        },
-        'statistics': {
-            'n_raw_trajectories': len(all_trajs),
-            'n_scored': len(scored),
-            'n_filtered': len(filtered_trajs),
-            'pct_correct': round(
-                100.0 * sum(1 for t in all_trajs if t.is_correct) / max(len(all_trajs), 1), 1
-            ),
-        },
-    }
-
-    report_path = output_dir / 'm4_report.json'
-    with open(report_path, 'w') as f:
-        json.dump(report, f, indent=2)
-    logger.info("M4 report saved to %s", report_path)
-
-    # Print summary
-    print("\n" + "=" * 60)
-    print("M4 Complete — Summary")
-    print("=" * 60)
-    print(f"  Raw trajectories:     {len(all_trajs)}")
-    print(f"  Filtered trajectories: {len(filtered_trajs)}")
-    print(f"  % Correct:             {report['statistics']['pct_correct']:.1f}%")
-    print(f"\n  Budget → Accuracy:")
-    for b in args.budgets:
-        r = random_acc.get(b, 0)
-        bf = bfs_acc.get(b, 0)
-        o2 = oracle_type2.get(b, 0)
-        o1 = oracle_type1.get(b, 0)
-        print(f"    B={b:2d}: random={r:.4f}  bfs={bf:.4f}  oracle-T2={o2:.4f}  oracle-T1={o1:.4f}")
-    print(f"\n  DFI: {dfi_result['dfi']:.4f}")
-    print(f"  Verdict: {dfi_result['recommendation']}")
-    print(f"\n  Report: {report_path}")
-    print("=" * 60)
+            output_path = output_dir / f'trajectories_r{ratio_str}_shard{shard_i:02d}_of_{k_total:02d}.pt'
+            torch.save({
+                'trajectories': result,
+                'config': {
+                    'reveal_ratio': ratio,
+                    'n_seeds': args.n_seeds,
+                    'n_graphs': len(shard_idx),
+                    'shard': shard_i,
+                    'k_shards': k_total,
+                    'teacher_names': [t.name for t in teachers],
+                },
+            }, output_path)
+            logger.info("Saved %d trajectories to %s", total_trajs, output_path)
 
 
 if __name__ == '__main__':

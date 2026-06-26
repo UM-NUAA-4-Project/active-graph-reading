@@ -35,7 +35,7 @@ from torch_geometric.loader import DataLoader
 # 0. 配置
 # ============================================================
 DATASET_NAME = "ogbg-ppa"
-ROOT_DIR = "dataset"  # 数据存储根目录
+ROOT_DIR = r"D:\ogb-master\dataset"  # 数据存储根目录
 OUTPUT_DIR = "analysis_output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -50,7 +50,7 @@ def main():
     # ============================================================
     print("\n[1/7] 正在加载 OGBG-PPA 数据集...")
     print("       提示: 首次运行会自动下载数据集,请稍候。")
-    dataset = PygGraphPropPredDataset(name = 'ogbg-ppa') 
+    dataset = PygGraphPropPredDataset(name='ogbg-ppa', root=ROOT_DIR) 
     split_idx = dataset.get_idx_split()
 
     train_idx = split_idx["train"]   # numpy array

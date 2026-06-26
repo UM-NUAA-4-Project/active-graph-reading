@@ -1,114 +1,73 @@
-"""T3: Structural Teacher.
-
-Computes per-node importance from graph topology alone:
-- degree centrality (DGL native, O(|E|))
-- PageRank (networkx, iterative)
-- betweenness centrality (networkx, O(|V|×|E|), small graphs only)
-
-No classifier needed -- scores are purely structural.
-Independent of any GNN, can be pre-computed offline.
-
-Reference: Ying et al., "GNNExplainer", NeurIPS 2019.
-"""
+"""T3: 结构 Teacher — 度中心性或 PageRank 作为节点重要性。"""
 
 import logging
 from typing import Optional
 
 import torch
-import torch.nn as nn
 import dgl
-import networkx as nx
+import dgl.function as fn
 
-from m4.teachers.base import Teacher
+from .base import Teacher
 
 logger = logging.getLogger(__name__)
 
-_VALID_METHODS = {'degree', 'pagerank', 'betweenness'}
-
 
 class StructuralTeacher(Teacher):
-    """T3: Scores nodes by graph topology metrics.
+    """T3 (structural): 选 degree / pagerank 最高的 frontier node。
 
-    Parameters
-    ----------
-    method : str
-        One of 'degree', 'pagerank', 'betweenness'.
+    纯拓扑计算，不依赖 GNN。
     """
 
+    VALID_METHODS = ('degree', 'pagerank')
+
     def __init__(self, method: str = 'degree'):
-        if method not in _VALID_METHODS:
-            raise ValueError(
-                f"Unknown method '{method}'. Choose from {sorted(_VALID_METHODS)}."
-            )
+        if method not in self.VALID_METHODS:
+            raise ValueError(f"method 必须是 {self.VALID_METHODS}，实际: {method}")
         self.method = method
 
     @property
     def name(self) -> str:
         return f'structural-{self.method}'
 
-    def _params_dict(self) -> dict:
-        return {'method': self.method}
-
-    # ------------------------------------------------------------------
-    # score_nodes
-    # ------------------------------------------------------------------
-
     def score_nodes(
         self,
         graph: dgl.DGLGraph,
-        classifier: Optional[nn.Module] = None,
+        classifier: Optional[torch.nn.Module] = None,
         label: Optional[int] = None,
     ) -> torch.Tensor:
-        """Compute topology-based importance scores.
-
-        classifier and label are ignored -- structural scores are
-        independent of any learned model.
-        """
-        n = graph.num_nodes()
-        if n <= 1:
-            return torch.ones(n)
-
         if self.method == 'degree':
-            return self._degree_scores(graph, n)
-
-        # PageRank and betweenness require networkx conversion
-        nx_g = dgl.to_networkx(graph, node_attrs=None, edge_attrs=None).to_undirected()
-
-        if self.method == 'pagerank':
-            return self._pagerank_scores(nx_g, n)
-
-        if self.method == 'betweenness':
-            return self._betweenness_scores(nx_g, n)
-
-        raise RuntimeError(f"Unreachable: method={self.method}")
-
-    # ------------------------------------------------------------------
-    # Score implementations
-    # ------------------------------------------------------------------
+            return self._score_degree(graph)
+        return self._score_pagerank(graph)
 
     @staticmethod
-    def _degree_scores(graph: dgl.DGLGraph, n: int) -> torch.Tensor:
-        """Degree centrality: deg(v) / (|V|-1)."""
+    def _score_degree(graph: dgl.DGLGraph) -> torch.Tensor:
         deg = graph.in_degrees().float()
-        return deg / max(n - 1, 1)
+        max_deg = deg.max()
+        if max_deg > 0:
+            return deg / max_deg
+        return deg
 
     @staticmethod
-    def _pagerank_scores(nx_g: nx.Graph, n: int) -> torch.Tensor:
-        """PageRank with damping factor α=0.85."""
-        pr_dict = nx.pagerank(nx_g, alpha=0.85, max_iter=200)
-        scores = torch.tensor([pr_dict.get(i, 0.0) for i in range(n)], dtype=torch.float32)
-        return scores
+    def _score_pagerank(
+        graph: dgl.DGLGraph,
+        damping: float = 0.85,
+        max_iter: int = 100,
+        tol: float = 1e-6,
+    ) -> torch.Tensor:
+        n = graph.num_nodes()
+        g = graph.local_var()
+        g.ndata['pr'] = torch.ones(n) / n
+        out_deg = g.out_degrees().float().clamp(min=1)
 
-    @staticmethod
-    def _betweenness_scores(nx_g: nx.Graph, n: int) -> torch.Tensor:
-        """Betweenness centrality. Only called for graphs with < 200 nodes."""
-        if n > 200:
-            raise ValueError(
-                f"Betweenness too expensive for {n} nodes (limit: 200). "
-                "Use 'degree' or 'pagerank' instead."
-            )
-        # Use k=min(n, 50) random pivots for speed on mid-sized graphs
-        k = min(n, 50)
-        bc_dict = nx.betweenness_centrality(nx_g, k=k, normalized=True)
-        scores = torch.tensor([bc_dict.get(i, 0.0) for i in range(n)], dtype=torch.float32)
-        return scores
+        for _ in range(max_iter):
+            old_pr = g.ndata['pr'].clone()
+            g.update_all(fn.copy_u('pr', 'm'), fn.sum('m', 'new_pr'))
+            g.ndata['pr'] = damping * g.ndata['new_pr'] / out_deg + (1.0 - damping) / n
+            if (g.ndata['pr'] - old_pr).abs().sum() < tol:
+                break
+
+        pr = g.ndata['pr']
+        pr_max = pr.max()
+        if pr_max > 0:
+            return pr / pr_max
+        return pr

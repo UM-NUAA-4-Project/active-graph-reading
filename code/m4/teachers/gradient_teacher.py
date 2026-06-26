@@ -1,154 +1,79 @@
-"""T1: Gradient Attribution Teacher.
-
-Computes per-node importance by back-propagating the correct-class
-logit through a frozen GIN classifier and measuring gradient norms
-of each node's intermediate embeddings.
-
-Reference: Grad-CAM (Selvaraju et al., ICCV 2017) generalized to GNNs
-(Pope et al., CVPR 2019).
-"""
+"""T1: 梯度归因 Teacher — 冻结分类器反向梯度 → 节点重要性。"""
 
 import logging
-from typing import List, Optional
+from typing import Optional
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import dgl
 
-from m4.teachers.base import Teacher
+from .base import Teacher
 
 logger = logging.getLogger(__name__)
 
 
 class GradientTeacher(Teacher):
-    """T1: Scores nodes by ||∂ŷ_c/∂h_v||₂ averaged across GIN layers.
+    """T1 (gradient): 选使 classifier loss 下降最快的 frontier node。
 
-    Uses register_forward_hook on each GINELayer to capture per-layer
-    node embeddings without modifying the encoder's forward() interface.
+    在全图上做反向传播，计算每层 conv 输出对各节点 embedding 的梯度范数，
+    跨层聚合得到 per-node importance score。
     """
 
-    def __init__(self, aggregate: str = 'mean'):
-        """
-        Parameters
-        ----------
-        aggregate : str
-            How to combine per-layer gradient norms: 'mean' or 'max'.
-        """
-        self._aggregate = aggregate
-        self._embeddings: List[torch.Tensor] = []
-        self._handles: List = []
+    def __init__(self):
+        self._hooks = []
 
     @property
     def name(self) -> str:
         return 'gradient'
 
-    def _params_dict(self) -> dict:
-        return {'aggregate': self._aggregate}
-
-    # ------------------------------------------------------------------
-    # score_nodes
-    # ------------------------------------------------------------------
-
     def score_nodes(
         self,
         graph: dgl.DGLGraph,
-        classifier: nn.Module,
+        classifier: torch.nn.Module,
         label: Optional[int] = None,
     ) -> torch.Tensor:
-        """Compute gradient-attribution scores for all nodes.
-
-        Returns a tensor of shape (|V|,) with higher values indicating
-        nodes whose embeddings most influence the correct-class prediction.
-        """
-        n_nodes = graph.num_nodes()
-        encoder = classifier.encoder
-        n_layers = len(encoder.convs)
-
-        # 1. Register forward hooks on each GINELayer
-        self._register_hooks(encoder)
-
-        # 2. Forward pass on full graph
-        node_ids = torch.zeros(n_nodes, dtype=torch.long)
-        logits = classifier(graph, node_ids)
-
         if label is None:
-            label = int(logits.argmax(dim=1).item())
+            raise ValueError("GradientTeacher 需要 label 以计算正确类别的梯度")
 
-        # 3. Compute gradients of correct-class logit w.r.t. captured embeddings
-        try:
-            grads = torch.autograd.grad(
-                outputs=logits[0, label],
-                inputs=self._embeddings,
-                retain_graph=False,
-                create_graph=False,
-            )
-        except RuntimeError as e:
-            logger.warning("Gradient computation failed: %s. Falling back to uniform.", e)
-            self._remove_hooks()
-            return torch.ones(n_nodes)
+        device = next(classifier.parameters()).device
+        graph = graph.to(device)
 
-        # 4. Per-layer gradient norm for each node
-        layer_norms = []
-        for layer_idx, grad in enumerate(grads):
-            if grad is None:
-                logger.debug("Layer %d: gradient is None, skipping", layer_idx)
-                continue
-            # grad shape: (n_nodes, hidden_dim) or (n_batched_nodes, hidden_dim)
-            node_norms = grad.norm(p=2, dim=1)  # (n_nodes,)
-            layer_norms.append(node_norms)
+        # 捕获每层 GINELayer 的输出激活
+        activations = []
 
-        if not layer_norms:
-            self._remove_hooks()
-            return torch.ones(n_nodes)
-
-        # 5. Aggregate across layers
-        stacked = torch.stack(layer_norms, dim=0)  # (n_layers, n_nodes)
-        if self._aggregate == 'max':
-            scores = stacked.max(dim=0).values
-        else:
-            scores = stacked.mean(dim=0)
-
-        # 6. Cleanup
-        self._remove_hooks()
-        classifier.zero_grad()
-
-        # Verify gradient signal has variance
-        std = scores.std().item()
-        if std < 1e-8:
-            logger.warning(
-                "Gradient scores have near-zero variance (std=%.2e). "
-                "Check if classifier parameters are frozen or gradients are detached.",
-                std,
-            )
-
-        return scores
-
-    # ------------------------------------------------------------------
-    # Hook management
-    # ------------------------------------------------------------------
-
-    def _register_hooks(self, encoder):
-        """Register forward hooks on all GINELayer conv modules."""
-        self._remove_hooks()
-        self._embeddings = []
-
-        for i, conv in enumerate(encoder.convs):
-            handle = conv.register_forward_hook(self._make_hook(i))
-            self._handles.append(handle)
-
-    def _remove_hooks(self):
-        """Remove all registered hooks."""
-        for h in self._handles:
-            h.remove()
-        self._handles = []
-        self._embeddings = []
-
-    def _make_hook(self, layer_idx: int):
-        def hook_fn(module, input_, output):
-            # output is post-MLP GIN embedding, pre-BN/ReLU/Dropout/Adapter
-            # Retain gradient for torch.autograd.grad
-            if output.requires_grad:
+        def make_hook(act_list):
+            def hook(module, _input, output):
                 output.retain_grad()
-            self._embeddings.append(output)
-        return hook_fn
+                act_list.append(output)
+            return hook
+
+        encoder = classifier.encoder
+        hooks = []
+        for conv in encoder.convs:
+            hooks.append(conv.register_forward_hook(make_hook(activations)))
+
+        try:
+            # 前向
+            node_ids = torch.zeros(graph.num_nodes(), dtype=torch.long, device=device)
+            logits = classifier(graph, node_ids)
+
+            classifier.zero_grad()
+            correct_logit = logits[0, label]
+            correct_logit.backward()
+
+            # 聚合每层梯度范数
+            n_nodes = graph.num_nodes()
+            node_scores = torch.zeros(n_nodes, device=device)
+            for act in activations:
+                grad = act.grad
+                if grad is not None:
+                    node_scores += grad.norm(dim=1)
+
+            # 防止全零（所有节点分数相同 → uniform）
+            score_sum = node_scores.sum()
+            if score_sum == 0:
+                node_scores = torch.ones(n_nodes, device=device) / n_nodes
+        finally:
+            for h in hooks:
+                h.remove()
+
+        return node_scores.detach().cpu()

@@ -1,218 +1,100 @@
-"""Teacher abstract interface and shared trajectory generation.
+"""Teacher 抽象基类和 Trajectory 数据结构。"""
 
-Each teacher implements score_nodes() to produce per-node importance
-scores from the full graph. The base class provides a shared
-generate_trajectory() that simulates the reveal process guided by
-those scores, reusing M3's GraphState, reveal_node, and SubgraphBuilder.
-"""
-
-import sys
 from abc import ABC, abstractmethod
-from pathlib import Path
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import List, Optional, Set, Tuple
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
 import dgl
-
-# Ensure myworkplace/code/ is on sys.path for active_graph_reader imports.
-_script_dir = Path(__file__).resolve().parent.parent.parent
-if str(_script_dir) not in sys.path:
-    sys.path.insert(0, str(_script_dir))
 
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
-from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
-from m4.trajectory import Trajectory
+
+
+@dataclass
+class Trajectory:
+    """单条 teacher 阅读轨迹（精简版）。is_correct 恒为 True（已过滤）。"""
+
+    graph_idx: int
+    seed_node: int
+    reveal_ratio: float
+    reveal_order: List[int]
+    final_pred: int
+    is_correct: bool
+    teacher_type: str
+    ce: float = 0.0
 
 
 class Teacher(ABC):
-    """Abstract teacher that generates graph reading trajectories.
+    """Teacher 抽象基类：对全图打分 → greedy reveal 生成轨迹。"""
 
-    Subclasses must implement score_nodes() to provide per-node
-    importance scores computed from the full graph (and optionally
-    the frozen classifier).
-    """
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Teacher 名称标识。"""
+        ...
 
     @abstractmethod
     def score_nodes(
         self,
         graph: dgl.DGLGraph,
-        classifier: nn.Module,
+        classifier: torch.nn.Module,
         label: Optional[int] = None,
     ) -> torch.Tensor:
-        """Compute per-node importance scores from the full graph.
-
-        Parameters
-        ----------
-        graph : dgl.DGLGraph
-            The complete graph (all nodes/edges visible).
-        classifier : nn.Module
-            Frozen GraphClassifier for forward/backward queries.
-        label : int or None
-            Ground-truth label. May be None for teachers that don't
-            use label information.
-
-        Returns
-        -------
-        torch.Tensor
-            Per-node scores, shape (|V|,). Higher = more important.
-        """
+        """计算全图节点重要性分数，shape (|V|,)。"""
         ...
 
-    @property
-    @abstractmethod
-    def name(self) -> str:
-        """Unique teacher identifier (e.g. 'gradient', 'structural-degree')."""
-        ...
-
-    # ------------------------------------------------------------------
-    # Shared trajectory generation
-    # ------------------------------------------------------------------
+    def select_frontier(
+        self,
+        state: GraphState,
+        scores: torch.Tensor,
+        exclude: Optional[Set[int]] = None,
+    ) -> Optional[int]:
+        """从前沿节点中选分数最高的。exclude 用于排除已尝试的节点。"""
+        best_node = None
+        best_score = -float('inf')
+        for u, v in state.frontier_edges:
+            node = v if v not in state.V_revealed else u
+            if exclude and node in exclude:
+                continue
+            s = float(scores[node])
+            if s > best_score:
+                best_score = s
+                best_node = node
+        return best_node
 
     def generate_trajectory(
         self,
         graph: dgl.DGLGraph,
-        classifier: nn.Module,
-        graph_idx: int,
-        label: int,
+        scores: torch.Tensor,
         seed_node: int,
         budget: int,
-        subgraph_builder: SubgraphBuilder,
-    ) -> Trajectory:
-        """Simulate a reveal sequence guided by pre-computed node scores.
+        edge_key_to_id: Optional[dict] = None,
+    ) -> Tuple[Trajectory, GraphState]:
+        """基于预计算分数，从 seed 出发 greedy reveal 生成一条轨迹。
+        返回 (trajectory, final_state) — state 供调用方直接验证，避免重建。"""
+        state = GraphState(graph, seed_node, edge_key_to_id=edge_key_to_id)
+        reveal_order: List[int] = []
 
-        1. Compute full-graph node scores via score_nodes().
-        2. Reveal seed → repeatedly pick highest-score frontier node
-           until budget exhausted or frontier empty.
-        3. At each step, run classifier on current subgraph and record
-           confidence / entropy.
-
-        Parameters
-        ----------
-        graph : dgl.DGLGraph
-            Complete input graph.
-        classifier : nn.Module
-            Frozen classifier in eval mode.
-        graph_idx : int
-            Dataset graph index (for bookkeeping).
-        label : int
-            Ground-truth class label.
-        seed_node : int
-            Starting seed node ID.
-        budget : int
-            Max number of nodes to reveal (excluding seed).
-        subgraph_builder : SubgraphBuilder
-            Converts GraphState → DGLGraph for classifier forward.
-
-        Returns
-        -------
-        Trajectory
-        """
-        # 1. Pre-compute node scores
-        node_scores = self.score_nodes(graph, classifier, label)
-
-        # 2. Initialize reveal state (G_0 with seed already revealed)
-        state = GraphState(graph, seed_node=seed_node)
-
-        # Record G_0 classifier output
-        sub_g, original_ids = subgraph_builder.build(state)
-        conf, ent = self._classifier_forward(classifier, sub_g, original_ids)
-
-        traj = Trajectory(
-            graph_idx=graph_idx,
-            seed_node=seed_node,
-            budget_used=0,
-            reveal_order=[],
-            scores_per_step=[],
-            confidence_per_step=[conf],
-            entropy_per_step=[ent],
-            teacher_type=self.name,
-            teacher_params=self._params_dict(),
-            label=label,
-        )
-
-        # 3. Main reveal loop
-        while traj.budget_used < budget:
+        for _step in range(budget):
             if state.is_frontier_empty:
                 break
-
-            # Pick frontier node with highest pre-computed score
-            next_node = self._pick_best_frontier(state.frontier_edges, node_scores)
+            next_node = self.select_frontier(state, scores)
             if next_node is None:
                 break
-
-            # Execute reveal
+            reveal_order.append(next_node)
             reveal_node(state, next_node)
-            traj.reveal_order.append(next_node)
-            traj.budget_used += 1
 
-            # Record teacher score for this step
-            traj.scores_per_step.append(float(node_scores[next_node].item()))
+        n_revealed = len(state.V_revealed)
+        reveal_ratio = n_revealed / max(state.n_nodes_total, 1)
 
-            # Classifier forward on updated subgraph
-            sub_g, original_ids = subgraph_builder.build(state)
-            conf, ent = self._classifier_forward(classifier, sub_g, original_ids)
-            traj.confidence_per_step.append(conf)
-            traj.entropy_per_step.append(ent)
-
-        # 4. Final prediction check
-        sub_g, original_ids = subgraph_builder.build(state)
-        pred = self._predict(classifier, sub_g, original_ids)
-        traj.final_pred = pred
-        traj.is_correct = (pred == label)
-
-        return traj
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _pick_best_frontier(
-        frontier_edges,
-        node_scores: torch.Tensor,
-    ) -> Optional[int]:
-        """Select the frontier node with highest score.
-
-        Parameters
-        ----------
-        frontier_edges : set of (revealed, unrevealed) tuples.
-        node_scores : tensor of shape (|V|,).
-
-        Returns
-        -------
-        int or None
-        """
-        best_node = None
-        best_score = float('-inf')
-        for (_ru, rv) in frontier_edges:
-            s = float(node_scores[rv].item())
-            if s > best_score:
-                best_score = s
-                best_node = rv
-        return best_node
-
-    @staticmethod
-    def _classifier_forward(classifier, sub_g, original_ids):
-        """Run classifier on subgraph, return (confidence, entropy)."""
-        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long)
-        with torch.no_grad():
-            logits = classifier(sub_g, node_ids)
-            probs = F.softmax(logits, dim=1)
-            conf = float(probs.max(dim=1).values.item())
-            ent = float(-(probs * probs.log()).sum(dim=1).item())
-        return conf, ent
-
-    @staticmethod
-    def _predict(classifier, sub_g, original_ids) -> int:
-        """Return predicted class index."""
-        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long)
-        with torch.no_grad():
-            logits = classifier(sub_g, node_ids)
-            return int(logits.argmax(dim=1).item())
-
-    def _params_dict(self) -> dict:
-        """Return teacher-specific parameters for bookkeeping."""
-        return {}
+        traj = Trajectory(
+            graph_idx=-1,  # caller fills in
+            seed_node=seed_node,
+            reveal_ratio=reveal_ratio,
+            reveal_order=reveal_order,
+            final_pred=-1,     # caller fills in after classifier eval
+            is_correct=True,   # filtered by caller
+            teacher_type=self.name,
+        )
+        return traj, state

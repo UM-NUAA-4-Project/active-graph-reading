@@ -1,0 +1,101 @@
+"""LearnableReader: 可学习的图阅读器。
+
+G_t → FrontierGraphBuilder → FrontierSubgraph → FrontierNodesEncoder → frontier_embeds
+     → ReaderMLP → scores → softmax → argmax → action
+"""
+
+from typing import List, Optional, Tuple
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from .reader_mlp import ReaderMLP
+
+from ..core.base_reader import BaseReader
+from ..gnn.frontier.graph_builder import FrontierGraphBuilder
+from ..gnn.frontier.encoder import FrontierNodesEncoder
+from ..engine.graph_state import GraphState
+
+
+
+
+class LearnableReader(BaseReader, nn.Module):
+    """可学习的图阅读器。
+
+    Parameters
+    ----------
+    edge_feat_dim : int  边特征维度（PPA: 7）
+    hidden_dim : int     隐层维度（默认 128）
+    n_layers : int       FrontierEncoder 的 GNN 层数（默认 2）
+    dropout : float      Dropout 概率（默认 0.1）
+    """
+
+    def __init__(
+        self,
+        edge_feat_dim: int,
+        hidden_dim: int = 128,
+        n_layers: int = 2,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+
+        self.frontier_builder = FrontierGraphBuilder()
+        self.frontier_encoder = FrontierNodesEncoder(
+            edge_feat_dim=edge_feat_dim,
+            hidden_dim=hidden_dim,
+            n_layers=n_layers,
+            dropout=dropout,
+        )
+        self.reader_mlp = ReaderMLP(input_dim=hidden_dim, hidden_dim=hidden_dim, dropout=dropout)
+
+    def forward(
+        self, graph_state: GraphState, sample: bool = False
+    ):
+        """核心可微管线。
+
+        sample=False: Returns (scores, probs, frontier_nodes)
+        sample=True:  Returns (scores, probs, frontier_nodes, action_idx, log_prob)
+        """
+        subgraph = self.frontier_builder.build(graph_state)
+        frontier_embeds, frontier_nodes = self.frontier_encoder(subgraph)
+
+        if len(frontier_nodes) == 0:
+            if sample:
+                return torch.empty(0), torch.empty(0), [], None, None
+            return torch.empty(0), torch.empty(0), []
+
+        scores = self.reader_mlp(frontier_embeds)
+        probs = F.softmax(scores, dim=0)
+
+        if sample:
+            dist = torch.distributions.Categorical(probs)
+            action_idx = dist.sample()
+            log_prob = dist.log_prob(action_idx)
+            return scores, probs, frontier_nodes, action_idx, log_prob
+
+        return scores, probs, frontier_nodes
+
+    def select(self, graph_state: GraphState) -> Optional[int]:
+        """确定性 argmax 选择，兼容 RevealLoop。"""
+        scores, probs, frontier_nodes = self.forward(graph_state)
+
+        if len(frontier_nodes) == 0:
+            return None
+
+        best_idx = probs.argmax().item()
+        return frontier_nodes[best_idx]
+
+    @property
+    def name(self) -> str:
+        return 'learnable'
+
+    def train(self, mode: bool = True):
+        nn.Module.train(self, mode)
+        self._training = mode
+        return self
+
+    def eval(self):
+        nn.Module.eval(self)
+        self._training = False
+        return self
