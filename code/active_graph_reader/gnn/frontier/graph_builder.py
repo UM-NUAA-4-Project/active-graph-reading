@@ -84,22 +84,22 @@ class FrontierGraphBuilder:
             feat_parts.append(feat_r)
             feat_parts.append(feat_r)  # repeat for reverse
 
-        # revealed ↔ frontier 边（双向）
+        # revealed → frontier 边（单向）
+        # 仅允许 revealed 向 frontier 传递消息，反向不传。
+        # 理由：frontier 节点尚未揭示，其身份未知，不应反向影响 revealed 节点表征。
+        # 同时保证 out_deg - in_deg 可正确计算前沿度（不再因双向边恒为零）。
         if state.frontier_edges:
             fr_keys = list(state.frontier_edges)
             fr_ids = [state._edge_key_to_id[(min(u, v), max(u, v))] for u, v in fr_keys]
             feat_f = state.edge_feat[fr_ids]
 
             fr_t = torch.tensor(fr_keys, dtype=torch.long)
-            u_f = old_to_new[fr_t[:, 0]]
-            v_f = old_to_new[fr_t[:, 1]]
+            u_f = old_to_new[fr_t[:, 0]]  # revealed side
+            v_f = old_to_new[fr_t[:, 1]]  # frontier side
 
             src_parts.append(u_f)
-            src_parts.append(v_f)  # reverse: frontier → revealed
             dst_parts.append(v_f)
-            dst_parts.append(u_f)  # reverse
             feat_parts.append(feat_f)
-            feat_parts.append(feat_f)  # repeat for reverse
 
         # 构建 DGL 图
         if len(src_parts) == 0:
@@ -112,6 +112,15 @@ class FrontierGraphBuilder:
             g = dgl.graph((src, dst), num_nodes=n_total)
 
         g.edata['feat'] = edge_feat
+
+        # 节点特征：revealed 用原图特征，frontier 填零
+        if state.has_node_feat and state.node_feat is not None:
+            feat_dim = state.node_feat_dim
+            feat_revealed = state.node_feat[revealed]
+            feat_frontier = torch.zeros(len(frontier), feat_dim)
+            g.ndata['feat'] = torch.cat([feat_revealed, feat_frontier], dim=0)
+            g.ndata['has_orig_feat'] = torch.ones(n_revealed, dtype=torch.bool)
+
         return FrontierSubgraph(g=g, n_revealed=n_revealed, frontier_original_ids=frontier)
 
     def build_batch(self, states: List[GraphState]) -> List[FrontierSubgraph]:

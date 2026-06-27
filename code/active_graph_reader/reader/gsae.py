@@ -28,14 +28,11 @@ class GSAEOutput:
 def compute_structural_features(g, n_revealed: int):
     """计算子图中所有节点的 3 维结构特征。
 
-    三个特征从不同尺度互补地刻画节点的结构角色：
-      维度0 — 归一化度（deg_in_revealed）
-      维度1 — 归一化前沿度（deg_in_frontier / 探索潜力）
-      维度2 — 局部聚类系数（邻居互连程度 / 社区结构信号）
-
-    利用 FrontierSubgraph 的边方向性高效计算：
-      revealed 节点：in_deg = deg_in_revealed，out_deg - in_deg = deg_in_frontier
-      frontier 节点：deg_in_revealed = in_deg（仅接收），deg_in_frontier = 0
+    三个特征：
+      维度0 — 归一化度 deg_in_revealed（与已揭示子图的连接度）
+      维度1 — 归一化前沿度 (out_deg - in_deg) / max_abs → [-1, 1]
+              正值=revealed 节点连接 frontier，负值=frontier 节点（收而不发）
+      维度2 — 局部聚类系数（已揭示邻居互连程度）
 
     Returns: struct_feat: (n_total, 3), 归一化在子图内完成
     """
@@ -44,11 +41,10 @@ def compute_structural_features(g, n_revealed: int):
     out_deg = g.out_degrees().float()
 
     deg_revealed = in_deg.clone()
-    deg_frontier = torch.zeros(n_total)
-    deg_frontier[:n_revealed] = (out_deg[:n_revealed] - in_deg[:n_revealed]).clamp(min=0)
+    deg_frontier = out_deg - in_deg  # +: revealed 连接 frontier, 0: 无连接, -: frontier 节点
 
     norm_deg = deg_revealed / deg_revealed.max().clamp(min=1)
-    norm_fr_deg = deg_frontier / deg_frontier.max().clamp(min=1)
+    norm_fr_deg = deg_frontier / deg_frontier.abs().max().clamp(min=1)  # 归一到 [-1, 1]
 
     clustering = torch.zeros(n_total)
     if n_total > 0 and n_revealed > 0:
@@ -185,9 +181,17 @@ class GSAE(nn.Module):
         edge_feat = g.edata['feat']
         struct_feat = struct_feat.to(device)
 
-        node_types = torch.zeros(n_total, dtype=torch.long, device=device)
-        node_types[n_revealed:] = 1
-        h = self.node_type_emb(node_types)
+        # 节点初始特征：revealed 有原图特征则用，否则 type embedding；frontier 恒为零
+        if 'feat' in g.ndata:
+            node_feat = g.ndata['feat'].to(device)
+            if node_feat.shape[1] != self.hidden_dim:
+                node_feat = F.pad(node_feat, (0, self.hidden_dim - node_feat.shape[1]))
+            h = node_feat
+        else:
+            node_types = torch.zeros(n_total, dtype=torch.long, device=device)
+            node_types[n_revealed:] = 1
+            h = self.node_type_emb(node_types)
+            # revealed→emb[0], frontier→emb[1]，均参与梯度学习
 
         for i in range(self.n_layers):
             h = self.convs[i](g, h, edge_feat)
@@ -198,11 +202,10 @@ class GSAE(nn.Module):
                 h = F.dropout(h, p=self.dropout, training=self.training)
 
         if self.use_struct:
-            mask = torch.zeros(n_total, dtype=torch.bool, device=device)
-            mask[:n_revealed] = True
-            v = self.attn_pool(h, struct_feat, mask).unsqueeze(0)  # (1, 300)
+            mask = torch.ones(n_total, dtype=torch.bool, device=device)
+            v = self.attn_pool(h, struct_feat, mask).unsqueeze(0)  # (1, 300) 全节点 attention 池化
         else:
-            v = h[:n_revealed].mean(dim=0, keepdim=True)  # (1, 300) 简单均值池化
+            v = h.mean(dim=0, keepdim=True)  # (1, 300) 全节点均值池化
 
         frontier_embeds = h[n_revealed:]
         frontier_struct = struct_feat[n_revealed:]

@@ -184,47 +184,51 @@ def infer_reader_config(state_dict: dict) -> Tuple[int, int]:
 
 def edl_loss(evidence, alpha, S, y_onehot, k_evidence, lambda_kl=0.01,
              return_components=False):
-    """EDL loss — CE on belief mass + KL regularization.
+    """EDL loss — Bayes risk (期望 MSE) + KL 正则（Sensoy et al., NeurIPS 2018）。
 
-    CE on b = e/S replaces the original MSE. MSE gradient is diluted by
-    1/S ≈ 1/K when evidence is near zero, causing the model to collapse
-    to the uniform prior. CE ∝ -log(b) has strong gradient when b → 0,
-    naturally breaking the deadlock.
+    L = Σ_k (y_k - p_k)²             ← 预测均值与标签的平方误差
+      + Σ_k α_k(S-α_k) / [S²(S+1)]   ← Dirichlet 方差，推动增加总证据 S
+      + λ_kl · KL(Dir(α̃) || Dir(1))  ← 压制非真类的证据
 
-    KL( Dir(α̃) || Dir(1) ) regularizes against overconfident evidence.
+    其中 p_k = α_k/S（Dirichlet 期望），α̃ = y + (1-y) ⊙ α。
 
     Parameters
     ----------
     evidence : Tensor (B, K)  非负证据 e
     alpha : Tensor (B, K)     Dirichlet 参数 = 1 + e
-    S : Tensor (B,)           Dirichlet 强度
+    S : Tensor (B, K) or (B,) Dirichlet 强度
     y_onehot : Tensor (B, K)  one-hot 标签
     k_evidence : int          类别数
-    lambda_kl : float         KL 正则权重
-    return_components : bool  若 True，返回 (total, ce, kl) 三个标量 Tensor
+    lambda_kl : float         KL 正则权重（默认 0.01）
+    return_components : bool  若 True，返回 (total, mse, var, kl) 四个标量
 
     Returns
     -------
     loss : scalar Tensor（return_components=False）
-    (loss, ce, kl) : tuple（return_components=True）
+    (loss, mse, var, kl) : tuple（return_components=True）
     """
-    b = evidence / S.unsqueeze(-1)  # (B, K) 信念 mass ∈ Δ^{K-1}
+    if S.dim() == 1:
+        S = S.unsqueeze(-1)  # (B, 1)
 
-    ce = -(y_onehot * torch.log(b + 1e-8)).sum(dim=-1)  # (B,)
+    p = alpha / S  # (B, K) Dirichlet 期望概率
 
+    # Bayes risk: 期望 MSE = (y - p)² + Var(p)
+    mse = ((y_onehot - p) ** 2).sum(dim=-1)                              # (B,)
+    var = (alpha * (S - alpha) / (S * S * (S + 1))).sum(dim=-1)          # (B,)
+
+    # KL( Dir(α̃) || Dir(1) ) — 压制非真类证据
     alpha_tilde = y_onehot + (1 - y_onehot) * alpha
     S_tilde = alpha_tilde.sum(dim=-1, keepdim=True)
-
-    # KL( Dir(alpha_tilde) || Dir(ones(K)) )
     kl = (
         torch.lgamma(S_tilde.squeeze(-1))
         - torch.lgamma(alpha_tilde).sum(dim=-1)
         - torch.lgamma(torch.tensor(float(k_evidence), device=alpha.device))
         + ((alpha_tilde - 1) * (torch.digamma(alpha_tilde) - torch.digamma(S_tilde))).sum(dim=-1)
-    )
-    total = (ce + lambda_kl * kl).mean()
+    )                                                                    # (B,)
+
+    total = (mse + var + lambda_kl * kl).mean()
     if return_components:
-        return total, ce.detach().mean(), kl.detach().mean()
+        return total, mse.detach().mean(), var.detach().mean(), kl.detach().mean()
     return total
 
 

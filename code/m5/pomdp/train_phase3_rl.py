@@ -62,8 +62,7 @@ def train_one_epoch(reader, optimizer, graph_cache, train_trajs,
             log_probs = []
 
             for _step in range(B):
-                scores, probs, frontier_nodes, action_idx, log_prob = \
-                    reader.forward(state, sample=True)
+                scores, probs, frontier_nodes, action_idx, log_prob = reader.forward(state, sample=True)
 
                 if len(frontier_nodes) == 0:
                     break
@@ -115,16 +114,22 @@ def main():
     parser = argparse.ArgumentParser(description='Phase 3: REINFORCE end-to-end fine-tuning')
     parser.add_argument('--bootstrap-checkpoint', default='m5/phase2/checkpoint_epoch20.pt')
     parser.add_argument('--root', default=r'D:\ogb-master\dataset')
+    parser.add_argument('--data-dir', default='m4/data/stage7_filtered')
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--batch-size', type=int, default=8)
+    parser.add_argument('--hidden-dim', type=int, default=300)
+    parser.add_argument('--n-layers', type=int, default=2)
+    parser.add_argument('--dropout', type=float, default=0.25)
     parser.add_argument('--beta-belief', type=float, default=0.5)
     parser.add_argument('--budgets-rel', nargs='+', type=float,
                         default=[0.05, 0.10, 0.15])
     parser.add_argument('--limit-trajs', type=int, default=0)
-    parser.add_argument('--output-dir', default='m5/phase3/')
+    parser.add_argument('--output-dir', default='m5/pomdp/ phase3/')
     parser.add_argument('--no-struct', action='store_true', help='禁用结构特征+结构注意力池化')
+    parser.add_argument('--stochastic', action='store_true', help='采样模式：从前沿概率分布随机选择')
+    parser.add_argument('--resume-checkpoint', default='', help='从指定 checkpoint 恢复训练')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 
@@ -136,7 +141,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. 加载轨迹和图（仍需要轨迹获取 graph_idx 和 seed，但不使用 reveal_order）
-    data_dir = repo_root / 'm4/data/stage5_filtered'
+    data_dir = repo_root / args.data_dir
     print("\n=== Merging trajectories ===")
     all_trajs = merge_trajectories(data_dir)
     if args.limit_trajs > 0:
@@ -149,19 +154,20 @@ def main():
 
     # 2. 加载 POMDPReader
     print("\n=== Loading POMDPReader ===")
-    reader = POMDPReader(edge_feat_dim=7, hidden_dim=300, k_state=128,
-                         k_evidence=37, n_layers=2, dropout=0.5,
-                         use_struct=not args.no_struct).to(device)
+    reader = POMDPReader(edge_feat_dim=7, hidden_dim=args.hidden_dim, k_state=128,
+                         k_evidence=37, n_layers=args.n_layers, dropout=args.dropout,
+                         use_struct=not args.no_struct,
+                         stochastic=args.stochastic).to(device)
 
-    # 断点恢复：优先检查 Phase 3 自身的 checkpoint
+    # 断点恢复
     start_epoch = 0
     training_log = []
-    existing = sorted(output_dir.glob('checkpoint_epoch*.pt'))
 
-    if existing:
-        latest = existing[-1]
-        print(f"\n=== Resuming from {latest} ===")
-        ckpt = torch.load(str(latest), map_location=device, weights_only=False)
+    if args.resume_checkpoint:
+        # 从 Phase 3 checkpoint 恢复
+        resume_path = repo_root / args.resume_checkpoint
+        print(f"\n=== Resuming from {resume_path} ===")
+        ckpt = torch.load(str(resume_path), map_location=device, weights_only=False)
         reader.load_state_dict(ckpt['reader_state_dict'])
         training_log = ckpt.get('training_log', [])
         start_epoch = ckpt['epoch'] + 1
@@ -173,6 +179,7 @@ def main():
         print(f"  Resumed at epoch {start_epoch + 1}/{args.epochs}")
     else:
         # 全新训练：加载 Phase 2 checkpoint 作为起点
+        optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
         ckpt_path = repo_root / args.bootstrap_checkpoint
         if ckpt_path.exists():
             print(f"  Loading from {ckpt_path}")
@@ -181,8 +188,6 @@ def main():
             print(f"  Checkpoint epoch: {ckpt.get('epoch', 'N/A')}")
         else:
             print(f"  WARNING: {ckpt_path} not found, training from scratch")
-
-        optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
 
     total_params = sum(p.numel() for p in reader.parameters())
     print(f"  Total params: {total_params:,}")

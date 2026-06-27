@@ -1,7 +1,10 @@
 """LearnableReader: 可学习的图阅读器。
 
 G_t → FrontierGraphBuilder → FrontierSubgraph → FrontierNodesEncoder → frontier_embeds
-     → ReaderMLP → scores → softmax → argmax → action
+     → ReaderMLP → scores → softmax → (argmax | sample) → action
+
+stochastic=False（默认）：argmax 确定性选择
+stochastic=True：从概率分布采样，探索用
 """
 
 from typing import List, Optional, Tuple
@@ -29,6 +32,7 @@ class LearnableReader(BaseReader, nn.Module):
     hidden_dim : int     隐层维度（默认 128）
     n_layers : int       FrontierEncoder 的 GNN 层数（默认 2）
     dropout : float      Dropout 概率（默认 0.1）
+    stochastic : bool    是否从概率分布采样（默认 False=argmax）
     """
 
     def __init__(
@@ -37,8 +41,11 @@ class LearnableReader(BaseReader, nn.Module):
         hidden_dim: int = 128,
         n_layers: int = 2,
         dropout: float = 0.1,
+        stochastic: bool = False,
     ):
         super().__init__()
+
+        self.stochastic = stochastic
 
         self.frontier_builder = FrontierGraphBuilder()
         self.frontier_encoder = FrontierNodesEncoder(
@@ -77,14 +84,17 @@ class LearnableReader(BaseReader, nn.Module):
         return scores, probs, frontier_nodes
 
     def select(self, graph_state: GraphState) -> Optional[int]:
-        """确定性 argmax 选择，兼容 RevealLoop。"""
+        """选择节点。stochastic=False 时 argmax，True 时从概率分布采样。"""
         scores, probs, frontier_nodes = self.forward(graph_state)
 
         if len(frontier_nodes) == 0:
             return None
 
-        best_idx = probs.argmax().item()
-        return frontier_nodes[best_idx]
+        if self.stochastic:
+            idx = torch.distributions.Categorical(probs).sample().item()
+        else:
+            idx = probs.argmax().item()
+        return frontier_nodes[idx]
 
     @property
     def name(self) -> str:

@@ -65,8 +65,7 @@ def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
             log_probs = []
 
             for _step in range(B):
-                scores, probs, frontier_nodes, action_idx, log_prob = \
-                    reader.forward(state, sample=True)
+                scores, probs, frontier_nodes, action_idx, log_prob = reader.forward(state, sample=True)
 
                 if len(frontier_nodes) == 0:
                     break
@@ -110,18 +109,23 @@ def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
 
 def main():
     parser = argparse.ArgumentParser(description='v0 LearnableReader REINFORCE fine-tuning')
-    parser.add_argument('--bootstrap-checkpoint', default='m5/checkpoint/best_reader.pt')
+    parser.add_argument('--bootstrap-checkpoint', default='m5/base/checkpoint/best_reader.pt')
+    parser.add_argument('--data-dir', default='m4/data/stage7_filtered')
     parser.add_argument('--classifier', default='m3/best_model_ft.pt')
     parser.add_argument('--root', default=r'D:\ogb-master\dataset')
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--batch-size', type=int, default=8)
+    parser.add_argument('--batch-size', type=int, default=32)
+    parser.add_argument('--hidden-dim', type=int, default=128)
+    parser.add_argument('--n-layers', type=int, default=2)
+    parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--beta-aux', type=float, default=0.5)
     parser.add_argument('--budgets-rel', nargs='+', type=float,
                         default=[0.05, 0.10, 0.15])
     parser.add_argument('--limit-trajs', type=int, default=0)
-    parser.add_argument('--output-dir', default='m5/rl/')
+    parser.add_argument('--output-dir', default='m5/base/rl/')
+    parser.add_argument('--stochastic', action='store_true', help='采样模式：从前沿概率分布随机选择')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 
@@ -133,7 +137,7 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. 加载轨迹和图
-    data_dir = repo_root / 'm4/data/stage5_filtered'
+    data_dir = repo_root / args.data_dir
     print("\n=== Merging trajectories ===")
     all_trajs = merge_trajectories(data_dir)
     if args.limit_trajs > 0:
@@ -159,7 +163,9 @@ def main():
 
     # 3. 加载 reader
     print("\n=== Loading LearnableReader ===")
-    reader = LearnableReader(edge_feat_dim=7, hidden_dim=128, n_layers=2, dropout=0.1).to(device)
+    reader = LearnableReader(edge_feat_dim=7, hidden_dim=args.hidden_dim,
+                             n_layers=args.n_layers, dropout=args.dropout,
+                             stochastic=args.stochastic).to(device)
 
     ckpt_path = repo_root / args.bootstrap_checkpoint
     if ckpt_path.exists():
