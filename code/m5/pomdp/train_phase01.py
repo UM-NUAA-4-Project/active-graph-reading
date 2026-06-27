@@ -49,6 +49,8 @@ def train_one_epoch(gsae, evidence_net, belief_updater, frontier_proj,
 
     sum_loss = 0.0
     sum_mse = 0.0
+    sum_var = 0.0
+    sum_kl = 0.0
     sum_correct = 0
     total_trajs = 0
 
@@ -107,7 +109,7 @@ def train_one_epoch(gsae, evidence_net, belief_updater, frontier_proj,
                 )
 
                 w_t = 2.0 * t / (B * (B + 1))
-                step_losses.append((w_t * L_t, w_t * mse_t))
+                step_losses.append((w_t * L_t, w_t * mse_t, w_t * var_t, w_t * kl_t))
 
                 # 编码 teacher 节点为下一步动作嵌入（detach 避免跨步梯度）
                 try:
@@ -124,6 +126,8 @@ def train_one_epoch(gsae, evidence_net, belief_updater, frontier_proj,
 
             losses_only = torch.stack([s[0] for s in step_losses])
             mse_only = torch.stack([s[1] for s in step_losses])
+            var_only = torch.stack([s[2] for s in step_losses])
+            kl_only = torch.stack([s[3] for s in step_losses])
             traj_loss = losses_only.sum()
 
             # 逐轨迹 backward：B 步 GSAE forward 已在图中，
@@ -136,6 +140,8 @@ def train_one_epoch(gsae, evidence_net, belief_updater, frontier_proj,
             sum_correct += int(final_b.argmax().item() == label)
             sum_loss += traj_loss.item()
             sum_mse += mse_only.sum().item()
+            sum_var += var_only.sum().item()
+            sum_kl += kl_only.sum().item()
             total_trajs += 1
             batch_traj_count += 1
 
@@ -149,12 +155,16 @@ def train_one_epoch(gsae, evidence_net, belief_updater, frontier_proj,
         pbar.set_postfix({
             'loss': f'{sum_loss / n:.4f}',
             'mse': f'{sum_mse / n:.4f}',
+            'var': f'{sum_var / n:.4f}',
+            'kl': f'{sum_kl / n:.4f}',
             'acc': f'{sum_correct / n:.4f}',
         })
 
     return {
         'loss': sum_loss / max(total_trajs, 1),
         'mse': sum_mse / max(total_trajs, 1),
+        'var': sum_var / max(total_trajs, 1),
+        'kl': sum_kl / max(total_trajs, 1),
         'acc': sum_correct / max(total_trajs, 1),
     }
 
@@ -210,7 +220,7 @@ def main():
         print(f"  Initializing GSAE from {args.fclass_init}")
         gsae.init_from_fclass(str(repo_root / args.fclass_init), device)
 
-    evidence_net = EvidenceNetwork(hidden_dim=args.hidden_dim, k_evidence=37).to(device)
+    evidence_net = EvidenceNetwork(hidden_dim=args.hidden_dim, k_evidence=37, dropout=args.dropout).to(device)
     belief_updater = LSTMBeliefUpdater(k_evidence=37, lstm_hidden=128, action_emb_dim=128).to(device)
     frontier_proj = nn.Linear(args.hidden_dim, 128).to(device)
 
@@ -255,10 +265,12 @@ def main():
         )
         avg_loss = avg['loss']
         avg_mse = avg['mse']
+        avg_var = avg['var']
+        avg_kl = avg['kl']
         avg_acc = avg['acc']
         mse_baseline = 0.973  # uniform MSE
         signal = 'YES' if avg_mse < 0.95 else 'NO'
-        print(f"  loss={avg_loss:.4f}  mse={avg_mse:.4f}  acc={avg_acc:.4f}  "
+        print(f"  loss={avg_loss:.4f}  mse={avg_mse:.4f}  var={avg_var:.4f}  kl={avg_kl:.4f}  acc={avg_acc:.4f}  "
               f"graph_signal={signal}  (MSE_uniform={mse_baseline:.3f})")
 
         training_log.append({'epoch': epoch + 1, **avg})

@@ -1,13 +1,13 @@
 """v0 LearnableReader — REINFORCE 端到端微调。
-
 与 POMDP REINFORCE 的核心差异：reward 来自外部冻结的 GraphClassifier 而非 reader 自身。
-
-REINFORCE: -R · Σ log π_t(a_t) + β · CE(classifier_logits, y)
-R = 1[argmax f_class(sub_G_B) == y]
+REINFORCE: -R · Σ w_t·log π_t(a_t) + β · CE(classifier_logits, y)
+  w_t = softmax(2t/B)          逐步加权，后期步权重更大，跨 budget 一致
+  R = tanh(1 - CE/ln(K))      连续 reward ∈ (-1, 1)，0=随机水平
 """
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -74,17 +74,25 @@ def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
                 chosen = frontier_nodes[action_idx.item()]
                 reveal_node(state, chosen)
 
-            # 终端 reward: 外部 classifier
+            # 终端 reward: 连续值 tanh(1 - CE / ln(K))，0=随机水平
             sub_g, _ = builder.build(state)
             sub_g = sub_g.to(device)
             node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=device)
             with torch.no_grad():
                 logits = classifier(sub_g, node_ids)
-                pred = logits.argmax(dim=1).item()
-            R = 1.0 if pred == label else 0.0
+            K = logits.shape[-1]
+            ce = F.cross_entropy(logits, y.unsqueeze(0)).item()
+            R = math.tanh(1.0 - ce / math.log(K))
 
             if log_probs:
-                rl_loss = -R * torch.stack(log_probs).sum()
+                # 逐步加权: softmax(2t/B)，跨 budget 一致
+                n_steps = len(log_probs)
+                t = torch.arange(1, n_steps + 1, device=device).float()
+                scores = 2.0 * t / n_steps
+                weights = torch.softmax(scores, dim=0)
+                log_probs_stacked = torch.stack(log_probs)
+                weighted_sum = (weights * log_probs_stacked).sum()
+                rl_loss = -R * weighted_sum
                 aux_loss = F.cross_entropy(logits, y.unsqueeze(0))
                 traj_loss = rl_loss + beta_aux * aux_loss
                 batch_losses.append(traj_loss)
