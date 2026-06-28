@@ -134,6 +134,7 @@ def main():
     parser.add_argument('--limit-trajs', type=int, default=0)
     parser.add_argument('--output-dir', default='m5/base/rl/')
     parser.add_argument('--stochastic', action='store_true', help='采样模式：从前沿概率分布随机选择')
+    parser.add_argument('--resume-checkpoint', default='', help='从指定 checkpoint 恢复训练')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 
@@ -169,31 +170,46 @@ def main():
         p.requires_grad = False
     print(f"  val_acc={ckpt.get('val_acc', 'N/A')}")
 
-    # 3. 加载 reader
+    # 3. 加载/恢复 reader
     print("\n=== Loading LearnableReader ===")
     reader = LearnableReader(edge_feat_dim=7, hidden_dim=args.hidden_dim,
                              n_layers=args.n_layers, dropout=args.dropout,
                              stochastic=args.stochastic).to(device)
 
-    ckpt_path = repo_root / args.bootstrap_checkpoint
-    if ckpt_path.exists():
-        print(f"  Loading from {ckpt_path}")
-        reader_ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
-        reader.load_state_dict(reader_ckpt['reader_state_dict'])
-        print(f"  Checkpoint epoch: {reader_ckpt.get('epoch', 'N/A')}, "
-              f"best_val_acc={reader_ckpt.get('best_val_acc', 'N/A')}")
+    optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
+    builder = SubgraphBuilder()
+    training_log = []
+    start_epoch = 0
+
+    if args.resume_checkpoint:
+        # 从 RL checkpoint 恢复（含 reader + optimizer + training_log）
+        resume_path = repo_root / args.resume_checkpoint
+        print(f"  Resuming from {resume_path}")
+        ckpt = torch.load(str(resume_path), map_location=device, weights_only=False)
+        reader.load_state_dict(ckpt['reader_state_dict'])
+        try:
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        except ValueError:
+            print("  WARNING: optimizer state incompatible, starting with fresh optimizer")
+        training_log = ckpt.get('training_log', [])
+        start_epoch = ckpt['epoch'] + 1
+        print(f"  Resumed at epoch {start_epoch + 1}/{args.epochs}")
     else:
-        print(f"  WARNING: {ckpt_path} not found, training from scratch")
+        bootstrap_path = repo_root / args.bootstrap_checkpoint
+        if bootstrap_path.exists():
+            print(f"  Loading bootstrap from {bootstrap_path}")
+            reader_ckpt = torch.load(str(bootstrap_path), map_location=device, weights_only=False)
+            reader.load_state_dict(reader_ckpt['reader_state_dict'])
+            print(f"  Checkpoint epoch: {reader_ckpt.get('epoch', 'N/A')}, "
+                  f"best_val_acc={reader_ckpt.get('best_val_acc', 'N/A')}")
+        else:
+            print(f"  WARNING: {bootstrap_path} not found, training from scratch")
 
     total_params = sum(p.numel() for p in reader.parameters())
     print(f"  Reader params: {total_params:,}")
 
-    optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
-    builder = SubgraphBuilder()
-    training_log = []
-
     # 4. REINFORCE 训练
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
         train_one_epoch(
             reader, classifier, builder, optimizer, graph_cache, all_trajs,
