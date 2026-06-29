@@ -62,21 +62,9 @@ class LSTMBeliefUpdater(nn.Module):
 
         gate = torch.tanh(self.gate(h))                  # (1, K) gate ∈ (-1, 1)
 
-        # DRBPN 逐类不确定性调制：
-        # Var(b_k) = α_k·(S-α_k) / (S²·(S+1))  — Dirichlet 边际方差
-        # κ_k = σ_k 直接用作增益（不除以 u）：
-        #   - α_k≈S/2 时 σ_k 取峰值 → 竞争中的类别最开放
-        #   - α_k→0 或 α_k→S 时 σ_k→0 → 边缘类和决胜类都保守
-        #   - σ_k ∝ 1/√S → 总证据越多整体越谨慎
         self._alpha_accum = self._alpha_accum.to(e.device)
-
-        S_prev = self._alpha_accum.sum()
-        var_k = (self._alpha_accum * (S_prev - self._alpha_accum)
-                 / (S_prev * S_prev * (S_prev + 1) + 1e-6))
-        sigma_k = var_k.sqrt()                                     # (K,) 逐类不确定性
-        kappa = sigma_k                                            # (K,) 逐类 Kalman 增益
-        self._alpha_accum = self._alpha_accum + kappa * e.squeeze(0) * gate.squeeze(0)
-        self._alpha_accum = torch.clamp(self._alpha_accum, min=1e-6)  # Dirichlet 参数需 > 0
+        self._alpha_accum = self._alpha_accum + e.squeeze(0) * gate.squeeze(0)
+        self._alpha_accum = torch.clamp(self._alpha_accum, min=1e-6)
 
         S = self._alpha_accum.sum()
         b_t = self._alpha_accum / S

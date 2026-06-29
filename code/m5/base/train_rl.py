@@ -43,6 +43,7 @@ def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
     classifier.eval()
     total_reward = 0
     total_trajs = 0
+    total_correct = 0
 
     pbar = tqdm(range(0, len(train_trajs), batch_size), desc="  Training")
     for batch_start in pbar:
@@ -83,6 +84,8 @@ def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
             K = logits.shape[-1]
             ce = F.cross_entropy(logits, y.unsqueeze(0)).item()
             R = math.tanh(1.0 - ce / math.log(K))
+            if logits.argmax(dim=-1).item() == y.item():
+                total_correct += 1
 
             if log_probs:
                 # 逐步加权: softmax(2t/B)，跨 budget 一致
@@ -98,6 +101,8 @@ def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
                 batch_losses.append(traj_loss)
                 batch_rewards.append(R)
 
+                
+
         if not batch_losses:
             continue
 
@@ -109,8 +114,11 @@ def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
         total_reward += sum(batch_rewards)
         total_trajs += len(batch_rewards)
         avg_r = total_reward / total_trajs if total_trajs > 0 else 0
-        pbar.set_postfix({'loss': f'{batch_loss.item():.4f}',
-                          'avg_R': f'{avg_r:.2f}'})
+        pbar.set_postfix({
+            'loss': f'{batch_loss.item():.4f}',
+            'avg_R': f'{avg_r:.2f}',
+            'avg_acc': f'{total_correct}/{total_trajs}',
+        })
 
     return 0.0
 
