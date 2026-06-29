@@ -96,8 +96,7 @@ def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
                 log_probs_stacked = torch.stack(log_probs)
                 weighted_sum = (weights * log_probs_stacked).sum()
                 rl_loss = -R * weighted_sum
-                aux_loss = F.cross_entropy(logits, y.unsqueeze(0))
-                traj_loss = rl_loss + beta_aux * aux_loss
+                traj_loss = rl_loss 
                 batch_losses.append(traj_loss)
                 batch_rewards.append(R)
 
