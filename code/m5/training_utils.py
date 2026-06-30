@@ -125,6 +125,7 @@ def train_one_epoch(
         for traj in batch_trajs:
             g, _label = graph_cache[traj.graph_idx]
             state = GraphState(g, seed_node=traj.seed_node)
+            state._budget_limit = len(traj.reveal_order)
             step_losses = []
 
             for teacher_node in traj.reveal_order:
@@ -341,6 +342,7 @@ def val_one_epoch(
         for traj in batch_trajs:
             g, _label = graph_cache[traj.graph_idx]
             state = GraphState(g, seed_node=traj.seed_node)
+            state._budget_limit = len(traj.reveal_order)
             step_losses = []
 
             for teacher_node in traj.reveal_order:

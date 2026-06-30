@@ -86,6 +86,7 @@ def run_one_seed(
     budgets_abs: List[int],
 ) -> List[float]:
     state = GraphState(g_raw, seed_node=seed_node)
+    state._budget_limit = max(budgets_abs)
 
     reader.reset()
     initial_frontier = list(state._initial_frontier)

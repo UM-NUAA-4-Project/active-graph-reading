@@ -20,12 +20,11 @@ sys.path.insert(0, str(_repo_root))
 sys.path.insert(0, str(_m5_dir))
 
 import torch
-import torch.nn as nn
 from tqdm import tqdm
 
 from active_graph_reader.reader.gsae import GSAE
 from active_graph_reader.reader.evidence_network import EvidenceNetwork
-from active_graph_reader.reader.belief_updater import LSTMBeliefUpdater
+from active_graph_reader.reader.belief_updater import SimpleDirichletAccumulator
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
 from active_graph_reader.gnn.frontier.graph_builder import FrontierGraphBuilder
@@ -34,20 +33,18 @@ from training_utils import merge_trajectories, load_graphs_for_trajectories, edl
 
 
 @torch.no_grad()
-def evaluate(gsae, evidence_net, belief_updater, frontier_proj,
+def evaluate(gsae, evidence_net, belief_updater,
              graph_cache, trajs, device, lambda_kl):
     gsae.eval()
     evidence_net.eval()
     belief_updater.eval()
-    frontier_proj.eval()
     builder = FrontierGraphBuilder()
 
     total_trajs = 0
     final_correct = 0
 
-    # 逐步统计
-    sum_weighted_loss = 0.0   # Σ w_t * L_t
-    sum_unweighted_loss = 0.0  # mean(L_t) per traj
+    sum_weighted_loss = 0.0
+    sum_unweighted_loss = 0.0
     e_max_sum = 0.0
     u_mean_sum = 0.0
     step_count = 0
@@ -64,7 +61,6 @@ def evaluate(gsae, evidence_net, belief_updater, frontier_proj,
 
         state = GraphState(g, seed_node=traj.seed_node)
         belief_updater.reset()
-        prev_action_emb = torch.zeros(128, device=device)
 
         traj_losses = []
 
@@ -77,17 +73,10 @@ def evaluate(gsae, evidence_net, belief_updater, frontier_proj,
 
             ev_out = evidence_net(gsae_out.v)
 
-            alpha_prev = belief_updater.alpha_accum.to(device)
-            b_prev = alpha_prev / alpha_prev.sum().clamp(min=1)
+            # 简单 Dirichlet 累积
+            belief_updater.update(ev_out.e.squeeze(0))
 
-            belief_updater(
-                b_prev.unsqueeze(0),
-                ev_out.e,
-                ev_out.u,
-                prev_action_emb.unsqueeze(0),
-            )
-
-            alpha_t = belief_updater.alpha_accum
+            alpha_t = belief_updater.alpha
             S_t = alpha_t.sum()
 
             L_t = edl_loss(
@@ -107,20 +96,13 @@ def evaluate(gsae, evidence_net, belief_updater, frontier_proj,
             e_max_sum += ev_out.e.max().item()
             u_mean_sum += ev_out.u.mean().item()
 
-            try:
-                idx = gsae_out.frontier_original_ids.index(teacher_node)
-                emb_300 = gsae_out.frontier_embeds[idx:idx + 1]
-                prev_action_emb = frontier_proj(emb_300).squeeze(0)
-            except ValueError:
-                break
-
             reveal_node(state, teacher_node)
 
         if traj_losses:
             sum_weighted_loss += sum(traj_losses)
             total_trajs += 1
 
-            final_alpha = belief_updater.alpha_accum.to(device)
+            final_alpha = belief_updater.alpha.to(device)
             final_b = final_alpha / final_alpha.sum().clamp(min=1)
             final_correct += int(final_b.argmax().item() == label)
 
@@ -178,13 +160,10 @@ def main():
     evidence_net = EvidenceNetwork(hidden_dim=cfg['hidden_dim'], k_evidence=37).to(device)
     evidence_net.load_state_dict(ckpt['evidence_state_dict'])
 
-    belief_updater = LSTMBeliefUpdater(k_evidence=37, lstm_hidden=128, action_emb_dim=128).to(device)
-    belief_updater.load_state_dict(ckpt['belief_updater_state_dict'])
+    belief_updater = SimpleDirichletAccumulator(k_evidence=37).to(device)
+    belief_updater.load_state_dict(ckpt.get('belief_updater_state_dict', {}))
 
-    frontier_proj = nn.Linear(cfg['hidden_dim'], 128).to(device)
-    frontier_proj.load_state_dict(ckpt['frontier_proj_state_dict'])
-
-    n_params = sum(p.numel() for m in [gsae, evidence_net, belief_updater, frontier_proj]
+    n_params = sum(p.numel() for m in [gsae, evidence_net, belief_updater]
                    for p in m.parameters())
     print(f"Model params: {n_params:,}")
 
@@ -192,7 +171,7 @@ def main():
     lambda_kl = cfg.get('lambda_kl', 0.01)
     print(f"\n=== Evaluating on {len(all_trajs)} trajectories ===")
     results = evaluate(
-        gsae, evidence_net, belief_updater, frontier_proj,
+        gsae, evidence_net, belief_updater,
         graph_cache, all_trajs, device, lambda_kl,
     )
 

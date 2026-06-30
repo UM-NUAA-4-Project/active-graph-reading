@@ -54,7 +54,7 @@ class LearnableReader(BaseReader, nn.Module):
             n_layers=n_layers,
             dropout=dropout,
         )
-        self.reader_mlp = ReaderMLP(input_dim=hidden_dim, hidden_dim=hidden_dim, dropout=dropout)
+        self.reader_mlp = ReaderMLP(input_dim=hidden_dim + 1, hidden_dim=hidden_dim, dropout=dropout)
 
     def forward(
         self, graph_state: GraphState, sample: bool = False
@@ -71,6 +71,11 @@ class LearnableReader(BaseReader, nn.Module):
             if sample:
                 return torch.empty(0), torch.empty(0), [], None, None
             return torch.empty(0), torch.empty(0), []
+
+        remaining = graph_state.get_budget_ratio_remaining()
+        remaining_tensor = torch.full((len(frontier_nodes), 1), remaining,
+                                      device=frontier_embeds.device, dtype=frontier_embeds.dtype)
+        frontier_embeds = torch.cat([frontier_embeds, remaining_tensor], dim=-1)
 
         scores = self.reader_mlp(frontier_embeds)
         probs = F.softmax(scores, dim=0)

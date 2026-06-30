@@ -59,6 +59,7 @@ def train_one_epoch(reader, optimizer, graph_cache, train_trajs,
 
             reader.reset()
             state = GraphState(g, seed_node=traj.seed_node)
+            state._budget_limit = B
             log_probs = []
 
             for _step in range(B):

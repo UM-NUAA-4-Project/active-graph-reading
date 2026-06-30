@@ -33,12 +33,9 @@ from training_utils import (
 )
 
 
-def compute_budget(n_nodes, ratio):
-    return max(1, int(ratio * n_nodes))
-
 
 def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
-                    train_trajs, batch_size, device, beta_aux, budgets_rel):
+                    train_trajs, batch_size, device, beta_aux):
     reader.train()
     classifier.eval()
     total_reward = 0
@@ -57,12 +54,13 @@ def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
             g, label = graph_cache[traj.graph_idx]
             y = torch.tensor(label, device=device)
 
-            idx = traj.graph_idx ^ traj.seed_node
-            br = budgets_rel[idx % len(budgets_rel)]
-            B = compute_budget(g.num_nodes(), br)
+            B = len(traj.reveal_order)
+            if B == 0:
+                continue
 
             reader.reset()
             state = GraphState(g, seed_node=traj.seed_node)
+            state._budget_limit = B
             log_probs = []
 
             for _step in range(B):
@@ -116,7 +114,7 @@ def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
         pbar.set_postfix({
             'loss': f'{batch_loss.item():.4f}',
             'avg_R': f'{avg_r:.2f}',
-            'avg_acc': f'{total_correct}/{total_trajs}',
+            'avg_acc': f'{total_correct/total_trajs:.2f}',
         })
 
     return 0.0
@@ -136,8 +134,6 @@ def main():
     parser.add_argument('--n-layers', type=int, default=2)
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--beta-aux', type=float, default=0.5)
-    parser.add_argument('--budgets-rel', nargs='+', type=float,
-                        default=[0.05, 0.10, 0.15])
     parser.add_argument('--limit-trajs', type=int, default=0)
     parser.add_argument('--output-dir', default='m5/base/rl/')
     parser.add_argument('--stochastic', action='store_true', help='采样模式：从前沿概率分布随机选择')
@@ -220,7 +216,7 @@ def main():
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
         train_one_epoch(
             reader, classifier, builder, optimizer, graph_cache, all_trajs,
-            args.batch_size, device, args.beta_aux, args.budgets_rel,
+            args.batch_size, device, args.beta_aux,
         )
 
         training_log.append({'epoch': epoch + 1})
