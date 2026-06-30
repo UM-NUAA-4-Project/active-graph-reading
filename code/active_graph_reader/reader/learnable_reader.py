@@ -14,6 +14,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .reader_mlp import ReaderMLP
+from .gsae import compute_structural_features
 
 from ..core.base_reader import BaseReader
 from ..gnn.frontier.graph_builder import FrontierGraphBuilder
@@ -54,7 +55,7 @@ class LearnableReader(BaseReader, nn.Module):
             n_layers=n_layers,
             dropout=dropout,
         )
-        self.reader_mlp = ReaderMLP(input_dim=hidden_dim + 1, hidden_dim=hidden_dim, dropout=dropout)
+        self.reader_mlp = ReaderMLP(input_dim=hidden_dim + 1 + 3, hidden_dim=hidden_dim, dropout=dropout)
 
     def forward(
         self, graph_state: GraphState, sample: bool = False
@@ -75,7 +76,12 @@ class LearnableReader(BaseReader, nn.Module):
         remaining = graph_state.get_budget_ratio_remaining()
         remaining_tensor = torch.full((len(frontier_nodes), 1), remaining,
                                       device=frontier_embeds.device, dtype=frontier_embeds.dtype)
-        frontier_embeds = torch.cat([frontier_embeds, remaining_tensor], dim=-1)
+
+        struct_all = compute_structural_features(subgraph.g, subgraph.n_revealed)
+        struct_frontier = struct_all[subgraph.n_revealed:].to(
+            device=frontier_embeds.device, dtype=frontier_embeds.dtype)
+
+        frontier_embeds = torch.cat([frontier_embeds, remaining_tensor, struct_frontier], dim=-1)
 
         scores = self.reader_mlp(frontier_embeds)
         probs = F.softmax(scores, dim=0)
