@@ -31,7 +31,7 @@ from active_graph_reader.engine.reveal_action import reveal_node
 from training_utils import (
     TEACHER_NAMES, BUDGET_RATIOS,
     merge_trajectories, load_graphs_for_trajectories,
-    patch_old_checkpoint,
+    patch_old_checkpoint, split_trajectories,
 )
 
 
@@ -125,6 +125,52 @@ def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
     }
 
 
+@torch.no_grad()
+def val_one_epoch(reader, classifier, builder, graph_cache,
+                   val_trajs, device):
+    reader.eval()
+    total_reward = 0.0
+    total_trajs = 0
+    total_correct = 0
+
+    for traj in tqdm(val_trajs, desc="  Validating"):
+        g, label = graph_cache[traj.graph_idx]
+        y = torch.tensor(label, device=device)
+
+        B = len(traj.reveal_order)
+        if B == 0:
+            continue
+
+        reader.reset()
+        state = GraphState(g, seed_node=traj.seed_node)
+        state._budget_limit = B
+
+        for _step in range(B):
+            scores, probs, frontier_nodes = reader.forward(state)
+            if len(frontier_nodes) == 0:
+                break
+            chosen = frontier_nodes[probs.argmax().item()]
+            reveal_node(state, chosen)
+
+        sub_g, _ = builder.build(state)
+        sub_g = sub_g.to(device)
+        node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=device)
+        logits = classifier(sub_g, node_ids)
+        ce = F.cross_entropy(logits, y.unsqueeze(0)).item()
+        R = math.tanh(1.0 - ce / math.log(logits.shape[-1]))
+
+        total_reward += R
+        total_trajs += 1
+        if logits.argmax(dim=-1).item() == y.item():
+            total_correct += 1
+
+    n = max(total_trajs, 1)
+    return {
+        'avg_R': total_reward / n,
+        'acc': total_correct / n,
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description='v0 LearnableReader REINFORCE fine-tuning')
     parser.add_argument('--bootstrap-checkpoint', default='m5/base/checkpoint/best_reader.pt')
@@ -143,6 +189,8 @@ def main():
     parser.add_argument('--output-dir', default='m5/base/rl/')
     parser.add_argument('--stochastic', action='store_true', help='采样模式：从前沿概率分布随机选择')
     parser.add_argument('--resume-checkpoint', default='', help='从指定 checkpoint 恢复训练')
+    parser.add_argument('--val-split', type=float, default=0.0,
+                        help='Validation split ratio (0 = all train, no val)')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 
@@ -160,6 +208,16 @@ def main():
     if args.limit_trajs > 0:
         all_trajs = all_trajs[:args.limit_trajs]
         print(f"  Limited to {len(all_trajs)} trajectories")
+
+    # 划分 train/val
+    if args.val_split > 0:
+        print("\n=== Splitting trajectories ===")
+        train_trajs, val_trajs = split_trajectories(
+            all_trajs, args.root, val_ratio=args.val_split, random_seed=args.seed,
+        )
+    else:
+        train_trajs, val_trajs = all_trajs, []
+        print(f"\nUsing all {len(train_trajs)} trajectories for training (no val split)")
 
     print("\n=== Loading graphs ===")
     needed_graphs = {t.graph_idx for t in all_trajs}
@@ -220,12 +278,21 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
         metrics = train_one_epoch(
-            reader, classifier, builder, optimizer, graph_cache, all_trajs,
+            reader, classifier, builder, optimizer, graph_cache, train_trajs,
             args.batch_size, device, args.beta_aux,
         )
-        print(f"  loss={metrics['loss']:.4f}  avg_R={metrics['avg_R']:.3f}  acc={metrics['acc']:.3f}")
+        print(f"  Train: loss={metrics['loss']:.4f}  avg_R={metrics['avg_R']:.3f}  acc={metrics['acc']:.3f}")
 
-        training_log.append({'epoch': epoch + 1, **metrics})
+        log_entry = {'epoch': epoch + 1, **{f'train_{k}': v for k, v in metrics.items()}}
+
+        if val_trajs:
+            val_metrics = val_one_epoch(
+                reader, classifier, builder, graph_cache, val_trajs, device,
+            )
+            print(f"  Val:   avg_R={val_metrics['avg_R']:.3f}  acc={val_metrics['acc']:.3f}")
+            log_entry.update({f'val_{k}': v for k, v in val_metrics.items()})
+
+        training_log.append(log_entry)
 
         ckpt = {
             'epoch': epoch,
