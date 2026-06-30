@@ -31,6 +31,7 @@ from training_utils import (
     TEACHER_NAMES, BUDGET_RATIOS,
     merge_trajectories, load_graphs_for_trajectories,
     split_trajectories, train_one_epoch, val_one_epoch, infer_reader_config,
+    patch_old_checkpoint,
 )
 
 
@@ -124,7 +125,7 @@ def main():
         reader = LearnableReader(
             edge_feat_dim=7, hidden_dim=hidden_dim, n_layers=n_layers, dropout=dropout,
         ).to(device)
-        reader.load_state_dict(reader_ckpt['reader_state_dict'])
+        reader.load_state_dict(patch_old_checkpoint(reader_ckpt['reader_state_dict']))
 
         optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
         try:

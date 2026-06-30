@@ -183,6 +183,22 @@ def infer_reader_config(state_dict: dict) -> Tuple[int, int]:
     return hidden_dim, n_layers
 
 
+def patch_old_checkpoint(state_dict: dict) -> dict:
+    """兼容旧 checkpoint：reader_mlp 第一层权重从 [out, 128] 补齐到 [out, 129]。
+
+    旧模型 input_dim=128（无剩余预算特征），新模型 input_dim=129。
+    新增一列用零初始化（剩余预算比例特征的权重从零开始学习）。
+    """
+    key = 'reader_mlp.mlp.0.weight'
+    if key in state_dict:
+        w = state_dict[key]
+        if w.dim() == 2 and w.shape[1] == 128:
+            pad = torch.zeros(w.shape[0], 1, dtype=w.dtype, device=w.device)
+            state_dict[key] = torch.cat([w, pad], dim=1)
+            return state_dict  # 已修改
+    return state_dict  # 无需修改
+
+
 def edl_loss(evidence, alpha, S, y_onehot, k_evidence, lambda_kl=0.01,
              return_components=False):
     """EDL loss — Bayes risk (期望 MSE) + KL 正则（Sensoy et al., NeurIPS 2018）。

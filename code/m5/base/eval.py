@@ -35,6 +35,7 @@ from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
 from active_graph_reader.gnn.classifier import GraphClassifier
 from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
+from training_utils import patch_old_checkpoint
 
 BUDGETS_REL = [0.05, 0.10, 0.15]
 FIXED_STRATEGIES = ['random', 'bfs']
@@ -334,7 +335,7 @@ def main():
             edge_feat_dim=7, hidden_dim=hidden_dim, n_layers=n_layers,
             dropout=args.dropout,
         ).to(device)
-        learnable_reader.load_state_dict(reader_ckpt['reader_state_dict'])
+        learnable_reader.load_state_dict(patch_old_checkpoint(reader_ckpt['reader_state_dict']))
         learnable_reader.eval()
         print(f"  Params: {sum(p.numel() for p in learnable_reader.parameters()):,}")
 

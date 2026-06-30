@@ -8,6 +8,7 @@ REINFORCE: -R · Σ w_t·log π_t(a_t) + β · CE(classifier_logits, y)
 import argparse
 import json
 import math
+import random
 import sys
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from active_graph_reader.engine.reveal_action import reveal_node
 from training_utils import (
     TEACHER_NAMES, BUDGET_RATIOS,
     merge_trajectories, load_graphs_for_trajectories,
+    patch_old_checkpoint,
 )
 
 
@@ -38,10 +40,11 @@ def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
                     train_trajs, batch_size, device, beta_aux):
     reader.train()
     classifier.eval()
-    total_reward = 0
+    total_reward = 0.0
     total_trajs = 0
     total_correct = 0
-
+    total_loss = 0.0
+    random.shuffle(train_trajs)
     pbar = tqdm(range(0, len(train_trajs), batch_size), desc="  Training")
     for batch_start in pbar:
         batch_end = min(batch_start + batch_size, len(train_trajs))
@@ -53,11 +56,9 @@ def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
         for traj in batch_trajs:
             g, label = graph_cache[traj.graph_idx]
             y = torch.tensor(label, device=device)
-
             B = len(traj.reveal_order)
             if B == 0:
                 continue
-
             reader.reset()
             state = GraphState(g, seed_node=traj.seed_node)
             state._budget_limit = B
@@ -89,16 +90,16 @@ def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
                 # 逐步加权: softmax(2t/B)，跨 budget 一致
                 n_steps = len(log_probs)
                 t = torch.arange(1, n_steps + 1, device=device).float()
-                scores = 2.0 * t / n_steps
-                weights = torch.softmax(scores, dim=0)
+                sc = 2.0 * t / n_steps
+                weights = torch.softmax(sc, dim=0)
                 log_probs_stacked = torch.stack(log_probs)
                 weighted_sum = (weights * log_probs_stacked).sum()
                 rl_loss = -R * weighted_sum
-                traj_loss = rl_loss 
-                batch_losses.append(traj_loss)
+                batch_losses.append(rl_loss)
                 batch_rewards.append(R)
 
-                
+            total_reward += R
+            total_trajs += 1
 
         if not batch_losses:
             continue
@@ -108,16 +109,20 @@ def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
         optimizer.step()
         optimizer.zero_grad()
 
-        total_reward += sum(batch_rewards)
-        total_trajs += len(batch_rewards)
-        avg_r = total_reward / total_trajs if total_trajs > 0 else 0
+        total_loss += batch_loss.item() * len(batch_losses)
+        n = max(total_trajs, 1)
         pbar.set_postfix({
-            'loss': f'{batch_loss.item():.4f}',
-            'avg_R': f'{avg_r:.2f}',
-            'avg_acc': f'{total_correct/total_trajs:.2f}',
+            'loss': f'{total_loss / n:.4f}',
+            'avg_R': f'{total_reward / n:.3f}',
+            'acc': f'{total_correct / n:.3f}',
         })
 
-    return 0.0
+    n = max(total_trajs, 1)
+    return {
+        'loss': total_loss / n,
+        'avg_R': total_reward / n,
+        'acc': total_correct / n,
+    }
 
 
 def main():
@@ -189,7 +194,7 @@ def main():
         resume_path = repo_root / args.resume_checkpoint
         print(f"  Resuming from {resume_path}")
         ckpt = torch.load(str(resume_path), map_location=device, weights_only=False)
-        reader.load_state_dict(ckpt['reader_state_dict'])
+        reader.load_state_dict(patch_old_checkpoint(ckpt['reader_state_dict']))
         try:
             optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         except ValueError:
@@ -202,7 +207,7 @@ def main():
         if bootstrap_path.exists():
             print(f"  Loading bootstrap from {bootstrap_path}")
             reader_ckpt = torch.load(str(bootstrap_path), map_location=device, weights_only=False)
-            reader.load_state_dict(reader_ckpt['reader_state_dict'])
+            reader.load_state_dict(patch_old_checkpoint(reader_ckpt['reader_state_dict']))
             print(f"  Checkpoint epoch: {reader_ckpt.get('epoch', 'N/A')}, "
                   f"best_val_acc={reader_ckpt.get('best_val_acc', 'N/A')}")
         else:
@@ -214,12 +219,13 @@ def main():
     # 4. REINFORCE 训练
     for epoch in range(start_epoch, args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
-        train_one_epoch(
+        metrics = train_one_epoch(
             reader, classifier, builder, optimizer, graph_cache, all_trajs,
             args.batch_size, device, args.beta_aux,
         )
+        print(f"  loss={metrics['loss']:.4f}  avg_R={metrics['avg_R']:.3f}  acc={metrics['acc']:.3f}")
 
-        training_log.append({'epoch': epoch + 1})
+        training_log.append({'epoch': epoch + 1, **metrics})
 
         ckpt = {
             'epoch': epoch,
