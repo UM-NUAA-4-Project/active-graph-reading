@@ -125,13 +125,17 @@ def main():
         reader = LearnableReader(
             edge_feat_dim=7, hidden_dim=hidden_dim, n_layers=n_layers, dropout=dropout,
         ).to(device)
-        reader.load_state_dict(patch_old_checkpoint(reader_ckpt['reader_state_dict']))
+        reader_sd, was_patched = patch_old_checkpoint(reader_ckpt['reader_state_dict'])
+        reader.load_state_dict(reader_sd)
 
         optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
-        try:
-            optimizer.load_state_dict(reader_ckpt['optimizer_state_dict'])
-        except (KeyError, ValueError) as e:
-            print(f"  WARNING: Could not load optimizer state ({e}), using fresh optimizer")
+        if was_patched:
+            print("  NOTE: checkpoint architecture patched (old→new dims), using fresh optimizer")
+        else:
+            try:
+                optimizer.load_state_dict(reader_ckpt['optimizer_state_dict'])
+            except (KeyError, ValueError, RuntimeError) as e:
+                print(f"  WARNING: Could not load optimizer state ({e}), using fresh optimizer")
 
         start_epoch = reader_ckpt.get('epoch', -1) + 1
         training_log = reader_ckpt.get('training_log', [])

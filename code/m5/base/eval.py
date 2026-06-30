@@ -335,7 +335,8 @@ def main():
             edge_feat_dim=7, hidden_dim=hidden_dim, n_layers=n_layers,
             dropout=args.dropout,
         ).to(device)
-        learnable_reader.load_state_dict(patch_old_checkpoint(reader_ckpt['reader_state_dict']))
+        reader_sd, _ = patch_old_checkpoint(reader_ckpt['reader_state_dict'])
+        learnable_reader.load_state_dict(reader_sd)
         learnable_reader.eval()
         print(f"  Params: {sum(p.numel() for p in learnable_reader.parameters()):,}")
 

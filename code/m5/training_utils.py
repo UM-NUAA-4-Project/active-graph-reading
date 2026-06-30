@@ -183,7 +183,7 @@ def infer_reader_config(state_dict: dict) -> Tuple[int, int]:
     return hidden_dim, n_layers
 
 
-def patch_old_checkpoint(state_dict: dict) -> dict:
+def patch_old_checkpoint(state_dict: dict):
     """兼容旧 checkpoint 的 reader_mlp 第一层权重维度变化。
 
     历史维度：
@@ -192,16 +192,20 @@ def patch_old_checkpoint(state_dict: dict) -> dict:
       v2: input_dim=132 (+struct features ×3)
 
     缺的列用零初始化，对应特征权重从零开始学习。
+
+    Returns: (state_dict, was_patched)
     """
     TARGET_DIM = 132
     key = 'reader_mlp.mlp.0.weight'
+    was_patched = False
     if key in state_dict:
         w = state_dict[key]
         if w.dim() == 2 and w.shape[1] < TARGET_DIM:
             gap = TARGET_DIM - w.shape[1]
             pad = torch.zeros(w.shape[0], gap, dtype=w.dtype, device=w.device)
             state_dict[key] = torch.cat([w, pad], dim=1)
-    return state_dict
+            was_patched = True
+    return state_dict, was_patched
 
 
 def edl_loss(evidence, alpha, S, y_onehot, k_evidence, lambda_kl=0.01,

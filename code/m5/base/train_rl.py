@@ -252,11 +252,15 @@ def main():
         resume_path = repo_root / args.resume_checkpoint
         print(f"  Resuming from {resume_path}")
         ckpt = torch.load(str(resume_path), map_location=device, weights_only=False)
-        reader.load_state_dict(patch_old_checkpoint(ckpt['reader_state_dict']))
-        try:
-            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-        except ValueError:
-            print("  WARNING: optimizer state incompatible, starting with fresh optimizer")
+        reader_sd, was_patched = patch_old_checkpoint(ckpt['reader_state_dict'])
+        reader.load_state_dict(reader_sd)
+        if was_patched:
+            print("  NOTE: checkpoint architecture patched (old→new dims), using fresh optimizer")
+        else:
+            try:
+                optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            except (ValueError, RuntimeError):
+                print("  WARNING: optimizer state incompatible, starting with fresh optimizer")
         training_log = ckpt.get('training_log', [])
         start_epoch = ckpt['epoch'] + 1
         print(f"  Resumed at epoch {start_epoch + 1}/{args.epochs}")
@@ -265,7 +269,8 @@ def main():
         if bootstrap_path.exists():
             print(f"  Loading bootstrap from {bootstrap_path}")
             reader_ckpt = torch.load(str(bootstrap_path), map_location=device, weights_only=False)
-            reader.load_state_dict(patch_old_checkpoint(reader_ckpt['reader_state_dict']))
+            reader_sd, _ = patch_old_checkpoint(reader_ckpt['reader_state_dict'])
+            reader.load_state_dict(reader_sd)
             print(f"  Checkpoint epoch: {reader_ckpt.get('epoch', 'N/A')}, "
                   f"best_val_acc={reader_ckpt.get('best_val_acc', 'N/A')}")
         else:
