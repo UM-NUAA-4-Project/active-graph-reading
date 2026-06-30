@@ -10,7 +10,7 @@ from .fixed import create_fixed_reader
 from .reader_mlp import ReaderMLP
 from .gsae import GSAE, GSAEOutput
 from .evidence_network import EvidenceNetwork, EvidenceOutput
-from .belief_updater import SimpleDirichletAccumulator
+from .belief_updater import LSTMBeliefUpdater
 from .final_classifier import FinalClassifier, FinalOutput
 from .pomdp_reader import POMDPReader
 
@@ -30,7 +30,7 @@ __all__ = [
     'ReaderMLP',
     'GSAE', 'GSAEOutput',
     'EvidenceNetwork', 'EvidenceOutput',
-    'SimpleDirichletAccumulator',
+    'LSTMBeliefUpdater',
     'FinalClassifier', 'FinalOutput',
     'POMDPReader',
 ]

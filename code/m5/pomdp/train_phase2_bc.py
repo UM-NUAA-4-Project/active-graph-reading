@@ -57,11 +57,10 @@ def train_one_epoch(reader, optimizer, graph_cache, train_trajs,
 
             reader.reset()
             state = GraphState(g, seed_node=traj.seed_node)
-            state._budget_limit = len(traj.reveal_order)
             step_losses = []
 
             for teacher_node in traj.reveal_order:
-                scores, probs, frontier_nodes = reader.forward(state)
+                scores, probs, frontier_nodes = reader.forward(state, action_override=teacher_node)
                 nf = len(frontier_nodes)
 
                 if nf == 0:
@@ -137,11 +136,11 @@ def val_one_epoch(reader, graph_cache, val_trajs, batch_size, device, beta_belie
 
             reader.reset()
             state = GraphState(g, seed_node=traj.seed_node)
-            state._budget_limit = len(traj.reveal_order)
             step_losses = []
 
             for teacher_node in traj.reveal_order:
-                scores, probs, frontier_nodes = reader.forward(state)
+                scores, probs, frontier_nodes = reader.forward(
+                    state, action_override=teacher_node)
                 nf = len(frontier_nodes)
                 if nf == 0:
                     break

@@ -3,7 +3,7 @@
 使用合成图测试（不加载 OGBG-PPA）：
 1. GSAE 前向传播 + 重构 L_rec
 2. EvidenceNetwork b + u = 1
-3. SimpleDirichletAccumulator 多步更新 + reset
+3. LSTMBeliefUpdater 多步更新 + reset
 4. FinalClassifier 双路径融合
 5. POMDPReader 完整 B 步循环
 6. POMDPReader vs LearnableReader 对同一 GraphState 做选择
@@ -24,7 +24,7 @@ from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
 from active_graph_reader.reader.gsae import GSAE
 from active_graph_reader.reader.evidence_network import EvidenceNetwork
-from active_graph_reader.reader.belief_updater import SimpleDirichletAccumulator
+from active_graph_reader.reader.belief_updater import LSTMBeliefUpdater
 from active_graph_reader.reader.final_classifier import FinalClassifier
 from active_graph_reader.reader.pomdp_reader import POMDPReader
 from active_graph_reader.reader.learnable_reader import LearnableReader
@@ -79,21 +79,24 @@ def test_evidence_network():
 
 
 def test_belief_updater():
-    print("\n[Test 3] SimpleDirichletAccumulator multi-step + reset...")
-    updater = SimpleDirichletAccumulator(k_evidence=5)
+    print("\n[Test 3] LSTMBeliefUpdater multi-step + reset...")
+    updater = LSTMBeliefUpdater(k_evidence=5, action_emb_dim=64)
     updater.reset()
 
+    b = torch.ones(1, 5) / 5
     for t in range(4):
-        e = torch.abs(torch.randn(5))
-        b, u = updater.update(e)
+        e = torch.abs(torch.randn(1, 5))
+        u_t = 5.0 / (1.0 + e.sum())
+        emb_a = torch.randn(1, 64)
+        b = updater.forward(b, e, u_t, emb_a)
         assert torch.allclose(b.sum(), torch.tensor(1.0), atol=1e-5)
-        print(f"  Step {t}: b.sum=1, max(b)={b.max().item():.4f}, u={u.item():.4f}")
+        print(f"  Step {t}: b sum=1, max={b.max().item():.4f}")
 
-    alpha = updater.alpha
-    assert (alpha > 0).all(), f"alpha must be > 0, min={alpha.min()}"
+    alpha = updater.alpha_accum
+    assert (alpha > 0).all(), f"alpha must be > 0 (Dirichlet constraint), min={alpha.min()}"
 
     updater.reset()
-    assert torch.allclose(updater.alpha, torch.ones(5))
+    assert torch.allclose(updater.alpha_accum, torch.ones(5))
     print(f"  After reset: OK [OK]")
 
 
@@ -105,15 +108,22 @@ def test_final_classifier():
 
     gsae = GSAE(edge_feat_dim=7, hidden_dim=64, k_state=32, n_layers=3, dropout=0.0)
     ev_net = EvidenceNetwork(hidden_dim=64, k_evidence=5)
-    fc = FinalClassifier(k_evidence=5)
+    fc = FinalClassifier()
 
     gsae.eval(); ev_net.eval()
 
-    # 构造 B+1=4 个证据向量
-    e_seq = [torch.abs(torch.randn(5)) for _ in range(4)]
-    out = fc(e_seq, subgraph, gsae, ev_net)
-    assert torch.allclose(out.b_total.sum(dim=-1) + out.u_total, torch.ones(1), atol=1e-5)
-    print(f"  Dual path: y_hat={out.y_hat.item()}, u={out.u_total.item():.4f} [OK]")
+    out_b = fc(subgraph, gsae, ev_net)
+    assert torch.allclose(out_b.b_total.sum(dim=-1) + out_b.u_total, torch.ones(1), atol=1e-5)
+    print(f"  Path B only: y_hat={out_b.y_hat.item()}, u={out_b.u_total.item():.4f}")
+
+    alpha_lstm = torch.ones(5) + torch.rand(5) * 2
+    out_dual = fc(subgraph, gsae, ev_net, alpha_lstm=alpha_lstm)
+    assert torch.allclose(out_dual.b_total.sum(dim=-1) + out_dual.u_total, torch.ones(1), atol=1e-5)
+    print(f"  Dual path: y_hat={out_dual.y_hat.item()}, u={out_dual.u_total.item():.4f}")
+
+    diff = (out_dual.b_total - out_b.b_total).abs().sum().item()
+    assert diff > 1e-6, "dual and single path should differ"
+    print(f"  Diff: {diff:.4f} [OK]")
 
 
 def test_pomdp_reader_loop():
@@ -126,7 +136,6 @@ def test_pomdp_reader_loop():
 
     state = GraphState(g, seed_node=0)
     B = 5
-    state._budget_limit = B
     chosen_nodes = []
     for step in range(B):
         chosen = reader.select(state)

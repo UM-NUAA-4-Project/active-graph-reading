@@ -1,10 +1,10 @@
-"""Phase 0+1: GSAE + EvidenceNetwork + SimpleDirichletAccumulator 逐步加权信念训练。
+"""Phase 0+1: GSAE + EvidenceNetwork + LSTM 逐步加权信念训练。
 
 每步：
   G_t → FrontierSubgraph → GSAE → v, frontier_embeds
       → EvidenceNetwork(v) → e, b_raw, u
-      → SimpleDirichletAccumulator.update(e) → α_t
-      → L_t = EDL(α_t, y_true)
+      → LSTMBeliefUpdater(b_{t-1}, e, u, emb(a_{t-1})) → alpha_accum_t
+      → L_t = EDL(alpha_accum_t, y_true)
 
 加权：w_t = 2t / (B(B+1))，L_final = Σ w_t · L_t
 
@@ -23,11 +23,12 @@ sys.path.insert(0, str(_repo_root))
 sys.path.insert(0, str(_m5_dir))
 
 import torch
+import torch.nn as nn
 from tqdm import tqdm
 
 from active_graph_reader.reader.gsae import GSAE
 from active_graph_reader.reader.evidence_network import EvidenceNetwork
-from active_graph_reader.reader.belief_updater import SimpleDirichletAccumulator
+from active_graph_reader.reader.belief_updater import LSTMBeliefUpdater
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
 from active_graph_reader.gnn.frontier.graph_builder import FrontierGraphBuilder
@@ -37,12 +38,13 @@ from training_utils import (
 )
 
 
-def train_one_epoch(gsae, evidence_net, belief_updater,
+def train_one_epoch(gsae, evidence_net, belief_updater, frontier_proj,
                     optimizer, graph_cache, train_trajs,
                     batch_size, device, lambda_kl):
     gsae.train()
     evidence_net.train()
     belief_updater.train()
+    frontier_proj.train()
     builder = FrontierGraphBuilder()
 
     sum_loss = 0.0
@@ -70,6 +72,7 @@ def train_one_epoch(gsae, evidence_net, belief_updater,
 
             state = GraphState(g, seed_node=traj.seed_node)
             belief_updater.reset()
+            prev_action_emb = torch.zeros(128, device=device)
 
             step_losses = []
 
@@ -82,14 +85,22 @@ def train_one_epoch(gsae, evidence_net, belief_updater,
 
                 ev_out = evidence_net(gsae_out.v)
 
-                # 简单 Dirichlet 累积
-                belief_updater.update(ev_out.e.squeeze(0))
+                # b_prev from current alpha_accum
+                alpha_prev = belief_updater.alpha_accum.to(device)
+                b_prev = alpha_prev / alpha_prev.sum().clamp(min=1)
 
-                alpha_t = belief_updater.alpha  # (K,) 累积 Dirichlet 参数
+                belief_updater(
+                    b_prev.unsqueeze(0),
+                    ev_out.e,
+                    ev_out.u,
+                    prev_action_emb.unsqueeze(0),
+                )
+
+                alpha_t = belief_updater.alpha_accum  # (K,) 累积 Dirichlet 参数
                 S_t = alpha_t.sum()
 
                 L_t, mse_t, var_t, kl_t = edl_loss(
-                    alpha_t - 1,            # evidence
+                    alpha_t - 1,            # evidence (unused by fn, for API compat)
                     alpha_t.unsqueeze(0),    # (1, K)
                     S_t.unsqueeze(0),        # (1,)
                     y.unsqueeze(0),          # (1, K)
@@ -99,6 +110,14 @@ def train_one_epoch(gsae, evidence_net, belief_updater,
 
                 w_t = 2.0 * t / (B * (B + 1))
                 step_losses.append((w_t * L_t, w_t * mse_t, w_t * var_t, w_t * kl_t))
+
+                # 编码 teacher 节点为下一步动作嵌入（detach 避免跨步梯度）
+                try:
+                    idx = gsae_out.frontier_original_ids.index(teacher_node)
+                    emb_300 = gsae_out.frontier_embeds[idx:idx + 1]
+                    prev_action_emb = frontier_proj(emb_300).detach().squeeze(0)
+                except ValueError:
+                    break
 
                 reveal_node(state, teacher_node)
 
@@ -111,10 +130,12 @@ def train_one_epoch(gsae, evidence_net, belief_updater,
             kl_only = torch.stack([s[3] for s in step_losses])
             traj_loss = losses_only.sum()
 
+            # 逐轨迹 backward：B 步 GSAE forward 已在图中，
+            # 合并多条轨迹的图再 backward 内存过大（B×batch_size 次 GSAE forward）
             (traj_loss / len(batch_trajs)).backward()
 
             # 最终信念准确率
-            final_alpha = belief_updater.alpha.to(device)
+            final_alpha = belief_updater.alpha_accum.to(device)
             final_b = final_alpha / final_alpha.sum().clamp(min=1)
             sum_correct += int(final_b.argmax().item() == label)
             sum_loss += traj_loss.item()
@@ -200,16 +221,18 @@ def main():
         gsae.init_from_fclass(str(repo_root / args.fclass_init), device)
 
     evidence_net = EvidenceNetwork(hidden_dim=args.hidden_dim, k_evidence=37, dropout=args.dropout).to(device)
-    belief_updater = SimpleDirichletAccumulator(k_evidence=37).to(device)
+    belief_updater = LSTMBeliefUpdater(k_evidence=37, lstm_hidden=128, action_emb_dim=128).to(device)
+    frontier_proj = nn.Linear(args.hidden_dim, 128).to(device)
 
-    total_params = sum(p.numel() for m in [gsae, evidence_net, belief_updater]
+    total_params = sum(p.numel() for m in [gsae, evidence_net, belief_updater, frontier_proj]
                        for p in m.parameters())
     print(f"  Total params: {total_params:,}")
 
     optimizer = torch.optim.Adam(
         list(gsae.parameters()) +
         list(evidence_net.parameters()) +
-        list(belief_updater.parameters()),
+        list(belief_updater.parameters()) +
+        list(frontier_proj.parameters()),
         lr=args.lr,
     )
 
@@ -222,7 +245,8 @@ def main():
         ckpt = torch.load(str(resume_path), map_location=device, weights_only=False)
         gsae.load_state_dict(ckpt['gsae_state_dict'])
         evidence_net.load_state_dict(ckpt['evidence_state_dict'])
-        belief_updater.load_state_dict(ckpt.get('belief_updater_state_dict', {}))
+        belief_updater.load_state_dict(ckpt['belief_updater_state_dict'])
+        frontier_proj.load_state_dict(ckpt['frontier_proj_state_dict'])
         try:
             optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         except ValueError:
@@ -235,7 +259,7 @@ def main():
     for epoch in range(start_epoch, args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
         avg = train_one_epoch(
-            gsae, evidence_net, belief_updater,
+            gsae, evidence_net, belief_updater, frontier_proj,
             optimizer, graph_cache, all_trajs,
             args.batch_size, device, args.lambda_kl,
         )
@@ -256,6 +280,7 @@ def main():
             'gsae_state_dict': gsae.state_dict(),
             'evidence_state_dict': evidence_net.state_dict(),
             'belief_updater_state_dict': belief_updater.state_dict(),
+            'frontier_proj_state_dict': frontier_proj.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'training_log': training_log,
             'config': {

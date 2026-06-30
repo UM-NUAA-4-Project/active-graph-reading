@@ -1,104 +1,87 @@
-"""FinalClassifier: LSTM 证据序列 + 最终子图 → Dempster 融合分类。
-
-路径 A：LSTM 整合时序证据序列 [e_0, ..., e_B] → 信念
-路径 B：最终前沿子图 → GSAE → EvidenceNetwork → 信念
-Dempster 组合规则融合两条路径。
-"""
+"""FinalClassifier: 双路径 Dirichlet 融合 + 最终分类。"""
 
 from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 @dataclass
 class FinalOutput:
-    b_total: torch.Tensor   # (1, K) 融合后信念
-    u_total: torch.Tensor   # (1,)   融合后不确定度
-    y_hat: torch.Tensor     # (1,)   预测类别
-
-
-class EvidenceSequenceLSTM(nn.Module):
-    """LSTM 整合时序证据序列。
-
-    [e_0, e_1, ..., e_B] → LSTM → last_hidden → Linear → Softplus → e_lstm
-
-    Parameters
-    ----------
-    k_evidence : int  证据维度（类别数），默认 37
-    hidden : int      LSTM hidden size，默认 128
-    """
-
-    def __init__(self, k_evidence=37, hidden=128):
-        super().__init__()
-        self.k_evidence = k_evidence
-        self.hidden = hidden
-        self.lstm = nn.LSTM(k_evidence, hidden, batch_first=True)
-        self.head = nn.Linear(hidden, k_evidence)
-
-    def forward(self, e_seq: torch.Tensor):
-        """e_seq: (B+1, K) → evidence: (K,)"""
-        out, _ = self.lstm(e_seq.unsqueeze(0))   # (1, B+1, hidden)
-        last = out[:, -1, :]                       # (1, hidden)
-        return F.softplus(self.head(last)).squeeze(0)  # (K,)
+    b_total: torch.Tensor   # (*, K) 融合后信念
+    u_total: torch.Tensor   # (*,)   融合后不确定度
+    y_hat: torch.Tensor     # (*,)   预测类别
 
 
 class FinalClassifier(nn.Module):
-    """双路径 Dempster 融合分类器。
+    """双路径 Dirichlet 融合（Dempster 组合规则）。
 
-    路径 A：EvidenceSequenceLSTM 整合时序证据
-    路径 B：最终前沿子图 → GSAE → EvidenceNetwork
+    路径 A：LSTM 累积 → 意见 ω1 = (b_lstm, u_lstm)
+    路径 B：最终子图 → 意见 ω2 = (b_final, u_final)
 
-    Dempster 组合：
-      K = (1-u1)(1-u2) - b1·b2
+    Dempster 组合（解析，无参数）：
+      K = (1-u1)(1-u2) - b1·b2        （冲突质量）
       b_k = (b1_k·b2_k + b1_k·u2 + b2_k·u1) / (1-K)
-      u   = (u1·u2) / (1-K)
+      u   = (u1 · u2) / (1-K)
+
+    参考：TMC (Han et al., ICLR'21 / TPAMI'22)
     """
 
-    def __init__(self, k_evidence=37):
+    def __init__(self):
         super().__init__()
-        self.k_evidence = k_evidence
-        self.evidence_lstm = EvidenceSequenceLSTM(k_evidence)
 
-    def forward(self, evidence_sequence, o_B, gsae, evidence_net):
+    def forward(self, o_B, gsae, evidence_net, alpha_lstm=None):
         """双路径融合并分类。
 
         Parameters
         ----------
-        evidence_sequence : List[Tensor]  长度 B+1 的证据序列，每个 (K,)
-        o_B : FrontierSubgraph            最终前沿子图
-        gsae : GSAE                       GSAE 模块
-        evidence_net : EvidenceNetwork    证据头
+        o_B : FrontierSubgraph  最终子图
+        gsae : GSAE             GSAE 模块（共享参数）
+        evidence_net : EvidenceNetwork  证据头（共享参数）
+        alpha_lstm : Tensor or None  LSTM 累积的 Dirichlet 参数 (K,)
+                                      None 表示仅用路径 B
 
         Returns
         -------
         FinalOutput
         """
-        Kc = self.k_evidence
-
-        # 路径 A：LSTM over evidence sequence
-        e_seq = torch.stack(evidence_sequence)              # (B+1, K)
-        e_lstm = self.evidence_lstm(e_seq)                  # (K,)
-        alpha1 = 1.0 + e_lstm                               # (K,)
-        S1 = alpha1.sum()
-        b1 = (alpha1 - 1.0) / S1.clamp(min=1e-6)            # (K,)
-        u1 = Kc / S1.clamp(min=1e-6)                        # scalar
-
-        # 路径 B：最终子图证据
         gsae_out = gsae(o_B)
         ev_out = evidence_net(gsae_out.v)
-        b2 = ev_out.b.squeeze(0)                            # (K,)
-        u2 = ev_out.u                                       # scalar
 
-        # Dempster 组合
-        conflict = (1 - u1) * (1 - u2) - (b1 * b2).sum()
-        denom = 1.0 - conflict.clamp(max=0.999)
-        b_total = (b1 * b2 + b1 * u2 + b2 * u1) / denom    # (K,)
-        u_total = (u1 * u2) / denom                          # scalar
+        if alpha_lstm is not None:
+            Kc = alpha_lstm.shape[0]
 
-        b_total = b_total.unsqueeze(0)                       # (1, K)
-        u_total = u_total.unsqueeze(0)                       # (1,)
-        y_hat = b_total.argmax(dim=-1)                       # (1,)
+            # 路径 A：LSTM 意见
+            e_lstm = alpha_lstm - 1.0
+            S_lstm = alpha_lstm.sum()
+            b1 = e_lstm / S_lstm.clamp(min=1)
+            u1 = Kc / S_lstm.clamp(min=1)
+
+            # 路径 B：Final 意见
+            b2 = ev_out.b.squeeze(0)
+            u2 = ev_out.u
+
+            # Dempster 组合规则
+            K = (1 - u1) * (1 - u2) - (b1 * b2).sum()   # 冲突质量
+            denom = 1.0 - K.clamp(max=0.999)
+
+            b_total = (b1 * b2 + b1 * u2 + b2 * u1) / denom  # (K,)
+            u_total = (u1 * u2) / denom                       # scalar
+
+            # 重建 Dirichlet 参数（供需要 α 的下游使用）
+            S_total = Kc / u_total.clamp(min=1e-6)
+            e_total = b_total * S_total
+            alpha_total = e_total + 1.0
+
+            b_total = b_total.unsqueeze(0)                   # (1, K)
+            u_total = u_total.unsqueeze(0)                   # (1,)
+        else:
+            alpha_total = ev_out.alpha
+            S_total = alpha_total.sum(dim=-1, keepdim=True)
+            b_total = (alpha_total - 1.0) / S_total
+            u_total = (ev_out.u.unsqueeze(0) if ev_out.u.dim() == 0
+                       else ev_out.u)
+
+        y_hat = b_total.argmax(dim=-1)
 
         return FinalOutput(b_total=b_total, u_total=u_total, y_hat=y_hat)
