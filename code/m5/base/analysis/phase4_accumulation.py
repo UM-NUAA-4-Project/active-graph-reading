@@ -2,13 +2,16 @@
 
 追踪每一步揭示后的分类器输出，分析：
   1. 信息积累曲线（CE_t, R_t, top1_prob_t vs t/B）
-  2. 分类锁定点分布（首次正确后不再翻错的步数）
-  3. 预测翻转分析
-  4. per-class 分类质量（容易/中等/困难类识别）
+  2. ΔCE_t 信息增益递减分析
+  3. 分类锁定点分布（首次正确后不再翻错的步数）
+  4. 预测翻转分析
+  5. per-class 分类质量 + 混淆矩阵（37×37）
 
 输出：
   - raw_data/phase4_accumulation.json  原始逐步数据
   - figures/phase4_accumulation_curve.png  信息积累曲线
+  - figures/phase4_delta_ce.png  ΔCE_t 信息增益曲线
+  - figures/phase4_confusion_matrix.png  混淆矩阵
   - figures/phase4_lock_point.png  锁定点分布
   - figures/phase4_per_class.png  per-class 准确率
 """
@@ -70,6 +73,7 @@ def collect_per_step(
         reader.on_new_frontier(initial_frontier)
 
     steps_data = []
+    prev_ce = None
 
     for t in range(budget_abs):
         if state.is_frontier_empty:
@@ -96,6 +100,10 @@ def collect_per_step(
         ).item()
         r_t = math.tanh(1.0 - ce_t / LN_K)
 
+        # ΔCE_t = CE_{t-1} - CE_t（正=信息增益，负=信息损失）
+        delta_ce = prev_ce - ce_t if prev_ce is not None else 0.0
+        prev_ce = ce_t
+
         top1_prob, top1_label = probs.max(dim=1)
         top1_prob = top1_prob.item()
         top1_label = top1_label.item()
@@ -105,6 +113,7 @@ def collect_per_step(
         step = {
             'step': t + 1,
             'CE_t': ce_t,
+            'delta_CE_t': delta_ce,
             'R_t': r_t,
             'pred_correct_t': 1 if top1_label == label else 0,
             'top1_prob_t': top1_prob,
@@ -178,7 +187,7 @@ def interpolate_to_grid(steps_data: List[dict], n_points: int = 20) -> Dict[str,
     """将 steps_data 插值到均匀的 t/B 网格。"""
     if not steps_data:
         return {k: [0.0] * n_points for k in
-                ['CE', 'R', 'top1_prob', 'top1_top2_gap', 'pred_correct']}
+                ['CE', 'delta_CE', 'R', 'top1_prob', 'top1_top2_gap', 'pred_correct']}
 
     B = len(steps_data)
     t_frac = [(i + 1) / B for i in range(B)]
@@ -186,6 +195,7 @@ def interpolate_to_grid(steps_data: List[dict], n_points: int = 20) -> Dict[str,
     result = {}
     for key, extract in [
         ('CE', lambda d: d['CE_t']),
+        ('delta_CE', lambda d: d['delta_CE_t']),
         ('R', lambda d: d['R_t']),
         ('top1_prob', lambda d: d['top1_prob_t']),
         ('top1_top2_gap', lambda d: d['top1_top2_gap_t']),
@@ -389,6 +399,107 @@ def plot_per_class(
     print(f"Per-class plot saved to {output_path}")
 
 
+def plot_delta_ce_curve(
+    grid_data: Dict[str, np.ndarray],
+    grid_std: Dict[str, np.ndarray],
+    output_path: str,
+):
+    """ΔCE_t 信息增益递减曲线。"""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    matplotlib.rcParams['font.family'] = 'Microsoft YaHei'
+
+    n_points = len(grid_data['delta_CE'])
+    t_frac = np.linspace(1.0 / n_points, 1.0, n_points)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # ΔCE_t 均值曲线
+    ax = axes[0]
+    ax.plot(t_frac, grid_data['delta_CE'], color='#4C72B0', linewidth=2)
+    ax.fill_between(t_frac,
+                    grid_data['delta_CE'] - grid_std['delta_CE'],
+                    grid_data['delta_CE'] + grid_std['delta_CE'],
+                    alpha=0.2, color='#4C72B0')
+    ax.axhline(y=0, color='gray', linestyle=':', alpha=0.5)
+    ax.set_xlabel('t / B', fontsize=11)
+    ax.set_ylabel('ΔCE_t = CE_{t-1} - CE_t', fontsize=11)
+    ax.set_title('Per-Step Information Gain vs Budget Fraction', fontsize=12)
+    ax.grid(alpha=0.3)
+
+    # 累积信息增益
+    ax = axes[1]
+    cumsum = np.cumsum(grid_data['delta_CE'])
+    cumsum_std = np.sqrt(np.cumsum(grid_std['delta_CE'] ** 2))
+    ax.plot(t_frac, cumsum, color='#55A868', linewidth=2)
+    ax.fill_between(t_frac,
+                    cumsum - cumsum_std,
+                    cumsum + cumsum_std,
+                    alpha=0.2, color='#55A868')
+    ax.set_xlabel('t / B', fontsize=11)
+    ax.set_ylabel('Cumulative ΣΔCE_t', fontsize=11)
+    ax.set_title('Cumulative Information Gain', fontsize=12)
+    ax.grid(alpha=0.3)
+
+    fig.suptitle('Phase 4: Information Gain Decay Analysis', fontsize=14)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"Delta-CE curve saved to {output_path}")
+
+
+def plot_confusion_matrix(
+    cm: np.ndarray,
+    class_list: List[int],
+    output_path: str,
+):
+    """混淆矩阵热力图（37×37）。"""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    matplotlib.rcParams['font.family'] = 'Microsoft YaHei'
+
+    n_classes = len(class_list)
+    if n_classes == 0:
+        return
+
+    # 归一化（每行除以其总和）
+    cm_norm = cm.astype('float') / cm.sum(axis=1, keepdims=True).clip(min=1)
+
+    fig, axes = plt.subplots(1, 2, figsize=(20, 9))
+
+    # 原始计数
+    ax = axes[0]
+    im = ax.imshow(cm, cmap='Blues', aspect='auto')
+    ax.set_xlabel('Predicted Class', fontsize=11)
+    ax.set_ylabel('True Class', fontsize=11)
+    ax.set_title('Confusion Matrix (count)', fontsize=12)
+    plt.colorbar(im, ax=ax, shrink=0.8)
+
+    # 归一化
+    ax = axes[1]
+    im2 = ax.imshow(cm_norm, cmap='YlOrRd', aspect='auto', vmin=0, vmax=1)
+    ax.set_xlabel('Predicted Class', fontsize=11)
+    ax.set_ylabel('True Class', fontsize=11)
+    ax.set_title('Confusion Matrix (row-normalized)', fontsize=12)
+    plt.colorbar(im2, ax=ax, shrink=0.8)
+
+    # 标注容易混淆的类对（off-diagonal > 0.3）
+    for i in range(n_classes):
+        for j in range(n_classes):
+            if i != j and cm_norm[i, j] > 0.3:
+                axes[1].text(j, i, f'{cm_norm[i, j]:.2f}',
+                             ha='center', va='center', fontsize=5,
+                             color='white' if cm_norm[i, j] > 0.6 else 'black')
+
+    fig.suptitle('Phase 4: Confusion Matrix (37 Classes)', fontsize=14)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"Confusion matrix saved to {output_path}")
+
+
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
@@ -470,26 +581,43 @@ def main():
     all_budget_abs = []
     all_flip_stats = []
     per_class_results = defaultdict(lambda: {'correct': [], 'total': 0})
+    confusion_pairs = []    # (true_label, pred_label) at final step
+    all_graph_props = []    # graph-level properties
 
     for i, ogb_idx in enumerate(tqdm(val_indices, desc='Phase 4 accumulation')):
         g_raw = dgl.add_self_loop(graphs[i])
         label = int(label_dict['labels'][ogb_idx].item())
         n_nodes = g_raw.num_nodes()
-        budget_abs = max(1, int(args.budget * n_nodes))
-
+        n_edges = g_raw.num_edges()
+        density = 2.0 * n_edges / (n_nodes * (n_nodes - 1)) if n_nodes > 1 else 0.0
         indeg = g_raw.in_degrees().float()
         outdeg = g_raw.out_degrees().float()
         total_deg = indeg + outdeg
+        avg_degree = float(total_deg.mean().item())
         best_seed = int(total_deg.argmax().item())
+        budget_abs = max(1, int(args.budget * n_nodes))
 
         steps_data = collect_per_step(
             reader, g_raw, best_seed, label, budget_abs,
             device, classifier, builder,
         )
 
+        # graph properties
+        all_graph_props.append({
+            'graph_idx': ogb_idx,
+            'label': label,
+            'n_nodes': n_nodes,
+            'n_edges': n_edges,
+            'density': density,
+            'avg_degree': avg_degree,
+        })
+
         all_steps.append({
             'graph_idx': ogb_idx,
             'n_nodes': n_nodes,
+            'n_edges': n_edges,
+            'density': density,
+            'avg_degree': avg_degree,
             'label': label,
             'budget_abs': budget_abs,
             'budget_ratio': args.budget,
@@ -510,11 +638,14 @@ def main():
         flips = count_flips(steps_data)
         all_flip_stats.append(flips)
 
-        # per-class
+        # per-class & confusion matrix
         if steps_data:
-            final_correct = steps_data[-1]['pred_correct_t']
+            final = steps_data[-1]
+            final_correct = final['pred_correct_t']
+            final_pred = final['pred_label_t']
             per_class_results[label]['correct'].append(final_correct)
             per_class_results[label]['total'] += 1
+            confusion_pairs.append((label, final_pred))
 
         gc.collect()
         if device.type == 'cuda':
@@ -559,6 +690,37 @@ def main():
             final_corrects.append(steps[-1]['pred_correct_t'])
     final_acc = float(np.mean(final_corrects)) if final_corrects else 0.0
 
+    # 混淆矩阵
+    cm = np.zeros((K, K), dtype=int)
+    for true_lbl, pred_lbl in confusion_pairs:
+        if 0 <= true_lbl < K and 0 <= pred_lbl < K:
+            cm[true_lbl, pred_lbl] += 1
+
+    # ΔCE_t 分阶段统计
+    all_delta_ce_per_step = [[] for _ in range(3)]  # early / mid / late
+    for gdata in all_steps:
+        steps = gdata['steps']
+        B = len(steps)
+        if B == 0:
+            continue
+        for i, s in enumerate(steps):
+            phase = min(2, int(i / max(1, B / 3)))
+            all_delta_ce_per_step[phase].append(s['delta_CE_t'])
+    delta_ce_phase_means = [float(np.mean(v)) if v else 0.0 for v in all_delta_ce_per_step]
+
+    # 图属性 vs 分类结果（用于困难类分析）
+    graph_props_by_result = {'correct': [], 'wrong': []}
+    for gdata in all_steps:
+        steps = gdata['steps']
+        outcome = 'correct' if (steps and steps[-1]['pred_correct_t'] == 1) else 'wrong'
+        graph_props_by_result[outcome].append({
+            'n_nodes': gdata['n_nodes'],
+            'n_edges': gdata['n_edges'],
+            'density': gdata['density'],
+            'avg_degree': gdata['avg_degree'],
+            'label': gdata['label'],
+        })
+
     # ---- 6. 输出 JSON ----
     output = {
         'summary': {
@@ -577,11 +739,24 @@ def main():
                 'flip_to_wrong': total_to_wrong,
                 'avg_flips_per_graph': total_flips / n_graphs if n_graphs > 0 else 0,
             },
+            'delta_ce': {
+                'phase_means': {
+                    'early': delta_ce_phase_means[0],
+                    'mid': delta_ce_phase_means[1],
+                    'late': delta_ce_phase_means[2],
+                },
+            },
+            'confusion_matrix': cm.tolist(),
             'grid_curves': {k: v.tolist() for k, v in grid_mean.items()},
             'grid_stds': {k: v.tolist() for k, v in grid_std.items()},
             'per_class': per_class_stats,
+            'graph_props_by_result': {
+                'correct_count': len(graph_props_by_result['correct']),
+                'wrong_count': len(graph_props_by_result['wrong']),
+            },
         },
         'per_graph': all_steps,
+        'confusion_pairs': [[int(t), int(p)] for t, p in confusion_pairs],
         'config': {
             'checkpoint': str(repo_root / args.checkpoint),
             'classifier': str(repo_root / args.classifier),
@@ -609,10 +784,26 @@ def main():
     mid = sum(1 for s in per_class_stats.values() if 0.4 <= s['accuracy_mean'] < 0.8)
     hard = sum(1 for s in per_class_stats.values() if s['accuracy_mean'] < 0.4)
     print(f"  Per-class: easy={easy}, medium={mid}, hard={hard} (of {len(per_class_stats)} classes)")
+    print(f"  ΔCE phase means: early={delta_ce_phase_means[0]:.4f}, "
+          f"mid={delta_ce_phase_means[1]:.4f}, late={delta_ce_phase_means[2]:.4f}")
+
+    # 混淆矩阵 top-5 误分类对
+    off_diag = []
+    for i in range(K):
+        for j in range(K):
+            if i != j and cm[i, j] > 0:
+                off_diag.append((cm[i, j], i, j))
+    off_diag.sort(reverse=True)
+    print(f"  Top-5 confused class pairs (true→pred):")
+    for count, ti, pj in off_diag[:5]:
+        print(f"    class {ti} → class {pj}: {count} times")
 
     # ---- 7. 可视化 ----
     plot_accumulation_curve(grid_mean, grid_std, str(fig_dir / 'phase4_accumulation_curve.png'))
+    plot_delta_ce_curve(grid_mean, grid_std, str(fig_dir / 'phase4_delta_ce.png'))
     plot_lock_point_histogram(all_lock_points, all_budget_abs, str(fig_dir / 'phase4_lock_point.png'))
+    if confusion_pairs:
+        plot_confusion_matrix(cm, sorted(per_class_results.keys()), str(fig_dir / 'phase4_confusion_matrix.png'))
     if per_class_stats:
         plot_per_class(per_class_stats, str(fig_dir / 'phase4_per_class.png'))
 
