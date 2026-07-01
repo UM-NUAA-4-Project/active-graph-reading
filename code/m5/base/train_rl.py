@@ -3,6 +3,8 @@
 REINFORCE: -R · Σ w_t·log π_t(a_t) + β · CE(classifier_logits, y)
   w_t = softmax(2t/B)          逐步加权，后期步权重更大，跨 budget 一致
   R = tanh(1 - CE/ln(K))      连续 reward ∈ (-1, 1)，0=随机水平
+
+python code/m5/base/train_rl.py --root /mnt/data --resume-checkpoint m5/base/rl/checkpoint_epoch5.pt
 """
 
 import argparse

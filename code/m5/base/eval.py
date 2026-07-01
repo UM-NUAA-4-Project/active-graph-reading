@@ -128,13 +128,22 @@ def evaluate_strategy_split(
     classifier: GraphClassifier,
     device: torch.device,
     desc: str = "Evaluating",
-) -> Dict[str, Dict[float, List[float]]]:
+):
+    """返回 (aggregated_results, per_class_results)。
+
+    aggregated_results: seed_type -> budget -> [0/1, ...]
+    per_class_results: seed_type -> class_label -> budget -> [0/1, ...]
+    """
     builder = SubgraphBuilder()
     budgets_rel_sorted = sorted(BUDGETS_REL)
 
     results: Dict[str, Dict[float, List[float]]] = {
         'best': defaultdict(list),
         'worst': defaultdict(list),
+    }
+    per_class: Dict[str, Dict[int, Dict[float, List[float]]]] = {
+        'best': defaultdict(lambda: defaultdict(list)),
+        'worst': defaultdict(lambda: defaultdict(list)),
     }
 
     for i, ogb_idx in enumerate(tqdm(indices, desc=desc)):
@@ -152,6 +161,7 @@ def evaluate_strategy_split(
         )
         for j, rel_b in enumerate(budgets_rel_sorted):
             results['best'][rel_b].append(best_rec[j])
+            per_class['best'][label][rel_b].append(best_rec[j])
 
         # worst seed
         worst_rec = run_one_seed(
@@ -160,11 +170,17 @@ def evaluate_strategy_split(
         )
         for j, rel_b in enumerate(budgets_rel_sorted):
             results['worst'][rel_b].append(worst_rec[j])
+            per_class['worst'][label][rel_b].append(worst_rec[j])
 
-    return {
+    aggregated = {
         'best': dict(results['best']),
         'worst': dict(results['worst']),
     }
+    per_class_clean = {
+        'best': {cls: dict(budgets) for cls, budgets in per_class['best'].items()},
+        'worst': {cls: dict(budgets) for cls, budgets in per_class['worst'].items()},
+    }
+    return aggregated, per_class_clean
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +206,79 @@ def compute_stats(
                     'n': len(accs),
                 }
     return stats
+
+
+def compute_per_class_stats(
+    per_class_results: Dict[str, Dict[str, Dict[int, Dict[float, List[float]]]]],
+) -> Dict[str, Dict[str, Dict[str, Dict[str, float]]]]:
+    """strategy -> seed_type -> class_label -> budget_key -> {mean, std, n}"""
+    stats = {}
+    for strategy, seed_dict in per_class_results.items():
+        stats[strategy] = {}
+        for seed_type, class_dict in seed_dict.items():
+            stats[strategy][seed_type] = {}
+            for cls, budget_dict in class_dict.items():
+                cls_str = str(cls)
+                stats[strategy][seed_type][cls_str] = {}
+                for rel_b in sorted(BUDGETS_REL):
+                    accs = budget_dict.get(rel_b, [])
+                    stats[strategy][seed_type][cls_str][f'{rel_b:.2f}'] = {
+                        'mean': float(np.mean(accs)) if accs else 0.0,
+                        'std': float(np.std(accs)) if accs else 0.0,
+                        'n': len(accs),
+                    }
+    return stats
+
+
+def plot_per_class(
+    per_class_stats: Dict[str, Dict[str, Dict[str, Dict[str, float]]]],
+    split_name: str,
+    output_dir: Path,
+):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
+    budgets = sorted(BUDGETS_REL)
+    budget_labels = [f'{b:.0%}' for b in budgets]
+
+    for strategy, seed_dict in per_class_stats.items():
+        for seed_type, class_dict in seed_dict.items():
+            if not class_dict:
+                continue
+            classes = sorted(class_dict.keys(), key=lambda x: int(x))
+            n_classes = len(classes)
+            fig, ax = plt.subplots(figsize=(max(14, n_classes * 0.35), 6))
+
+            x = np.arange(n_classes)
+            n_budgets = len(budgets)
+            width = 0.8 / n_budgets
+            offsets = np.linspace(-0.4 + width / 2, 0.4 - width / 2, n_budgets)
+            colors = ['#4C72B0', '#55A868', '#C44E52']
+
+            for bi, rel_b in enumerate(budgets):
+                b_key = f'{rel_b:.2f}'
+                means = [class_dict[cls][b_key]['mean'] for cls in classes]
+                stds = [class_dict[cls][b_key]['std'] for cls in classes]
+                ax.bar(
+                    x + offsets[bi], means, width, yerr=stds,
+                    label=f'budget={rel_b:.0%}', capsize=2,
+                    color=colors[bi % len(colors)],
+                )
+
+            ax.set_title(f'{split_name} — {strategy} / {seed_type} seed (per-class)')
+            ax.set_xlabel('Class')
+            ax.set_ylabel('Accuracy')
+            ax.set_xticks(x)
+            ax.set_xticklabels(classes, rotation=90, fontsize=5)
+            ax.legend(fontsize=7)
+            ax.grid(axis='y', alpha=0.3)
+
+            fig.tight_layout()
+            fname = f'per_class_{split_name}_{strategy}_{seed_type}.png'
+            fig.savefig(output_dir / fname, dpi=150)
+            plt.close(fig)
+            print(f"Per-class plot saved to {output_dir / fname}")
 
 
 def plot_results(
@@ -342,10 +431,12 @@ def main():
 
     # ---- 3. 按 split + strategy 分别评测（逐 split 加载图，释放训练集） ----
     all_stats: Dict[str, Dict] = {}
+    all_per_class: Dict[str, Dict] = {}
     processed_path = str(Path(args.root) / 'ogbg_ppa' / 'processed' / 'dgl_data_processed')
 
     for split_name in ('valid', 'test'):
         all_stats[split_name] = {}
+        all_per_class[split_name] = {}
 
         # 从 CSV 读 split 索引（不加载图数据）
         split_path = Path(args.root) / 'ogbg_ppa' / 'split' / 'species' / f'{split_name}.csv.gz'
@@ -370,15 +461,16 @@ def main():
                 random.seed(args.seed)
                 reader = FixedStrategyReader(strategy_name)
 
-            split_results = evaluate_strategy_split(
+            aggregated, per_class = evaluate_strategy_split(
                 reader, strategy_name, graphs, label_dict['labels'], split_indices,
                 classifier, device,
                 desc=f"  {split_name.capitalize()} / {strategy_name}",
             )
-            all_stats[split_name][strategy_name] = split_results
+            all_stats[split_name][strategy_name] = aggregated
+            all_per_class[split_name][strategy_name] = per_class
 
-            # 即时输出 stats
-            stats = compute_stats({strategy_name: split_results})
+            # 即时输出 overall stats
+            stats = compute_stats({strategy_name: aggregated})
             for kind in ('best', 'worst'):
                 for b_key, s in stats[strategy_name][kind].items():
                     print(f"    {kind:5s} budget={b_key}: "
@@ -396,10 +488,17 @@ def main():
     for split_name in ('valid', 'test'):
         final_stats[split_name] = compute_stats(all_stats[split_name])
 
+    # per-class stats
+    final_per_class_stats = {}
+    for split_name in ('valid', 'test'):
+        final_per_class_stats[split_name] = compute_per_class_stats(all_per_class[split_name])
+
     # ---- 5. 输出 JSON ----
     output = {
         'valid': final_stats.get('valid', {}),
         'test': final_stats.get('test', {}),
+        'per_class_valid': final_per_class_stats.get('valid', {}),
+        'per_class_test': final_per_class_stats.get('test', {}),
         'config': {
             'checkpoint': str(repo_root / args.checkpoint),
             'classifier': str(repo_root / args.classifier),
@@ -429,6 +528,11 @@ def main():
         ref_valid=ref_valid,
         ref_test=ref_test,
     )
+
+    # per-class plots
+    for split_name in ('valid', 'test'):
+        if final_per_class_stats.get(split_name):
+            plot_per_class(final_per_class_stats[split_name], split_name, output_dir)
 
 
 if __name__ == '__main__':
