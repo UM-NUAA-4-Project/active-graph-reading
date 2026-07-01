@@ -10,8 +10,8 @@ build/
 # Project-level config (user-specific, should not be committed)
 CLAUDE.md
 ../.claude/
-.claude/settings.local.json
-
+.claude/
+.superpowers/
 # PyTorch model/trajectory files
 *.pt
 
