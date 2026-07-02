@@ -24,7 +24,7 @@ import dgl
 from tqdm import tqdm
 
 _script_dir = Path(__file__).resolve().parent
-_m5_dir = _script_dir.parent
+_m5_dir = _script_dir.parent.parent
 _repo_root = _m5_dir.parent
 sys.path.insert(0, str(_repo_root))
 sys.path.insert(0, str(_m5_dir))
