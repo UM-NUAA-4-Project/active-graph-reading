@@ -1,11 +1,15 @@
-"""Reader 效果验证脚本：在验证集和测试集上评测 LearnableReader vs Random/BFS。
+"""Phase 1: 泛化验证 — val/test 全量评测。
 
-- 按 split 逐次加载，只用 dgl.load_graphs 加载需要的图（不加载训练集）
-- 每张图给所有节点按 degree 打分，选最高分节点作 best seed、最低分作 worst seed
-- 分别统计 best-seed 和 worst-seed 的准确率
-- 对比 LearnableReader、Random、BFS 三种策略
+评测 LearnableReader vs Random/BFS，输出 JSON 日志和可视化图像。
 
-输出 JSON 日志和可视化图像。
+输出文件（按策略类型分开）：
+  - eval_fixed.json          random + bfs（checkpoint 无关，可复用）
+  - eval_learnable.json      learnable（checkpoint 相关）
+
+用法：
+  python phase1_eval.py                                          # 默认三种策略
+  python phase1_eval.py --skip-fixed                             # 仅 learnable
+  python phase1_eval.py --checkpoint m5/base/rl/checkpoint_epoch7.pt  # 指定 checkpoint
 """
 
 import argparse
@@ -15,7 +19,7 @@ import random
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import pandas as pd
@@ -64,7 +68,6 @@ def pick_seeds_by_degree(g: dgl.DGLGraph) -> Tuple[int, int]:
     indeg = g.in_degrees().float()
     outdeg = g.out_degrees().float()
     total_deg = indeg + outdeg
-
     best_seed = int(total_deg.argmax().item())
     worst_seed = int(total_deg.argmin().item())
     return best_seed, worst_seed
@@ -129,11 +132,6 @@ def evaluate_strategy_split(
     device: torch.device,
     desc: str = "Evaluating",
 ):
-    """返回 (aggregated_results, per_class_results)。
-
-    aggregated_results: seed_type -> budget -> [0/1, ...]
-    per_class_results: seed_type -> class_label -> budget -> [0/1, ...]
-    """
     builder = SubgraphBuilder()
     budgets_rel_sorted = sorted(BUDGETS_REL)
 
@@ -189,10 +187,10 @@ def evaluate_strategy_split(
 
 def compute_stats(
     split_results: Dict[str, Dict[str, Dict[float, List[float]]]],
+    strategies: List[str],
 ) -> Dict[str, Dict[str, Dict[str, float]]]:
-    """strategy -> seed_type -> budget_key -> {mean, std, n}"""
     stats = {}
-    for strategy in ALL_STRATEGIES:
+    for strategy in strategies:
         if strategy not in split_results:
             continue
         stats[strategy] = {}
@@ -211,7 +209,6 @@ def compute_stats(
 def compute_per_class_stats(
     per_class_results: Dict[str, Dict[str, Dict[int, Dict[float, List[float]]]]],
 ) -> Dict[str, Dict[str, Dict[str, Dict[str, float]]]]:
-    """strategy -> seed_type -> class_label -> budget_key -> {mean, std, n}"""
     stats = {}
     for strategy, seed_dict in per_class_results.items():
         stats[strategy] = {}
@@ -292,12 +289,18 @@ def plot_results(
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
 
+    # 聚合所有出现的策略
+    all_strats = set()
+    for s in (valid_stats, test_stats):
+        all_strats.update(s.keys())
+    strategies_to_plot = [s for s in ALL_STRATEGIES if s in all_strats]
+
     budgets = sorted(BUDGETS_REL)
     budget_labels = [f'{b:.0%}' for b in budgets]
     x = np.arange(len(budgets))
-    n_strategies = len(ALL_STRATEGIES)
-    width = 0.8 / n_strategies
-    offsets = np.linspace(-0.4 + width / 2, 0.4 - width / 2, n_strategies)
+    n_strategies = len(strategies_to_plot)
+    width = 0.8 / n_strategies if n_strategies > 0 else 0.8
+    offsets = np.linspace(-0.4 + width / 2, 0.4 - width / 2, n_strategies) if n_strategies > 0 else [0]
 
     fig, axes = plt.subplots(2, 2, figsize=(16, 12), sharey='row')
     seed_types = ['best', 'worst']
@@ -308,13 +311,13 @@ def plot_results(
             ax = axes[row][col]
             stats = valid_stats if split_name == 'valid' else test_stats
 
-            for si, strategy in enumerate(ALL_STRATEGIES):
+            for si, strategy in enumerate(strategies_to_plot):
                 if strategy not in stats:
                     continue
                 seed_stats = stats[strategy].get(seed_type, {})
-                means = [seed_stats[f'{b:.2f}']['mean'] for b in budgets]
-                stds = [seed_stats[f'{b:.2f}']['std'] for b in budgets]
-                color = STRATEGY_COLORS[strategy]
+                means = [seed_stats.get(f'{b:.2f}', {}).get('mean', 0.0) for b in budgets]
+                stds = [seed_stats.get(f'{b:.2f}', {}).get('std', 0.0) for b in budgets]
+                color = STRATEGY_COLORS.get(strategy, '#999999')
                 label = strategy if split_name == 'valid' else None
 
                 bars = ax.bar(
@@ -353,12 +356,25 @@ def plot_results(
 
 
 # ---------------------------------------------------------------------------
+# load cached fixed-strategy results
+# ---------------------------------------------------------------------------
+
+def load_fixed_results(output_dir: Path) -> Optional[Dict]:
+    """加载已有的 fixed 策略结果（如果存在）。"""
+    fixed_path = output_dir / 'eval_fixed.json'
+    if fixed_path.exists():
+        with open(fixed_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Evaluate LearnableReader vs Random/BFS on valid/test sets')
+        description='Phase 1: Evaluate LearnableReader vs Random/BFS on valid/test sets')
     parser.add_argument('--checkpoint', default='m5/base/checkpoint/best_reader.pt')
     parser.add_argument('--classifier', default='m3/best_model_ft.pt')
     parser.add_argument('--root', default=r'D:\ogb-master\dataset')
@@ -367,6 +383,8 @@ def main():
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='Limit graphs per split (0 = all)')
     parser.add_argument('--dropout', type=float, default=0.1)
+    parser.add_argument('--skip-fixed', action='store_true',
+                        help='Skip random/bfs evaluation, only run learnable')
     parser.add_argument('--strategies', nargs='+',
                         default=['random', 'bfs', 'learnable'],
                         help='Strategies to evaluate (default: random bfs learnable)')
@@ -386,7 +404,20 @@ def main():
     output_dir = Path(args.output_dir) if args.output_dir else _m5_dir / 'base' / 'analysis' / 'eval_results'
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    strategies_to_run = [s for s in args.strategies if s in ALL_STRATEGIES]
+    # 确定要跑的策略
+    if args.skip_fixed:
+        strategies_to_run = ['learnable']
+    else:
+        strategies_to_run = [s for s in args.strategies if s in ALL_STRATEGIES]
+
+    fixed_strategies_to_run = [s for s in strategies_to_run if s in FIXED_STRATEGIES]
+    run_learnable = 'learnable' in strategies_to_run
+
+    print(f"Strategies to run: {strategies_to_run}")
+    if fixed_strategies_to_run:
+        print(f"  Fixed: {fixed_strategies_to_run}")
+    if run_learnable:
+        print(f"  Learnable: yes (checkpoint={args.checkpoint})")
 
     # ---- 1. 加载 classifier（全局复用） ----
     print("\n=== Loading classifier ===")
@@ -401,7 +432,7 @@ def main():
     print(f"  val_acc={ckpt.get('val_acc', 'N/A')}")
 
     ref_valid = args.ref_valid if args.ref_valid is not None else ckpt.get('val_acc', None)
-    ref_test = args.ref_test  # not in checkpoint, user must provide
+    ref_test = args.ref_test
     if ref_valid is not None or ref_test is not None:
         def _fmt(v):
             if v is None:
@@ -412,7 +443,7 @@ def main():
     # ---- 2. 加载 learnable reader（如果需要） ----
     learnable_reader = None
     hidden_dim, n_layers = None, None
-    if 'learnable' in strategies_to_run:
+    if run_learnable:
         print("\n=== Loading learnable reader ===")
         reader_ckpt = torch.load(str(repo_root / args.checkpoint),
                                  map_location='cpu', weights_only=False)
@@ -429,7 +460,14 @@ def main():
         learnable_reader.eval()
         print(f"  Params: {sum(p.numel() for p in learnable_reader.parameters()):,}")
 
-    # ---- 3. 按 split + strategy 分别评测（逐 split 加载图，释放训练集） ----
+    # ---- 3. 加载已有的 fixed 结果（如果 skip-fixed 且有缓存） ----
+    cached_fixed = None
+    if args.skip_fixed or not fixed_strategies_to_run:
+        cached_fixed = load_fixed_results(output_dir)
+        if cached_fixed:
+            print(f"\n=== Loaded cached fixed results from eval_fixed.json ===")
+
+    # ---- 4. 按 split + strategy 分别评测 ----
     all_stats: Dict[str, Dict] = {}
     all_per_class: Dict[str, Dict] = {}
     processed_path = str(Path(args.root) / 'ogbg_ppa' / 'processed' / 'dgl_data_processed')
@@ -438,14 +476,13 @@ def main():
         all_stats[split_name] = {}
         all_per_class[split_name] = {}
 
-        # 从 CSV 读 split 索引（不加载图数据）
+        # 从 CSV 读 split 索引
         split_path = Path(args.root) / 'ogbg_ppa' / 'split' / 'species' / f'{split_name}.csv.gz'
         split_indices = pd.read_csv(split_path, compression='gzip', header=None).values.flatten().tolist()
 
         if args.max_graphs > 0:
             split_indices = split_indices[:args.max_graphs]
 
-        # 仅加载当前 split 的图
         print(f"\n{'='*60}")
         print(f"=== Loading {split_name} split ({len(split_indices)} graphs) ===")
         graphs, label_dict = dgl.load_graphs(processed_path, idx_list=split_indices)
@@ -470,7 +507,7 @@ def main():
             all_per_class[split_name][strategy_name] = per_class
 
             # 即时输出 overall stats
-            stats = compute_stats({strategy_name: aggregated})
+            stats = compute_stats({strategy_name: aggregated}, [strategy_name])
             for kind in ('best', 'worst'):
                 for b_key, s in stats[strategy_name][kind].items():
                     print(f"    {kind:5s} budget={b_key}: "
@@ -480,59 +517,119 @@ def main():
             if device.type == 'cuda':
                 torch.cuda.empty_cache()
 
-        # 释放当前 split 的图
         del graphs
 
-    # ---- 4. 组装全局 stats ----
+    # ---- 5. 组装 stats ----
     final_stats = {}
     for split_name in ('valid', 'test'):
-        final_stats[split_name] = compute_stats(all_stats[split_name])
+        final_stats[split_name] = compute_stats(all_stats[split_name], strategies_to_run)
 
-    # per-class stats
     final_per_class_stats = {}
     for split_name in ('valid', 'test'):
         final_per_class_stats[split_name] = compute_per_class_stats(all_per_class[split_name])
 
-    # ---- 5. 输出 JSON ----
-    output = {
-        'valid': final_stats.get('valid', {}),
-        'test': final_stats.get('test', {}),
-        'per_class_valid': final_per_class_stats.get('valid', {}),
-        'per_class_test': final_per_class_stats.get('test', {}),
-        'config': {
-            'checkpoint': str(repo_root / args.checkpoint),
-            'classifier': str(repo_root / args.classifier),
-            'hidden_dim': hidden_dim,
-            'n_layers': n_layers,
-            'strategies': strategies_to_run,
-            'seed_method': 'max-degree (best) / min-degree (worst)',
-            'budgets': BUDGETS_REL,
-            'full_graph_ref': {
-                'valid': ref_valid,
-                'test': ref_test,
-            },
+    # 合并 cached_fixed 到 stats 中供绘图用
+    if cached_fixed:
+        for split_name in ('valid', 'test'):
+            if split_name in cached_fixed:
+                for strategy in FIXED_STRATEGIES:
+                    if strategy in cached_fixed[split_name]:
+                        final_stats[split_name][strategy] = cached_fixed[split_name][strategy]
+    merged_final_stats = final_stats
+
+    # ---- 6. 输出 JSON（按策略类型分开） ----
+    base_config = {
+        'classifier': str(repo_root / args.classifier),
+        'budgets': BUDGETS_REL,
+        'seed_method': 'max-degree (best) / min-degree (worst)',
+        'full_graph_ref': {
+            'valid': ref_valid,
+            'test': ref_test,
         },
     }
 
-    json_path = output_dir / 'eval_results.json'
-    with open(json_path, 'w', encoding='utf-8') as f:
-        json.dump(output, f, indent=2, ensure_ascii=False)
-    print(f"\nJSON saved to {json_path}")
+    # 6a. Fixed 策略 JSON（random + bfs）
+    if fixed_strategies_to_run:
+        fixed_output = {}
+        fixed_per_class = {}
+        for split_name in ('valid', 'test'):
+            fixed_output[split_name] = {
+                s: final_stats[split_name].get(s, {})
+                for s in FIXED_STRATEGIES if s in final_stats[split_name]
+            }
+            if split_name in final_per_class_stats:
+                fixed_per_class[split_name] = {
+                    s: final_per_class_stats[split_name].get(s, {})
+                    for s in FIXED_STRATEGIES if s in final_per_class_stats[split_name]
+                }
 
-    # ---- 6. 可视化 ----
+        fixed_json = {
+            **fixed_output,
+            'per_class_valid': fixed_per_class.get('valid', {}),
+            'per_class_test': fixed_per_class.get('test', {}),
+            'config': {
+                **base_config,
+                'strategies': FIXED_STRATEGIES,
+                'seed': args.seed,
+            },
+        }
+        fixed_path = output_dir / 'eval_fixed.json'
+        with open(fixed_path, 'w', encoding='utf-8') as f:
+            json.dump(fixed_json, f, indent=2, ensure_ascii=False)
+        print(f"\nFixed-strategy JSON saved to {fixed_path}")
+
+    # 6b. Learnable JSON
+    if run_learnable:
+        learnable_output = {}
+        learnable_per_class = {}
+        for split_name in ('valid', 'test'):
+            learnable_output[split_name] = {
+                'learnable': final_stats[split_name].get('learnable', {})
+            }
+            if split_name in final_per_class_stats:
+                learnable_per_class[split_name] = {
+                    'learnable': final_per_class_stats[split_name].get('learnable', {})
+                }
+
+        learnable_json = {
+            **learnable_output,
+            'per_class_valid': learnable_per_class.get('valid', {}),
+            'per_class_test': learnable_per_class.get('test', {}),
+            'config': {
+                **base_config,
+                'checkpoint': str(repo_root / args.checkpoint),
+                'hidden_dim': hidden_dim,
+                'n_layers': n_layers,
+                'strategies': ['learnable'],
+            },
+        }
+        learnable_path = output_dir / 'eval_learnable.json'
+        with open(learnable_path, 'w', encoding='utf-8') as f:
+            json.dump(learnable_json, f, indent=2, ensure_ascii=False)
+        print(f"Learnable JSON saved to {learnable_path}")
+
+    # ---- 7. 可视化（合并 fixed + learnable） ----
     plot_path = output_dir / 'eval_plot.png'
     plot_results(
-        final_stats.get('valid', {}),
-        final_stats.get('test', {}),
+        merged_final_stats.get('valid', {}),
+        merged_final_stats.get('test', {}),
         str(plot_path),
         ref_valid=ref_valid,
         ref_test=ref_test,
     )
 
-    # per-class plots
+    # per-class plots（合并所有策略）
+    merged_per_class = {}
     for split_name in ('valid', 'test'):
-        if final_per_class_stats.get(split_name):
-            plot_per_class(final_per_class_stats[split_name], split_name, output_dir)
+        merged_per_class[split_name] = {}
+        for s in ALL_STRATEGIES:
+            split_data = final_per_class_stats.get(split_name, {})
+            if s in split_data:
+                merged_per_class[split_name][s] = split_data[s]
+
+    for split_name in ('valid', 'test'):
+        if merged_per_class.get(split_name):
+            plot_per_class(merged_per_class[split_name], split_name, output_dir)
 
 
 if __name__ == '__main__':
