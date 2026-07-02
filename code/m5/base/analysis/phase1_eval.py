@@ -363,7 +363,7 @@ def main():
     parser.add_argument('--classifier', default='m3/best_model_ft.pt')
     parser.add_argument('--root', default=r'D:\ogb-master\dataset')
     parser.add_argument('--device', default='cuda:0')
-    parser.add_argument('--output-dir', default='m5/base/eval_results')
+    parser.add_argument('--output-dir', default='m5/base/analysis/eval_results')
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='Limit graphs per split (0 = all)')
     parser.add_argument('--dropout', type=float, default=0.1)
@@ -383,7 +383,7 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
-    output_dir = Path(args.output_dir) if args.output_dir else _m5_dir / 'base' / 'eval_results'
+    output_dir = Path(args.output_dir) if args.output_dir else _m5_dir / 'base' / 'analysis' / 'eval_results'
     output_dir.mkdir(parents=True, exist_ok=True)
 
     strategies_to_run = [s for s in args.strategies if s in ALL_STRATEGIES]
