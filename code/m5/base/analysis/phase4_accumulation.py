@@ -94,7 +94,7 @@ def collect_per_step(
         sub_g = sub_g.to(device)
         nids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=device)
         logits = classifier(sub_g, nids)
-        probs = F.softmax(logits, dim=0)
+        probs = F.softmax(logits, dim=1)
 
         ce_t = F.cross_entropy(
             logits, torch.tensor([label], device=device),
