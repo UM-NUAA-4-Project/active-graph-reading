@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
 import numpy as np
+import random
 import torch
 import torch.nn.functional as F
 import dgl
@@ -485,12 +486,37 @@ def main():
     split_path = Path(args.root) / 'ogbg_ppa' / 'split' / 'species' / 'valid.csv.gz'
     val_indices = pd.read_csv(split_path, compression='gzip', header=None).values.flatten().tolist()
 
-    if args.max_graphs > 0:
-        val_indices = val_indices[:args.max_graphs]
-
     print(f"\n=== Loading {len(val_indices)} val graphs ===")
     graphs, label_dict = dgl.load_graphs(processed_path, idx_list=val_indices)
     print(f"  Loaded {len(graphs)} graphs")
+
+    if args.max_graphs > 0 and args.max_graphs < len(graphs):
+        # 分层抽样：每类均匀覆盖
+        n_per_class = max(1, args.max_graphs // K)
+        class_to_local_idx = defaultdict(list)
+        for local_i, ogb_idx in enumerate(val_indices):
+            lbl = int(label_dict['labels'][ogb_idx].item())
+            class_to_local_idx[lbl].append(local_i)
+
+        sampled_local = []
+        for cls in range(K):
+            pool = class_to_local_idx.get(cls, [])
+            n = min(n_per_class, len(pool))
+            if n > 0:
+                sampled_local.extend(random.sample(pool, n))
+
+        # 如果每类凑不够，从剩余图中随机补齐
+        if len(sampled_local) < args.max_graphs:
+            remaining_pool = [i for i in range(len(graphs)) if i not in set(sampled_local)]
+            extra_needed = args.max_graphs - len(sampled_local)
+            sampled_local.extend(random.sample(remaining_pool, min(extra_needed, len(remaining_pool))))
+        else:
+            sampled_local = random.sample(sampled_local, args.max_graphs)
+
+        graphs = [graphs[i] for i in sampled_local]
+        val_indices = [val_indices[i] for i in sampled_local]
+        print(f"  Stratified sampling: {len(graphs)} graphs "
+              f"({len(set(int(label_dict['labels'][idx].item()) for idx in val_indices))} classes covered)")
 
     builder = SubgraphBuilder()
 
