@@ -234,7 +234,7 @@ def plot_accumulation_curve(
     ax = axes[0]
     ax.plot(t_frac, grid_data['CE'], color='#C44E52', linewidth=2)
     ax.fill_between(t_frac,
-                    grid_data['CE'] - grid_std['CE'],
+                    np.clip(grid_data['CE'] - grid_std['CE'], 0, None),
                     grid_data['CE'] + grid_std['CE'],
                     alpha=0.2, color='#C44E52')
     ax.set_xlabel('t / B', fontsize=11)
@@ -246,20 +246,21 @@ def plot_accumulation_curve(
     ax = axes[1]
     ax.plot(t_frac, grid_data['R'], color='#55A868', linewidth=2)
     ax.fill_between(t_frac,
-                    grid_data['R'] - grid_std['R'],
-                    grid_data['R'] + grid_std['R'],
+                    np.clip(grid_data['R'] - grid_std['R'], -1.0, 1.0),
+                    np.clip(grid_data['R'] + grid_std['R'], -1.0, 1.0),
                     alpha=0.2, color='#55A868')
     ax.set_xlabel('t / B', fontsize=11)
     ax.set_ylabel('R_t = tanh(1 - CE/ln K)', fontsize=11)
     ax.set_title('Reward vs Budget Fraction', fontsize=12)
+    ax.set_ylim(-1.05, 1.05)
     ax.grid(alpha=0.3)
 
     # top1_prob curve
     ax = axes[2]
     ax.plot(t_frac, grid_data['top1_prob'], color='#4C72B0', linewidth=2)
     ax.fill_between(t_frac,
-                    grid_data['top1_prob'] - grid_std['top1_prob'],
-                    grid_data['top1_prob'] + grid_std['top1_prob'],
+                    np.clip(grid_data['top1_prob'] - grid_std['top1_prob'], 0, 1),
+                    np.clip(grid_data['top1_prob'] + grid_std['top1_prob'], 0, 1),
                     alpha=0.2, color='#4C72B0')
     ax.set_xlabel('t / B', fontsize=11)
     ax.set_ylabel('Top-1 Probability', fontsize=11)
@@ -571,7 +572,7 @@ def main():
     print(f"  Loaded {len(graphs)} graphs")
 
     if args.max_graphs > 0 and args.max_graphs < len(graphs):
-        # 分层抽样：每类均匀覆盖
+        # 每类均匀覆盖
         n_per_class = max(1, args.max_graphs // K)
         class_to_local_idx = defaultdict(list)
         for local_i, ogb_idx in enumerate(val_indices):
