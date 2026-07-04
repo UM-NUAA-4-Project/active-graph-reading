@@ -12,9 +12,8 @@ batch size = x · n 条轨迹
 
 用法:
   python code/m5/base/train_rl.py --root /mnt/data --epochs 10 --temperature 1.5
-  python code/m5/base/train_rl.py --root /mnt/data --resume-checkpoint m5/base/rl/checkpoint_epoch5.pt
+  python code/m5/base/train_rl.py --root /mnt/data --temperature 0.2 --val-graphs 
 """
-
 import argparse
 import json
 import math
@@ -244,7 +243,7 @@ def main():
     parser.add_argument('--output-dir', default='m5/base/rl/')
     parser.add_argument('--resume-checkpoint', default='',
                         help='从指定 checkpoint 恢复训练')
-    parser.add_argument('--val-graphs', type=int, default=200,
+    parser.add_argument('--val-graphs', type=int, default=10000,
                         help='验证集图数量 (0=跳过验证)')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
@@ -273,15 +272,42 @@ def main():
     train_graphs, train_labels = dgl.load_graphs(processed_path, idx_list=train_indices)
     print(f"  Loaded {len(train_graphs)} graphs")
 
-    # ---- 2. 加载 val 图（从 valid split） ----
+    # ---- 2. 加载 val 图（从 valid split，分层抽样） ----
     val_graphs, val_labels, val_indices = None, None, None
     if args.val_graphs > 0:
         val_csv = root_path / 'ogbg_ppa' / 'split' / 'species' / 'valid.csv.gz'
-        val_indices = pd.read_csv(val_csv, compression='gzip', header=None).values.flatten().tolist()
-        val_indices = val_indices[:args.val_graphs]
-        print(f"=== Loading {len(val_indices)} validation graphs ===")
-        val_graphs, val_labels = dgl.load_graphs(processed_path, idx_list=val_indices)
-        print(f"  Loaded {len(val_graphs)} graphs")
+        all_val_indices = pd.read_csv(val_csv, compression='gzip', header=None).values.flatten().tolist()
+        print(f"=== Loading {len(all_val_indices)} validation graphs ===")
+        all_graphs, all_labels = dgl.load_graphs(processed_path, idx_list=all_val_indices)
+        print(f"  Loaded {len(all_graphs)} graphs")
+
+        if args.val_graphs < len(all_graphs):
+            from collections import defaultdict
+            class_to_local = defaultdict(list)
+            for i, ogb_idx in enumerate(all_val_indices):
+                lbl = int(all_labels['labels'][ogb_idx].item())
+                class_to_local[lbl].append(i)
+            total = len(all_val_indices)
+            sampled = []
+            for cls in range(K):
+                pool = class_to_local.get(cls, [])
+                n = max(1, int(args.val_graphs * len(pool) / total))
+                n = min(n, len(pool))
+                if n > 0:
+                    sampled.extend(random.sample(pool, n))
+            if len(sampled) > args.val_graphs:
+                sampled = random.sample(sampled, args.val_graphs)
+            elif len(sampled) < args.val_graphs:
+                remaining = [i for i in range(len(all_graphs)) if i not in set(sampled)]
+                sampled.extend(random.sample(remaining, min(args.val_graphs - len(sampled), len(remaining))))
+            val_graphs = [all_graphs[i] for i in sampled]
+            val_indices = [all_val_indices[i] for i in sampled]
+            val_labels = {'labels': all_labels['labels'][[i for i in val_indices]]}
+        else:
+            val_graphs, val_labels, val_indices = all_graphs, all_labels, all_val_indices
+
+        print(f"  Validation set: {len(val_graphs)} graphs "
+              f"({len(set(int(val_labels['labels'][idx].item()) for idx in val_indices))}/{K} classes)")
 
     # ---- 3. 加载 classifier（冻结） ----
     print("\n=== Loading classifier ===")
