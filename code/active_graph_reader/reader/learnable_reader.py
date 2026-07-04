@@ -43,10 +43,12 @@ class LearnableReader(BaseReader, nn.Module):
         n_layers: int = 2,
         dropout: float = 0.1,
         stochastic: bool = False,
+        temperature: float = 1.0,
     ):
         super().__init__()
 
         self.stochastic = stochastic
+        self.temperature = temperature
 
         self.frontier_builder = FrontierGraphBuilder()
         self.frontier_encoder = FrontierNodesEncoder(
@@ -87,6 +89,8 @@ class LearnableReader(BaseReader, nn.Module):
         probs = F.softmax(scores, dim=0)
 
         if sample:
+            if self.temperature != 1.0:
+                probs = F.softmax(scores / self.temperature, dim=0)
             dist = torch.distributions.Categorical(probs)
             action_idx = dist.sample()
             log_prob = dist.log_prob(action_idx)
@@ -102,6 +106,8 @@ class LearnableReader(BaseReader, nn.Module):
             return None
 
         if self.stochastic:
+            if self.temperature != 1.0:
+                probs = F.softmax(scores / self.temperature, dim=0)
             idx = torch.distributions.Categorical(probs).sample().item()
         else:
             idx = probs.argmax().item()

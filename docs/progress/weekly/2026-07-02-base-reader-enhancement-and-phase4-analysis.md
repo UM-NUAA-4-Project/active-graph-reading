@@ -104,7 +104,7 @@ ReaderMLP 的输入从原始的 128 维（仅 frontier embedding）扩展到 132
 
 ## 二、Base Reader RL 训练
 
-> ⚠️ 本节数据待明天补充。RL checkpoint 位于 `m5/base/rl/checkpoint_epoch{1..10}.pt`。
+> RL checkpoint 位于 `m5/base/rl/checkpoint_epoch{1..10}.pt`。
 
 ### 2.1 训练设置
 
@@ -156,7 +156,7 @@ ReaderMLP 的输入从原始的 128 维（仅 frontier embedding）扩展到 132
 | Reader checkpoint | `m5/base/rl/checkpoint_epoch7.pt`                                     |
 | Classifier        | `m3/best_model_ft.pt`（冻结，val_acc=64.19%）                         |
 | 数据集            | PPA val split，**均匀抽样 5000 张图**（每类 135-137 张，37 类全覆盖） |
-| Budget            | 10%（每图绝对步数 = max(1, int(0.10 ×                                |
+| Budget            | 10%                                                                   |
 | Seed              | best-seed（max-degree 节点）                                          |
 
 ### 3.2 整体表现
