@@ -3,8 +3,9 @@
 不再使用 teacher 轨迹。每 batch 从训练集加载 x 张图，每张图用 n 个确定性 seed
 分别采样一条轨迹（temperature 控制探索程度），classifier 的 CE 作为 reward 信号。
 
-REINFORCE: loss = CE · Σ w_t · log π_t(a_t)
-  w_t = softmax(2t/B)    逐步加权，后期步权重更大
+REINFORCE: loss = -R · CE (batch 平均)
+  R (binary): 1 if correct else 0
+  R (tanh):   tanh(1 - CE / ln(37))
   CE = cross_entropy(classifier(subgraph), y)  终端分类交叉熵
   budget ∈ {0.05, 0.10, 0.15}  随机抽取
 
@@ -12,7 +13,8 @@ batch size = x · n 条轨迹
 
 用法:
   python code/m5/base/train_rl.py --root /mnt/data --epochs 10 --temperature 1.5
-  python code/m5/base/train_rl.py --root /mnt/data --temperature 0.2 --val-graphs 
+  python code/m5/base/train_rl.py --root /mnt/data --temperature 0.2 --val-graphs 10000
+  python code/m5/base/train_rl.py --root /mnt/data --reward-type tanh --epochs 10 --temperature 0.2
 """
 import argparse
 import json
@@ -59,6 +61,7 @@ def train_one_epoch(
     reader, classifier, builder, optimizer,
     graphs, ogb_indices, labels_tensor,
     n_seeds, batch_size, device,
+    reward_type='binary',
 ):
     """Self-sampled REINFORCE。每张图用 n_seeds 个 seed 各采样一条轨迹。"""
     reader.train()
@@ -125,11 +128,17 @@ def train_one_epoch(
 
                 if correct:
                     total_correct += 1
-                total_R += correct
+
+                if reward_type == 'tanh':
+                    R = math.tanh(1.0 - ce / LN_K)
+                else:  # binary
+                    R = 1.0 if correct else 0.0
+
+                total_R += R
                 total_trajs += 1
 
-                # REINFORCE: loss = R * CE ，其中 R = 1 if correct else 0，最后 batch 平均
-                rl_loss = -correct * ce 
+                # REINFORCE: loss = -R * CE (batch 平均)
+                rl_loss = -R * ce
                 batch_losses.append(rl_loss)
 
         if not batch_losses:
@@ -229,11 +238,11 @@ def main():
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--graphs-per-batch', type=int, default=16,
+    parser.add_argument('--graphs-per-batch', type=int, default=8,
                         help='每 batch 的图数量 (x)')
-    parser.add_argument('--seeds-per-graph', type=int, default=2,
+    parser.add_argument('--seeds-per-graph', type=int, default=4,
                         help='每张图用几个 seed (n), batch size = x * n')
-    parser.add_argument('--temperature', type=float, default=1.0,
+    parser.add_argument('--temperature', type=float, default=0.2,
                         help='采样温度 (T>1 更多探索, T<1 更多利用)')
     parser.add_argument('--hidden-dim', type=int, default=128)
     parser.add_argument('--n-layers', type=int, default=2)
@@ -243,8 +252,10 @@ def main():
     parser.add_argument('--output-dir', default='m5/base/rl/')
     parser.add_argument('--resume-checkpoint', default='',
                         help='从指定 checkpoint 恢复训练')
-    parser.add_argument('--val-graphs', type=int, default=10000,
+    parser.add_argument('--val-graphs', type=int, default=0,
                         help='验证集图数量 (0=跳过验证)')
+    parser.add_argument('--reward-type', choices=['binary', 'tanh'], default='binary',
+                        help='R 计算方式: binary=0/1正确性, tanh=tanh(1-CE/ln37)')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 
@@ -366,6 +377,7 @@ def main():
     total_params = sum(p.numel() for p in reader.parameters())
     print(f"  Reader params: {total_params:,}")
     print(f"  Temperature: {args.temperature}")
+    print(f"  Reward type: {args.reward_type}")
     print(f"  Graphs per batch: {args.graphs_per_batch}, Seeds per graph: {args.seeds_per_graph}")
     print(f"  Effective batch size: {args.graphs_per_batch * args.seeds_per_graph} trajectories")
 
@@ -376,6 +388,7 @@ def main():
             reader, classifier, builder, optimizer,
             train_graphs, train_indices, train_labels['labels'],
             args.seeds_per_graph, args.graphs_per_batch, device,
+            reward_type=args.reward_type,
         )
         print(f"  Train: loss={metrics['loss']:.4f}  avg_R={metrics['avg_R']:.3f}  acc={metrics['acc']:.3f}")
 
