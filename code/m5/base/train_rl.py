@@ -138,7 +138,7 @@ def train_one_epoch(
                 total_trajs += 1
 
                 # REINFORCE: loss = -R * CE (batch 平均)
-                rl_loss = -R * ce
+                rl_loss = torch.tensor(-R * ce, device=device)
                 batch_losses.append(rl_loss)
 
         if not batch_losses:
