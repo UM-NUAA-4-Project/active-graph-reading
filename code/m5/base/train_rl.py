@@ -128,7 +128,7 @@ def train_one_epoch(
                 total_R += correct
                 total_trajs += 1
 
-                # REINFORCE: loss = R * CE 
+                # REINFORCE: loss = R * CE ，其中 R = 1 if correct else 0，最后 batch 平均
                 rl_loss = -correct * ce 
                 batch_losses.append(rl_loss)
 
