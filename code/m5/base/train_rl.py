@@ -3,10 +3,10 @@
 不再使用 teacher 轨迹。每 batch 从训练集加载 x 张图，每张图用 n 个确定性 seed
 分别采样一条轨迹（temperature 控制探索程度），classifier 的 CE 作为 reward 信号。
 
-REINFORCE: loss = -R · CE (batch 平均)
+REINFORCE: loss = -R · Σ_t log π_t(a_t)  (batch 平均)
   R (binary): 1 if correct else 0
   R (tanh):   tanh(1 - CE / ln(37))
-  CE = cross_entropy(classifier(subgraph), y)  终端分类交叉熵
+  CE = cross_entropy(classifier(subgraph), y)  仅用于计算 R，loss 本身用 log_prob
   budget ∈ {0.05, 0.10, 0.15}  随机抽取
 
 batch size = x · n 条轨迹
@@ -106,6 +106,7 @@ def train_one_epoch(
                 if initial_frontier:
                     reader.on_new_frontier(initial_frontier)
 
+                log_probs = []
                 for _step in range(B):
                     if state.is_frontier_empty:
                         break
@@ -114,8 +115,12 @@ def train_one_epoch(
 
                     if len(frontier_nodes) == 0:
                         break
+                    log_probs.append(log_prob)
                     chosen = frontier_nodes[action_idx.item()]
                     reveal_node(state, chosen)
+
+                if not log_probs:
+                    continue
 
                 # 终端分类
                 sub_g, _ = builder.build(state)
@@ -137,8 +142,9 @@ def train_one_epoch(
                 total_R += R
                 total_trajs += 1
 
-                # REINFORCE: loss = -R * CE (batch 平均)
-                rl_loss = torch.tensor(-R * ce, device=device)
+                # REINFORCE: loss = -R * Σ log π_t(a_t)
+                sum_log_prob = torch.stack(log_probs).sum()
+                rl_loss = -R * sum_log_prob
                 batch_losses.append(rl_loss)
 
         if not batch_losses:
