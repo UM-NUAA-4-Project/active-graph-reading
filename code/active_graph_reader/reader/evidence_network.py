@@ -22,21 +22,25 @@ class EvidenceNetwork(nn.Module):
     """从图嵌入 v 投影证据，做 Dirichlet 参数化。
 
     两层投影：hidden_dim → 128 → k_evidence（吸收原 GSAE encoder）
+    LayerNorm 稳定 128 维中间表示，Dropout 防过拟合。
 
     Parameters
     ----------
     hidden_dim : int    图嵌入维度，默认 300
     k_evidence : int    证据维度（类别数），默认 37
+    dropout : float     Dropout 率，默认 0.3
     """
 
-    def __init__(self, hidden_dim=300, k_evidence=37):
+    def __init__(self, hidden_dim=300, k_evidence=37, dropout=0.3):
         super().__init__()
         self.k_evidence = k_evidence
         self.evidence_head = nn.Sequential(
             nn.Linear(hidden_dim, 128),
+            nn.LayerNorm(128),
             nn.ReLU(),
+            nn.Dropout(dropout),
             nn.Linear(128, k_evidence),
-            nn.ReLU(),
+            nn.Softplus(),
         )
 
     def forward(self, v: torch.Tensor) -> EvidenceOutput:

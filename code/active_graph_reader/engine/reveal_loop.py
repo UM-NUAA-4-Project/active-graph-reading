@@ -38,6 +38,7 @@ class RevealLoop:
     ) -> dict:
         """执行完整的揭示循环。budget=None/max_ratio=None 表示揭示所有可达节点。"""
         actual_budget = self._resolve_budget(budget, max_ratio)
+        self._state._budget_limit = actual_budget
 
         logger.info(
             "揭示循环开始: 策略=%s, 预算=%d, |V|=%d",

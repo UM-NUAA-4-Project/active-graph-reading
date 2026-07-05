@@ -49,11 +49,15 @@ class POMDPReader(BaseReader, nn.Module):
     n_layers : int         GNN 层数，默认 2
     dropout : float        Dropout，默认 0.5
     use_struct : bool      是否使用结构特征 + 结构注意力池化（默认 True）
+    stochastic : bool      是否从概率分布采样选择节点（默认 False=argmax）
     """
 
     def __init__(self, edge_feat_dim=7, hidden_dim=300, k_state=128,
-                 k_evidence=37, n_layers=2, dropout=0.5, use_struct=True):
+                 k_evidence=37, n_layers=2, dropout=0.5, use_struct=True,
+                 stochastic=False):
         super().__init__()
+
+        self.stochastic = stochastic
 
         self.k_evidence = k_evidence
 
@@ -65,7 +69,7 @@ class POMDPReader(BaseReader, nn.Module):
             use_struct=use_struct,
         )
 
-        self.evidence_net = EvidenceNetwork(hidden_dim=hidden_dim, k_evidence=k_evidence)
+        self.evidence_net = EvidenceNetwork(hidden_dim=hidden_dim, k_evidence=k_evidence, dropout=dropout)
 
         self.belief_updater = LSTMBeliefUpdater(k_evidence=k_evidence, action_emb_dim=128)
 
@@ -158,9 +162,15 @@ class POMDPReader(BaseReader, nn.Module):
         return scores, probs, self._last_frontier_ids
 
     def select(self, graph_state: GraphState) -> Optional[int]:
-        """确定性 argmax 选择 + 缓存 action embedding。"""
-        scores, probs, frontier_nodes = self.forward(graph_state)
+        """选择节点。stochastic=False 时 argmax，True 时从概率分布采样。"""
+        if self.stochastic:
+            scores, probs, frontier_nodes, action_idx, _ = \
+                self.forward(graph_state, sample=True)
+            if len(frontier_nodes) == 0:
+                return None
+            return frontier_nodes[action_idx.item()]
 
+        scores, probs, frontier_nodes = self.forward(graph_state)
         if len(frontier_nodes) == 0:
             return None
 

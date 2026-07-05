@@ -25,7 +25,7 @@ class GraphState:
         'n_nodes_total', 'n_edges_total',
         'has_edge_feat', 'edge_feat', 'edge_feat_dim',
         'has_node_feat', 'node_feat', 'node_feat_dim',
-        'reveal_history', '_budget_used', '_initial_frontier',
+        'reveal_history', '_budget_used', '_budget_limit', '_initial_frontier',
         '_sorted_revealed', '_sorted_frontier_nodes', '_revealed_edge_ids',
     )
 
@@ -75,6 +75,7 @@ class GraphState:
 
         self.reveal_history: List[int] = []
         self._budget_used: int = 0
+        self._budget_limit: Optional[int] = None
         self._initial_frontier: List[Tuple[int, int]] = []
 
         # 增量排序维护（避免 FrontierEncoder 每步重新排序）
@@ -137,6 +138,12 @@ class GraphState:
 
     def get_budget_used(self) -> int:
         return self._budget_used
+
+    def get_budget_ratio_remaining(self) -> float:
+        """剩余预算比例 1 - t/B。若 budget_limit 未设置则返回 0.5。"""
+        if self._budget_limit is None or self._budget_limit <= 0:
+            return 0.5
+        return 1.0 - self._budget_used / self._budget_limit
 
     @property
     def n_revealed(self) -> int:

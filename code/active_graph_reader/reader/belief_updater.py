@@ -25,9 +25,7 @@ class LSTMBeliefUpdater(nn.Module):
         self.k_evidence = k_evidence
         input_dim = k_evidence * 2 + 1 + action_emb_dim  # 37+37+1+128 = 203
         self.lstm = nn.LSTMCell(input_dim, lstm_hidden)
-        # DRBPN gate: i_τ ⊙ g̃_τ ∈ (-1, 1)，允许正/负证据
-        self.gate_i = nn.Linear(lstm_hidden, k_evidence)   # input gate (sigmoid)
-        self.gate_g = nn.Linear(lstm_hidden, k_evidence)   # candidate (tanh)
+        self.gate = nn.Linear(lstm_hidden, k_evidence)       # tanh gate ∈ (-1, 1)
         self._alpha_accum = None
         self._h = None
         self._c = None
@@ -62,9 +60,7 @@ class LSTMBeliefUpdater(nn.Module):
         h, c = self.lstm(lstm_input, (self._h, self._c))
         self._h, self._c = h, c
 
-        i_t = torch.sigmoid(self.gate_i(h))     # (1, K) 输入门
-        g_t = torch.tanh(self.gate_g(h))         # (1, K) 候选方向
-        gate = i_t * g_t                          # (1, K) gate_τ ∈ (-1, 1)
+        gate = torch.tanh(self.gate(h))                  # (1, K) gate ∈ (-1, 1)
 
         # DRBPN 逐类不确定性调制：
         # Var(b_k) = α_k·(S-α_k) / (S²·(S+1))  — Dirichlet 边际方差

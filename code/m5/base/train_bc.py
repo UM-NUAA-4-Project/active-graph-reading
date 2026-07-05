@@ -31,6 +31,7 @@ from training_utils import (
     TEACHER_NAMES, BUDGET_RATIOS,
     merge_trajectories, load_graphs_for_trajectories,
     split_trajectories, train_one_epoch, val_one_epoch, infer_reader_config,
+    patch_old_checkpoint,
 )
 
 
@@ -43,7 +44,7 @@ def main():
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=1e-3)
-    parser.add_argument('--hidden-dim', type=int, default=256)
+    parser.add_argument('--hidden-dim', type=int, default=128)
     parser.add_argument('--batch-size', type=int, default=16)
     parser.add_argument('--output-dir', default='m5/base/checkpoint')
     parser.add_argument('--n-layers-reader', type=int, default=2, dest='n_layers_reader')
@@ -124,13 +125,17 @@ def main():
         reader = LearnableReader(
             edge_feat_dim=7, hidden_dim=hidden_dim, n_layers=n_layers, dropout=dropout,
         ).to(device)
-        reader.load_state_dict(reader_ckpt['reader_state_dict'])
+        reader_sd, was_patched = patch_old_checkpoint(reader_ckpt['reader_state_dict'])
+        reader.load_state_dict(reader_sd)
 
         optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
-        try:
-            optimizer.load_state_dict(reader_ckpt['optimizer_state_dict'])
-        except (KeyError, ValueError) as e:
-            print(f"  WARNING: Could not load optimizer state ({e}), using fresh optimizer")
+        if was_patched:
+            print("  NOTE: checkpoint architecture patched (old→new dims), using fresh optimizer")
+        else:
+            try:
+                optimizer.load_state_dict(reader_ckpt['optimizer_state_dict'])
+            except (KeyError, ValueError, RuntimeError) as e:
+                print(f"  WARNING: Could not load optimizer state ({e}), using fresh optimizer")
 
         start_epoch = reader_ckpt.get('epoch', -1) + 1
         training_log = reader_ckpt.get('training_log', [])

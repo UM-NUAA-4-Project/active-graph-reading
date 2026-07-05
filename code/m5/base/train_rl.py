@@ -1,13 +1,23 @@
-"""v0 LearnableReader — REINFORCE 端到端微调。
+"""v0 LearnableReader — Self-Sampled REINFORCE 微调。
 
-与 POMDP REINFORCE 的核心差异：reward 来自外部冻结的 GraphClassifier 而非 reader 自身。
+不再使用 teacher 轨迹。每 batch 从训练集加载 x 张图，每张图用 n 个确定性 seed
+分别采样一条轨迹（temperature 控制探索程度），classifier 的 CE 作为 reward 信号。
 
-REINFORCE: -R · Σ log π_t(a_t) + β · CE(classifier_logits, y)
-R = 1[argmax f_class(sub_G_B) == y]
+REINFORCE: loss = CE · Σ w_t · log π_t(a_t)
+  w_t = softmax(2t/B)    逐步加权，后期步权重更大
+  CE = cross_entropy(classifier(subgraph), y)  终端分类交叉熵
+  budget ∈ {0.05, 0.10, 0.15}  随机抽取
+
+batch size = x · n 条轨迹
+
+用法:
+  python code/m5/base/train_rl.py --root /mnt/data --epochs 10 --temperature 1.5
+  python code/m5/base/train_rl.py --root /mnt/data --temperature 0.2 --val-graphs 
 """
-
 import argparse
 import json
+import math
+import random
 import sys
 from pathlib import Path
 
@@ -17,8 +27,11 @@ _repo_root = _m5_dir.parent
 sys.path.insert(0, str(_repo_root))
 sys.path.insert(0, str(_m5_dir))
 
+import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
+import dgl
 from tqdm import tqdm
 
 from active_graph_reader.reader.learnable_reader import LearnableReader
@@ -26,70 +39,98 @@ from active_graph_reader.gnn.classifier import GraphClassifier
 from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
+from training_utils import patch_old_checkpoint
 
-from training_utils import (
-    TEACHER_NAMES, BUDGET_RATIOS,
-    merge_trajectories, load_graphs_for_trajectories,
-)
-
-
-def compute_budget(n_nodes, ratio):
-    return max(1, int(ratio * n_nodes))
+K = 37
+LN_K = math.log(K)
+BUDGET_OPTIONS = [0.05, 0.10, 0.15]
 
 
-def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
-                    train_trajs, batch_size, device, beta_aux, budgets_rel):
+def deterministic_seed(graph_idx: int, seed_i: int, n_nodes: int) -> int:
+    """确定性种子公式（与 CLAUDE.md 一致）。"""
+    return (graph_idx * 31 + seed_i * 17 + 7) % n_nodes
+
+
+# ---------------------------------------------------------------------------
+# self-sampled REINFORCE training
+# ---------------------------------------------------------------------------
+
+def train_one_epoch(
+    reader, classifier, builder, optimizer,
+    graphs, ogb_indices, labels_tensor,
+    n_seeds, batch_size, device,
+):
+    """Self-sampled REINFORCE。每张图用 n_seeds 个 seed 各采样一条轨迹。"""
     reader.train()
     classifier.eval()
-    total_reward = 0
-    total_trajs = 0
 
-    pbar = tqdm(range(0, len(train_trajs), batch_size), desc="  Training")
+    total_R = 0.0
+    total_trajs = 0
+    total_correct = 0
+    total_loss = 0.0
+
+    # shuffle graph indices for batching
+    graph_order = list(range(len(graphs)))
+    random.shuffle(graph_order)
+
+    pbar = tqdm(range(0, len(graph_order), batch_size), desc="  Training")
     for batch_start in pbar:
-        batch_end = min(batch_start + batch_size, len(train_trajs))
-        batch_trajs = train_trajs[batch_start:batch_end]
+        batch_end = min(batch_start + batch_size, len(graph_order))
+        batch_indices = graph_order[batch_start:batch_end]
 
         batch_losses = []
-        batch_rewards = []
 
-        for traj in batch_trajs:
-            g, label = graph_cache[traj.graph_idx]
-            y = torch.tensor(label, device=device)
+        for local_i in batch_indices:
+            g_raw = graphs[local_i]
+            graph_idx = ogb_indices[local_i]
+            label = int(labels_tensor[graph_idx].item())
+            y = torch.tensor([label], device=device)
+            n_nodes = g_raw.num_nodes()
 
-            idx = traj.graph_idx ^ traj.seed_node
-            br = budgets_rel[idx % len(budgets_rel)]
-            B = compute_budget(g.num_nodes(), br)
+            # 随机 budget
+            budget_ratio = random.choice(BUDGET_OPTIONS)
+            B = max(1, int(budget_ratio * n_nodes))
 
-            reader.reset()
-            state = GraphState(g, seed_node=traj.seed_node)
-            log_probs = []
+            for seed_i in range(n_seeds):
+                seed_node = deterministic_seed(graph_idx, seed_i, n_nodes)
 
-            for _step in range(B):
-                scores, probs, frontier_nodes, action_idx, log_prob = \
-                    reader.forward(state, sample=True)
+                # 构建初始状态
+                g = dgl.add_self_loop(g_raw)
+                state = GraphState(g, seed_node=seed_node)
+                state._budget_limit = B
+                reader.reset()
+                initial_frontier = list(state._initial_frontier)
+                if initial_frontier:
+                    reader.on_new_frontier(initial_frontier)
 
-                if len(frontier_nodes) == 0:
-                    break
+                for _step in range(B):
+                    if state.is_frontier_empty:
+                        break
 
-                log_probs.append(log_prob)
-                chosen = frontier_nodes[action_idx.item()]
-                reveal_node(state, chosen)
+                    scores, probs, frontier_nodes, action_idx, log_prob = reader.forward(state, sample=True)
 
-            # 终端 reward: 外部 classifier
-            sub_g, _ = builder.build(state)
-            sub_g = sub_g.to(device)
-            node_ids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=device)
-            with torch.no_grad():
-                logits = classifier(sub_g, node_ids)
-                pred = logits.argmax(dim=1).item()
-            R = 1.0 if pred == label else 0.0
+                    if len(frontier_nodes) == 0:
+                        break
+                    chosen = frontier_nodes[action_idx.item()]
+                    reveal_node(state, chosen)
 
-            if log_probs:
-                rl_loss = -R * torch.stack(log_probs).sum()
-                aux_loss = F.cross_entropy(logits, y.unsqueeze(0))
-                traj_loss = rl_loss + beta_aux * aux_loss
-                batch_losses.append(traj_loss)
-                batch_rewards.append(R)
+                # 终端分类
+                sub_g, _ = builder.build(state)
+                sub_g = sub_g.to(device)
+                nids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=device)
+                with torch.no_grad():
+                    logits = classifier(sub_g, nids)
+                ce = F.cross_entropy(logits, y).item()
+                correct = 1.0 if logits.argmax(dim=-1).item() == label else 0.0
+
+                if correct:
+                    total_correct += 1
+                total_R += correct
+                total_trajs += 1
+
+                # REINFORCE: loss = R * CE 
+                rl_loss = -correct * ce 
+                batch_losses.append(rl_loss)
 
         if not batch_losses:
             continue
@@ -99,31 +140,117 @@ def train_one_epoch(reader, classifier, builder, optimizer, graph_cache,
         optimizer.step()
         optimizer.zero_grad()
 
-        total_reward += sum(batch_rewards)
-        total_trajs += len(batch_rewards)
-        avg_r = total_reward / total_trajs if total_trajs > 0 else 0
-        pbar.set_postfix({'loss': f'{batch_loss.item():.4f}',
-                          'avg_R': f'{avg_r:.2f}'})
+        total_loss += batch_loss.item() * len(batch_losses)
+        n = max(total_trajs, 1)
+        pbar.set_postfix({
+            'loss': f'{total_loss / n:.4f}',
+            'avg_R': f'{total_R / n:.3f}',
+            'acc': f'{total_correct / n:.3f}',
+        })
 
-    return 0.0
+    n = max(total_trajs, 1)
+    return {
+        'loss': total_loss / n,
+        'avg_R': total_R / n,
+        'acc': total_correct / n,
+    }
 
+
+# ---------------------------------------------------------------------------
+# validation (deterministic argmax)
+# ---------------------------------------------------------------------------
+
+@torch.no_grad()
+def val_one_epoch(
+    reader, classifier, builder,
+    graphs, ogb_indices, labels_tensor,
+    device,
+):
+    reader.eval()
+    total_ce = 0.0
+    total_trajs = 0
+    total_correct = 0
+
+    for local_i in tqdm(range(len(graphs)), desc="  Validating"):
+        g_raw = graphs[local_i]
+        graph_idx = ogb_indices[local_i]
+        label = int(labels_tensor[graph_idx].item())
+        y = torch.tensor([label], device=device)
+        n_nodes = g_raw.num_nodes()
+
+        for budget_ratio in BUDGET_OPTIONS:
+            B = max(1, int(budget_ratio * n_nodes))
+            seed_node = deterministic_seed(graph_idx, 0, n_nodes)
+
+            g = dgl.add_self_loop(g_raw)
+            state = GraphState(g, seed_node=seed_node)
+            state._budget_limit = B
+            reader.reset()
+            initial_frontier = list(state._initial_frontier)
+            if initial_frontier:
+                reader.on_new_frontier(initial_frontier)
+
+            for _step in range(B):
+                if state.is_frontier_empty:
+                    break
+                scores, probs, frontier_nodes = reader.forward(state)
+                if len(frontier_nodes) == 0:
+                    break
+                chosen = frontier_nodes[probs.argmax().item()]
+                reveal_node(state, chosen)
+
+            sub_g, _ = builder.build(state)
+            sub_g = sub_g.to(device)
+            nids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=device)
+            logits = classifier(sub_g, nids)
+            ce = F.cross_entropy(logits, y).item()
+
+            if logits.argmax(dim=-1).item() == label:
+                total_correct += 1
+            total_ce += ce
+            total_trajs += 1
+
+    n = max(total_trajs, 1)
+    return {
+        'avg_CE': total_ce / n,
+        'acc': total_correct / n,
+    }
+
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description='v0 LearnableReader REINFORCE fine-tuning')
-    parser.add_argument('--bootstrap-checkpoint', default='m5/checkpoint/best_reader.pt')
+    parser = argparse.ArgumentParser(description='v0 LearnableReader Self-Sampled REINFORCE')
+    parser.add_argument('--bootstrap-checkpoint', default='m5/base/checkpoint/best_reader.pt')
     parser.add_argument('--classifier', default='m3/best_model_ft.pt')
     parser.add_argument('--root', default=r'D:\ogb-master\dataset')
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--batch-size', type=int, default=8)
-    parser.add_argument('--beta-aux', type=float, default=0.5)
-    parser.add_argument('--budgets-rel', nargs='+', type=float,
-                        default=[0.05, 0.10, 0.15])
-    parser.add_argument('--limit-trajs', type=int, default=0)
-    parser.add_argument('--output-dir', default='m5/rl/')
+    parser.add_argument('--graphs-per-batch', type=int, default=16,
+                        help='每 batch 的图数量 (x)')
+    parser.add_argument('--seeds-per-graph', type=int, default=2,
+                        help='每张图用几个 seed (n), batch size = x * n')
+    parser.add_argument('--temperature', type=float, default=1.0,
+                        help='采样温度 (T>1 更多探索, T<1 更多利用)')
+    parser.add_argument('--hidden-dim', type=int, default=128)
+    parser.add_argument('--n-layers', type=int, default=2)
+    parser.add_argument('--dropout', type=float, default=0.1)
+    parser.add_argument('--max-graphs', type=int, default=0,
+                        help='限制加载训练图总数 (0=全部)')
+    parser.add_argument('--output-dir', default='m5/base/rl/')
+    parser.add_argument('--resume-checkpoint', default='',
+                        help='从指定 checkpoint 恢复训练')
+    parser.add_argument('--val-graphs', type=int, default=10000,
+                        help='验证集图数量 (0=跳过验证)')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
+
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
 
     repo_root = _repo_root
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
@@ -132,22 +259,60 @@ def main():
     output_dir = repo_root / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. 加载轨迹和图
-    data_dir = repo_root / 'm4/data/stage5_filtered'
-    print("\n=== Merging trajectories ===")
-    all_trajs = merge_trajectories(data_dir)
-    if args.limit_trajs > 0:
-        all_trajs = all_trajs[:args.limit_trajs]
-        print(f"  Limited to {len(all_trajs)} trajectories")
+    # ---- 1. 加载训练图 ----
+    root_path = Path(args.root)
+    processed_path = str(root_path / 'ogbg_ppa' / 'processed' / 'dgl_data_processed')
+    train_csv = root_path / 'ogbg_ppa' / 'split' / 'species' / 'train.csv.gz'
 
-    print("\n=== Loading graphs ===")
-    needed_graphs = {t.graph_idx for t in all_trajs}
-    graph_cache = load_graphs_for_trajectories(args.root, needed_graphs)
+    train_indices = pd.read_csv(train_csv, compression='gzip', header=None).values.flatten().tolist()
+    if args.max_graphs > 0 and args.max_graphs < len(train_indices):
+        train_indices = train_indices[:args.max_graphs]
 
-    # 2. 加载 classifier（冻结）
+    print(f"\n=== Loading {len(train_indices)} training graphs ===")
+    train_graphs, train_labels = dgl.load_graphs(processed_path, idx_list=train_indices)
+    print(f"  Loaded {len(train_graphs)} graphs")
+
+    # ---- 2. 加载 val 图（从 valid split，分层抽样） ----
+    val_graphs, val_labels, val_indices = None, None, None
+    if args.val_graphs > 0:
+        val_csv = root_path / 'ogbg_ppa' / 'split' / 'species' / 'valid.csv.gz'
+        all_val_indices = pd.read_csv(val_csv, compression='gzip', header=None).values.flatten().tolist()
+        print(f"=== Loading {len(all_val_indices)} validation graphs ===")
+        all_graphs, all_labels = dgl.load_graphs(processed_path, idx_list=all_val_indices)
+        print(f"  Loaded {len(all_graphs)} graphs")
+
+        if args.val_graphs < len(all_graphs):
+            from collections import defaultdict
+            class_to_local = defaultdict(list)
+            for i, ogb_idx in enumerate(all_val_indices):
+                lbl = int(all_labels['labels'][ogb_idx].item())
+                class_to_local[lbl].append(i)
+            total = len(all_val_indices)
+            sampled = []
+            for cls in range(K):
+                pool = class_to_local.get(cls, [])
+                n = max(1, int(args.val_graphs * len(pool) / total))
+                n = min(n, len(pool))
+                if n > 0:
+                    sampled.extend(random.sample(pool, n))
+            if len(sampled) > args.val_graphs:
+                sampled = random.sample(sampled, args.val_graphs)
+            elif len(sampled) < args.val_graphs:
+                remaining = [i for i in range(len(all_graphs)) if i not in set(sampled)]
+                sampled.extend(random.sample(remaining, min(args.val_graphs - len(sampled), len(remaining))))
+            val_graphs = [all_graphs[i] for i in sampled]
+            val_indices = [all_val_indices[i] for i in sampled]
+            val_labels = {'labels': all_labels['labels'][[i for i in val_indices]]}
+        else:
+            val_graphs, val_labels, val_indices = all_graphs, all_labels, all_val_indices
+
+        print(f"  Validation set: {len(val_graphs)} graphs "
+              f"({len(set(int(val_labels['labels'][idx].item()) for idx in val_indices))}/{K} classes)")
+
+    # ---- 3. 加载 classifier（冻结） ----
     print("\n=== Loading classifier ===")
     classifier = GraphClassifier(
-        edge_feat_dim=7, n_classes=37, hidden_dim=300, n_layers=5, dropout=0.5,
+        edge_feat_dim=7, n_classes=K, hidden_dim=300, n_layers=5, dropout=0.5,
     ).to(device)
     ckpt_path = repo_root / args.classifier
     ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
@@ -157,36 +322,76 @@ def main():
         p.requires_grad = False
     print(f"  val_acc={ckpt.get('val_acc', 'N/A')}")
 
-    # 3. 加载 reader
+    # ---- 4. 加载/恢复 reader ----
     print("\n=== Loading LearnableReader ===")
-    reader = LearnableReader(edge_feat_dim=7, hidden_dim=128, n_layers=2, dropout=0.1).to(device)
-
-    ckpt_path = repo_root / args.bootstrap_checkpoint
-    if ckpt_path.exists():
-        print(f"  Loading from {ckpt_path}")
-        reader_ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
-        reader.load_state_dict(reader_ckpt['reader_state_dict'])
-        print(f"  Checkpoint epoch: {reader_ckpt.get('epoch', 'N/A')}, "
-              f"best_val_acc={reader_ckpt.get('best_val_acc', 'N/A')}")
-    else:
-        print(f"  WARNING: {ckpt_path} not found, training from scratch")
-
-    total_params = sum(p.numel() for p in reader.parameters())
-    print(f"  Reader params: {total_params:,}")
+    reader = LearnableReader(
+        edge_feat_dim=7, hidden_dim=args.hidden_dim,
+        n_layers=args.n_layers, dropout=args.dropout,
+        stochastic=True, temperature=args.temperature,
+    ).to(device)
 
     optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
     builder = SubgraphBuilder()
     training_log = []
+    start_epoch = 0
 
-    # 4. REINFORCE 训练
-    for epoch in range(args.epochs):
+    if args.resume_checkpoint:
+        resume_path = repo_root / args.resume_checkpoint
+        print(f"  Resuming from {resume_path}")
+        ckpt = torch.load(str(resume_path), map_location=device, weights_only=False)
+        reader_sd, was_patched = patch_old_checkpoint(ckpt['reader_state_dict'])
+        reader.load_state_dict(reader_sd)
+        if was_patched:
+            print("  NOTE: checkpoint architecture patched, using fresh optimizer")
+        else:
+            try:
+                optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            except (ValueError, RuntimeError):
+                print("  WARNING: optimizer state incompatible, using fresh optimizer")
+        training_log = ckpt.get('training_log', [])
+        start_epoch = ckpt['epoch'] + 1
+        print(f"  Resumed at epoch {start_epoch + 1}/{args.epochs}")
+    else:
+        bootstrap_path = repo_root / args.bootstrap_checkpoint
+        if bootstrap_path.exists():
+            print(f"  Loading bootstrap from {bootstrap_path}")
+            reader_ckpt = torch.load(str(bootstrap_path), map_location=device, weights_only=False)
+            reader_sd, _ = patch_old_checkpoint(reader_ckpt['reader_state_dict'])
+            reader.load_state_dict(reader_sd)
+            print(f"  Checkpoint epoch: {reader_ckpt.get('epoch', 'N/A')}, "
+                  f"best_val_acc={reader_ckpt.get('best_val_acc', 'N/A')}")
+        else:
+            print(f"  WARNING: {bootstrap_path} not found, training from scratch")
+
+    total_params = sum(p.numel() for p in reader.parameters())
+    print(f"  Reader params: {total_params:,}")
+    print(f"  Temperature: {args.temperature}")
+    print(f"  Graphs per batch: {args.graphs_per_batch}, Seeds per graph: {args.seeds_per_graph}")
+    print(f"  Effective batch size: {args.graphs_per_batch * args.seeds_per_graph} trajectories")
+
+    # ---- 5. Self-Sampled REINFORCE 训练 ----
+    for epoch in range(start_epoch, args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
-        train_one_epoch(
-            reader, classifier, builder, optimizer, graph_cache, all_trajs,
-            args.batch_size, device, args.beta_aux, args.budgets_rel,
+        metrics = train_one_epoch(
+            reader, classifier, builder, optimizer,
+            train_graphs, train_indices, train_labels['labels'],
+            args.seeds_per_graph, args.graphs_per_batch, device,
         )
+        print(f"  Train: loss={metrics['loss']:.4f}  avg_R={metrics['avg_R']:.3f}  acc={metrics['acc']:.3f}")
 
-        training_log.append({'epoch': epoch + 1})
+        log_entry = {'epoch': epoch + 1, 'train_loss': metrics['loss'],
+                     'train_avg_R': metrics['avg_R'], 'train_acc': metrics['acc']}
+
+        if val_graphs is not None:
+            val_metrics = val_one_epoch(
+                reader, classifier, builder,
+                val_graphs, val_indices, val_labels['labels'],
+                device,
+            )
+            print(f"  Val:   avg_CE={val_metrics['avg_CE']:.3f}  acc={val_metrics['acc']:.3f}")
+            log_entry.update({f'val_{k}': v for k, v in val_metrics.items()})
+
+        training_log.append(log_entry)
 
         ckpt = {
             'epoch': epoch,

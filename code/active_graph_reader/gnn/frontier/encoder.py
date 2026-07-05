@@ -64,9 +64,17 @@ class FrontierNodesEncoder(nn.Module):
         n_total = g.num_nodes()
         edge_feat = g.edata['feat']
 
-        node_types = torch.zeros(n_total, dtype=torch.long, device=device)
-        node_types[n_revealed:] = 1
-        h = self.node_type_emb(node_types)
+        # 节点初始特征：revealed 有原图特征则用，否则 type embedding；frontier 恒为零
+        if 'feat' in g.ndata:
+            node_feat = g.ndata['feat'].to(device)
+            if node_feat.shape[1] != self.hidden_dim:
+                node_feat = F.pad(node_feat, (0, self.hidden_dim - node_feat.shape[1]))
+            h = node_feat
+        else:
+            node_types = torch.zeros(n_total, dtype=torch.long, device=device)
+            node_types[n_revealed:] = 1
+            h = self.node_type_emb(node_types)
+            h[n_revealed:] = 0  # frontier 恒为零
 
         # GNN 前向传播
         for i in range(self.n_layers):
