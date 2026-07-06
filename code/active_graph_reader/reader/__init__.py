@@ -8,11 +8,7 @@ from ..engine.reveal import reveal_one, reveal_batch
 from .fixed import create_fixed_reader
 
 from .reader_mlp import ReaderMLP
-from .gsae import GSAE, GSAEOutput
-from .evidence_network import EvidenceNetwork, EvidenceOutput
-from .belief_updater import LSTMBeliefUpdater
-from .final_classifier import FinalClassifier, FinalOutput
-from .pomdp_reader import POMDPReader
+from .gsae import compute_structural_features
 
 # Backward-compat alias
 FixedStrategyReader = create_fixed_reader
@@ -28,9 +24,5 @@ __all__ = [
     'reveal_batch',
     'create_fixed_reader',
     'ReaderMLP',
-    'GSAE', 'GSAEOutput',
-    'EvidenceNetwork', 'EvidenceOutput',
-    'LSTMBeliefUpdater',
-    'FinalClassifier', 'FinalOutput',
-    'POMDPReader',
+    'compute_structural_features',
 ]

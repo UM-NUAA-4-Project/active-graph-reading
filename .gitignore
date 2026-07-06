@@ -12,8 +12,11 @@ CLAUDE.md
 ../.claude/
 .claude/
 .superpowers/
+.vscode/
+pyrightconfig.json
 # PyTorch model/trajectory files
 *.pt
-
+explore/
 # Superpowers specs and plans
 docs/superpowers/
+
