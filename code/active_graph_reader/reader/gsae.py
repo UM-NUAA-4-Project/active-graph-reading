@@ -19,6 +19,7 @@ def compute_structural_features(g, n_revealed: int):
     Returns: struct_feat: (n_total, 3), 归一化在子图内完成
     """
     n_total = g.num_nodes()
+    device = g.device
     in_deg = g.in_degrees().float()
     out_deg = g.out_degrees().float()
 
@@ -28,14 +29,14 @@ def compute_structural_features(g, n_revealed: int):
     norm_deg = deg_revealed / deg_revealed.max().clamp(min=1)
     norm_fr_deg = deg_frontier / deg_frontier.abs().max().clamp(min=1)  # 归一到 [-1, 1]
 
-    clustering = torch.zeros(n_total)
+    clustering = torch.zeros(n_total, device=device)
     if n_total > 0 and n_revealed > 0:
         adj = g.adjacency_matrix().to_dense()  # 小子图，稠密化开销可忽略
         for v in range(n_revealed):
             d = int(deg_revealed[v].item())
             if d < 2:
                 continue
-            nbr_mask = (adj[v] > 0) & (torch.arange(n_total) < n_revealed)
+            nbr_mask = (adj[v] > 0) & (torch.arange(n_total, device=device) < n_revealed)
             nbr = nbr_mask.nonzero(as_tuple=True)[0]
             nbr_count = nbr.numel()
             if nbr_count < 2:
