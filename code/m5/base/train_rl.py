@@ -97,8 +97,8 @@ def train_one_epoch(
             for seed_i in range(n_seeds):
                 seed_node = deterministic_seed(graph_idx, seed_i, n_nodes)
 
-                # 构建初始状态
-                g = dgl.add_self_loop(g_raw)
+                # 构建初始状态（图已预计算自环，直接移到 GPU）
+                g = g_raw.to(device)
                 state = GraphState(g, seed_node=seed_node)
                 state._budget_limit = B
                 reader.reset()
@@ -197,7 +197,7 @@ def val_one_epoch(
             B = max(1, int(budget_ratio * n_nodes))
             seed_node = deterministic_seed(graph_idx, 0, n_nodes)
 
-            g = dgl.add_self_loop(g_raw)
+            g = g_raw.to(device)
             state = GraphState(g, seed_node=seed_node)
             state._budget_limit = B
             reader.reset()
@@ -287,7 +287,9 @@ def main():
 
     print(f"\n=== Loading {len(train_indices)} training graphs ===")
     train_graphs, train_labels = dgl.load_graphs(processed_path, idx_list=train_indices)
-    print(f"  Loaded {len(train_graphs)} graphs")
+    # 预计算自环（避免每次 trajectory 重复调用），保留在 CPU 供 per-graph 使用
+    train_graphs = [dgl.add_self_loop(g) for g in train_graphs]
+    print(f"  Loaded {len(train_graphs)} graphs (self-loops pre-computed)")
 
     # ---- 2. 加载 val 图（从 valid split，分层抽样） ----
     val_graphs, val_labels, val_indices = None, None, None
@@ -317,13 +319,14 @@ def main():
             elif len(sampled) < args.val_graphs:
                 remaining = [i for i in range(len(all_graphs)) if i not in set(sampled)]
                 sampled.extend(random.sample(remaining, min(args.val_graphs - len(sampled), len(remaining))))
-            val_graphs = [all_graphs[i] for i in sampled]
+            val_graphs = [dgl.add_self_loop(all_graphs[i]) for i in sampled]
             val_indices = [all_val_indices[i] for i in sampled]
             val_labels = {'labels': all_labels['labels'][[i for i in val_indices]]}
         else:
-            val_graphs, val_labels, val_indices = all_graphs, all_labels, all_val_indices
+            val_graphs = [dgl.add_self_loop(g) for g in all_graphs]
+            val_labels, val_indices = all_labels, all_val_indices
 
-        print(f"  Validation set: {len(val_graphs)} graphs "
+        print(f"  Validation set: {len(val_graphs)} graphs (self-loops pre-computed) "
               f"({len(set(int(val_labels['labels'][idx].item()) for idx in val_indices))}/{K} classes)")
 
     # ---- 3. 加载 classifier（冻结） ----

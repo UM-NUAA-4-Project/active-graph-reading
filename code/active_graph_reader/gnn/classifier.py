@@ -99,3 +99,35 @@ class GraphClassifier(nn.Module):
         node_ids: torch.Tensor,
     ) -> torch.Tensor:
         return self.encoder(g, node_ids)
+
+
+# ------------------------------------------------------------------
+# Factory: load frozen f_class from checkpoint
+# ------------------------------------------------------------------
+
+def load_fclass(
+    ckpt_path: str,
+    device: torch.device | str = 'cpu',
+    edge_feat_dim: int = 7,
+    n_classes: int = 37,
+    hidden_dim: int = 300,
+    n_layers: int = 5,
+    dropout: float = 0.5,
+) -> GraphClassifier:
+    """加载冻结的 f_class 全图分类器（eval 模式，requires_grad=False）。"""
+    device = torch.device(device)
+    clf = GraphClassifier(
+        edge_feat_dim=edge_feat_dim,
+        n_classes=n_classes,
+        hidden_dim=hidden_dim,
+        n_layers=n_layers,
+        dropout=dropout,
+    ).to(device)
+    ckpt = torch.load(str(ckpt_path), map_location=device, weights_only=False)
+    clf.load_state_dict(ckpt['model_state_dict'], strict=True)
+    clf.eval()
+    for p in clf.parameters():
+        p.requires_grad = False
+    logger.info("f_class loaded (val_acc=%.4f), frozen.",
+                ckpt.get('val_acc', float('nan')))
+    return clf

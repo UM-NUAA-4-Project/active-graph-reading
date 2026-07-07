@@ -9,7 +9,8 @@
 """
 
 import logging
-from typing import Tuple, Dict, Any, Iterator
+from pathlib import Path
+from typing import Dict, Sequence, Tuple, Any, Iterator
 
 import dgl
 from ogb.graphproppred import DglGraphPropPredDataset
@@ -148,3 +149,32 @@ def get_graph_stats(g: dgl.DGLGraph, label: int = None) -> Dict[str, Any]:
         stats['label'] = label
 
     return stats
+
+
+# ------------------------------------------------------------------
+# 按索引批量加载
+# ------------------------------------------------------------------
+
+def load_graphs_by_index(
+    data_root: str,
+    graph_indices: Sequence[int],
+) -> Tuple[Dict[int, dgl.DGLGraph], Dict[int, int]]:
+    """按 OGB 原始索引批量加载全图及其标签。
+
+    Returns
+    -------
+    graphs : {graph_idx: dgl.DGLGraph}
+    labels : {graph_idx: int}
+    """
+    processed_path = str(
+        Path(data_root) / 'ogbg_ppa' / 'processed' / 'dgl_data_processed'
+    )
+    idx_list = sorted(set(int(i) for i in graph_indices))
+    logging.getLogger(__name__).info(
+        "Loading %d graphs from %s ...", len(idx_list), processed_path,
+    )
+    graphs, labels_dict = dgl.load_graphs(processed_path, idx_list=idx_list)
+    labels_t = labels_dict['labels']
+    out_g = {oid: g for oid, g in zip(idx_list, graphs)}
+    out_l = {oid: int(labels_t[oid].item()) for oid in idx_list}
+    return out_g, out_l

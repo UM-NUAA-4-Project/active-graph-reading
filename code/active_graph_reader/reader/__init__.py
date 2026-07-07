@@ -2,6 +2,7 @@
 
 from ..core.base_reader import BaseReader
 from .learnable_reader import LearnableReader
+from .prototype_reader import PrototypeReader
 from ..gnn.frontier.graph_builder import FrontierGraphBuilder, FrontierSubgraph
 from ..gnn.frontier.encoder import FrontierNodesEncoder
 from ..engine.reveal import reveal_one, reveal_batch
@@ -17,6 +18,7 @@ __all__ = [
     'BaseReader',
     'FixedStrategyReader',
     'LearnableReader',
+    'PrototypeReader',
     'FrontierGraphBuilder',
     'FrontierSubgraph',
     'FrontierNodesEncoder',

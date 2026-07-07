@@ -54,14 +54,18 @@ class FrontierGraphBuilder:
             g = dgl.graph(([], []), num_nodes=0)
             return FrontierSubgraph(g=g, n_revealed=0, frontier_original_ids=[])
 
+        # 检测原图所在设备，所有新张量与之对齐
+        device = (state.edge_feat.device if state.edge_feat is not None
+                  else state.node_feat.device)
+
         # 向量化 old→new ID 映射
         max_old = revealed[-1]
         if frontier:
             max_old = max(max_old, frontier[-1])
-        old_to_new = torch.full((max_old + 1,), -1, dtype=torch.long)
-        old_to_new[revealed] = torch.arange(n_revealed)
+        old_to_new = torch.full((max_old + 1,), -1, dtype=torch.long, device=device)
+        old_to_new[revealed] = torch.arange(n_revealed, device=device)
         if frontier:
-            old_to_new[frontier] = torch.arange(n_revealed, n_total)
+            old_to_new[frontier] = torch.arange(n_revealed, n_total, device=device)
 
         src_parts = []
         dst_parts = []
@@ -70,7 +74,7 @@ class FrontierGraphBuilder:
         # revealed ↔ revealed 边（双向）
         if state.revealed_edge_keys:
             rk_list = list(state.revealed_edge_keys)
-            rk_t = torch.tensor(rk_list, dtype=torch.long)
+            rk_t = torch.tensor(rk_list, dtype=torch.long, device=device)
             edge_ids_r = [state._edge_key_to_id[k] for k in rk_list]
             feat_r = state.edge_feat[edge_ids_r]
 
@@ -93,7 +97,7 @@ class FrontierGraphBuilder:
             fr_ids = [state._edge_key_to_id[(min(u, v), max(u, v))] for u, v in fr_keys]
             feat_f = state.edge_feat[fr_ids]
 
-            fr_t = torch.tensor(fr_keys, dtype=torch.long)
+            fr_t = torch.tensor(fr_keys, dtype=torch.long, device=device)
             u_f = old_to_new[fr_t[:, 0]]  # revealed side
             v_f = old_to_new[fr_t[:, 1]]  # frontier side
 
@@ -104,7 +108,7 @@ class FrontierGraphBuilder:
         # 构建 DGL 图
         if len(src_parts) == 0:
             g = dgl.graph(([], []), num_nodes=n_total)
-            edge_feat = torch.empty(0, state.edge_feat_dim)
+            edge_feat = torch.empty(0, state.edge_feat_dim, device=device)
         else:
             src = torch.cat(src_parts, dim=0)
             dst = torch.cat(dst_parts, dim=0)
@@ -117,9 +121,9 @@ class FrontierGraphBuilder:
         if state.has_node_feat and state.node_feat is not None:
             feat_dim = state.node_feat_dim
             feat_revealed = state.node_feat[revealed]
-            feat_frontier = torch.zeros(len(frontier), feat_dim)
+            feat_frontier = torch.zeros(len(frontier), feat_dim, device=device)
             g.ndata['feat'] = torch.cat([feat_revealed, feat_frontier], dim=0)
-            g.ndata['has_orig_feat'] = torch.ones(n_revealed, dtype=torch.bool)
+            g.ndata['has_orig_feat'] = torch.ones(n_revealed, dtype=torch.bool, device=device)
 
         return FrontierSubgraph(g=g, n_revealed=n_revealed, frontier_original_ids=frontier)
 
