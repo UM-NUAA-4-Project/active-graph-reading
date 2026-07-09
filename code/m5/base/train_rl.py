@@ -12,6 +12,9 @@ REINFORCE: loss = -R · Σ_t log π_t(a_t)  (batch 平均)
 batch size = x · n 条轨迹
 
 用法:
+python code/m5/base/train_rl.py --root /mnt/data --reward-type binary --epochs 10 
+--temperature 0.2 --resume-checkpoint m5/base/rl/binary/checkpoint_epoch1.pt 
+--graphs-per-batch 16 --seeds-per-graph 2 --output-dir m5/base/rl/binary
   python code/m5/base/train_rl.py --root /mnt/data --epochs 10 --temperature 1.5
   python code/m5/base/train_rl.py --root /mnt/data --temperature 0.2 --val-graphs 10000
   python code/m5/base/train_rl.py --root /mnt/data --reward-type tanh --epochs 10 --temperature 0.2
@@ -255,7 +258,7 @@ def main():
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='限制加载训练图总数 (0=全部)')
-    parser.add_argument('--output-dir', default='m5/base/rl/')
+    parser.add_argument('--output-dir', default='m5/base/rl/binary')
     parser.add_argument('--resume-checkpoint', default='',
                         help='从指定 checkpoint 恢复训练')
     parser.add_argument('--val-graphs', type=int, default=0,
