@@ -37,10 +37,9 @@ from ogb.graphproppred import DglGraphPropPredDataset, Evaluator
 
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_loop import RevealLoop
-from active_graph_reader.strategies.registry import get_strategy
-from active_graph_reader.cost.registry import get_cost_model
-from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
-from active_graph_reader.encoder.classifier import GraphClassifier
+from active_graph_reader.reader.fixed.registry import get_strategy
+from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
+from active_graph_reader.gnn.classifier import GraphClassifier
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
 logger = logging.getLogger(__name__)
@@ -127,14 +126,14 @@ def reveal_and_build(
     seed_node: int,
     builder: SubgraphBuilder,
     strategy,
-    cost_model,
+    None,
 ):
     """Run reader on a full graph and return the subgraph.
 
     Returns (sub_g, original_ids) or None if the subgraph is empty.
     """
     state = GraphState(full_g, seed_node=seed_node)
-    loop = RevealLoop(state, strategy, cost_model)
+    loop = RevealLoop(state, strategy)
     loop.run(budget=budget)
 
     sub_g, original_ids = builder.build(state)
@@ -148,7 +147,7 @@ def reveal_and_build(
 # ---------------------------------------------------------------------------
 
 def train_one_epoch(
-    model, dataset, split_idx, builder, reader_strategy, cost_model,
+    model, dataset, split_idx, builder, reader_strategy,
     optimizer, device, budget_ratios, inner_batch=8,
 ):
     model.train()
@@ -169,7 +168,7 @@ def train_one_epoch(
 
         result = reveal_and_build(
             full_g, budget, seed_node, builder,
-            reader_strategy, cost_model,
+            reader_strategy,
         )
         if result is None:
             continue
@@ -215,7 +214,7 @@ def _forward_batch(model, sub_graphs, labels, optimizer, device):
 
 @torch.no_grad()
 def evaluate(
-    model, dataset, split_idx, builder, reader_strategy, cost_model,
+    model, dataset, split_idx, builder, reader_strategy,
     evaluator, device, budget_ratios, n_seeds=3,
 ):
     model.eval()
@@ -234,7 +233,7 @@ def evaluate(
                 seed_node = (idx * 31 + seed * 17 + 7) % max(n_nodes, 1)
                 result = reveal_and_build(
                     full_g, budget, seed_node, builder,
-                    reader_strategy, cost_model,
+                    reader_strategy,
                 )
                 if result is None:
                     continue
@@ -299,7 +298,6 @@ def main():
     # Reusable components
     builder = SubgraphBuilder()
     reader_strategy = get_strategy('random')
-    cost_model = get_cost_model('unit')
 
     # Optimizer — only trainable parameters
     trainable = [p for p in model.parameters() if p.requires_grad]
@@ -327,7 +325,7 @@ def main():
 
         train_loss = train_one_epoch(
             model, dataset, train_idx, builder,
-            reader_strategy, cost_model, optimizer, device,
+            reader_strategy, optimizer, device,
             TRAIN_BUDGET_RATIOS,
         )
         logger.info("train_loss=%.4f", train_loss)
@@ -335,7 +333,7 @@ def main():
         # Validate every epoch (on subset for speed)
         valid_perf = evaluate(
             model, dataset, valid_subset, builder,
-            reader_strategy, cost_model, evaluator, device,
+            reader_strategy, evaluator, device,
             EVAL_BUDGET_RATIOS, n_seeds=1,
         )
         metric = evaluator.eval_metric
@@ -358,7 +356,7 @@ def main():
 
     test_perf = evaluate(
         model, dataset, test_subset, builder,
-        reader_strategy, cost_model, evaluator, device,
+        reader_strategy, evaluator, device,
         EVAL_BUDGET_RATIOS, n_seeds=3,
     )
     logger.info("Final test_%s=%.4f", metric, test_perf[metric])

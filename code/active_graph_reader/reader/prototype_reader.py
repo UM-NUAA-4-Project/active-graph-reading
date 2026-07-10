@@ -6,7 +6,7 @@
       → concat[b_t(37) ‖ frontier_embeds(128) ‖ budget_ratio(1) ‖ struct(3)]
       → ReaderMLP(169→128→1) → scores → argmax → next_node
 
-与 LearnableReader (132-dim) 的核心差异：额外注入当前信念 b_t，
+与 LearnableReader (132-dim) 的差异：额外注入当前信念 b_t，
 让策略知道"当前子图像哪一类"，基于此决定下一步揭示哪个节点。
 """
 
@@ -23,6 +23,8 @@ from ..core.base_reader import BaseReader
 from ..gnn.frontier.graph_builder import FrontierGraphBuilder
 from ..gnn.frontier.encoder import FrontierNodesEncoder
 from ..gnn.subgraph_builder import SubgraphBuilder
+from ..gnn.subgraph_encoder import SubgraphEncoder
+from .prototype_bank import PrototypeBank
 from ..engine.graph_state import GraphState
 
 
@@ -30,21 +32,28 @@ class PrototypeReader(BaseReader, nn.Module):
     """Belief-aware 原型阅读器。
 
     每步查询原型库获取当前信念 b_t，将其作为 frontier 节点选择的上下文信号。
+    g_φ 和 bank 作为构造参数直接注入，权责清晰。
 
     Parameters
     ----------
-    edge_feat_dim : int   边特征维度（PPA: 7）
-    hidden_dim : int      隐层维度（默认 128）
-    n_classes : int       类别数（默认 37）
-    n_layers : int        FrontierEncoder GNN 层数（默认 2）
-    dropout : float       Dropout 概率（默认 0.1）
-    stochastic : bool     推理时是否从概率分布采样（默认 False=argmax）
-    temperature : float   采样温度（默认 1.0）
+    g_phi : SubgraphEncoder
+        子图编码器（2 层 GINE），输出 300-dim 嵌入。
+    bank : PrototypeBank
+        原型库，提供 query(embedding) → b_t(37) 接口。
+    edge_feat_dim : int
+    hidden_dim : int
+    n_classes : int
+    n_layers : int
+    dropout : float
+    stochastic : bool
+    temperature : float
     """
 
     def __init__(
         self,
-        edge_feat_dim: int,
+        g_phi: SubgraphEncoder,
+        bank: PrototypeBank,
+        edge_feat_dim: int = 7,
         hidden_dim: int = 128,
         n_classes: int = 37,
         n_layers: int = 2,
@@ -52,7 +61,8 @@ class PrototypeReader(BaseReader, nn.Module):
         stochastic: bool = False,
         temperature: float = 1.0,
     ):
-        super().__init__()
+        BaseReader.__init__(self)
+        nn.Module.__init__(self)
 
         self.stochastic = stochastic
         self.temperature = temperature
@@ -73,39 +83,26 @@ class PrototypeReader(BaseReader, nn.Module):
             dropout=dropout,
         )
 
-        # 外部注入（不由本类管理参数）
-        self._g_phi = None
-        self._bank = None
-
-    # ------------------------------------------------------------------
-    # 外部依赖注入
-    # ------------------------------------------------------------------
-
-    def set_encoder(self, g_phi):
-        """注入子图编码器 g_φ（需有 get_embedding(g, nids)→(B, hidden) 接口）。"""
         self._g_phi = g_phi
-
-    def set_bank(self, bank):
-        """注入原型库（需有 query(emb)→(B, n_classes) 接口）。"""
         self._bank = bank
 
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
     @property
-    def g_phi(self):
-        if self._g_phi is None:
-            raise RuntimeError("g_φ not set. Call set_encoder() first.")
+    def g_phi(self) -> SubgraphEncoder:
         return self._g_phi
 
     @property
-    def bank(self):
-        if self._bank is None:
-            raise RuntimeError("PrototypeBank not set. Call set_bank() first.")
+    def bank(self) -> PrototypeBank:
         return self._bank
 
     # ------------------------------------------------------------------
-    # 核心管线
+    # Belief query
     # ------------------------------------------------------------------
 
-    def _query_belief(self, graph_state: GraphState):
+    def _query_belief(self, graph_state: GraphState) -> torch.Tensor:
         """从当前 GraphState 构建最终子图，查询信念 b_t。"""
         sub_g, _orig_ids = self.subgraph_builder.build(graph_state)
         if sub_g.num_nodes() == 0:
@@ -122,13 +119,16 @@ class PrototypeReader(BaseReader, nn.Module):
             b_t = self.bank.query(emb.unsqueeze(0)).squeeze(0)
         return b_t.detach()
 
+    # ------------------------------------------------------------------
+    # Forward
+    # ------------------------------------------------------------------
+
     def forward(self, graph_state: GraphState, sample: bool = False):
         """核心可微管线。
 
         sample=False: Returns (scores, probs, frontier_nodes)
         sample=True:  Returns (scores, probs, frontier_nodes, action_idx, log_prob)
         """
-        # 1. frontier 子图 → frontier_embeds
         frontier_sub = self.frontier_builder.build(graph_state)
         frontier_embeds, frontier_nodes = self.frontier_encoder(frontier_sub)
 
@@ -140,16 +140,17 @@ class PrototypeReader(BaseReader, nn.Module):
         device = frontier_embeds.device
         dtype = frontier_embeds.dtype
 
-        # 2. 信念 b_t
+        # 信念 b_t (grad stopped — 分类器/编码器不通过 RL 训练)
         b_t = self._query_belief(graph_state).to(device=device, dtype=dtype)
         b_t_expanded = b_t.unsqueeze(0).expand(len(frontier_nodes), -1)
 
-        # 3. budget ratio + structural features
+        # budget ratio
         remaining = graph_state.get_budget_ratio_remaining()
         remaining_tensor = torch.full(
             (len(frontier_nodes), 1), remaining, device=device, dtype=dtype,
         )
 
+        # structural features
         struct_all = compute_structural_features(
             frontier_sub.g, frontier_sub.n_revealed,
         )
@@ -157,12 +158,11 @@ class PrototypeReader(BaseReader, nn.Module):
             device=device, dtype=dtype,
         )
 
-        # 4. 拼接状态 → ReaderMLP 打分
+        # concat → scores
         feat = torch.cat(
             [b_t_expanded, frontier_embeds, remaining_tensor, struct_frontier],
             dim=-1,
         )
-
         scores = self.reader_mlp(feat)
         probs = F.softmax(scores, dim=0)
 
@@ -176,13 +176,14 @@ class PrototypeReader(BaseReader, nn.Module):
 
         return scores, probs, frontier_nodes
 
-    def select(self, graph_state: GraphState) -> Optional[int]:
-        """选择下一个揭示节点。stochastic=False 时 argmax。"""
-        scores, probs, frontier_nodes = self.forward(graph_state)
+    # ------------------------------------------------------------------
+    # BaseReader interface
+    # ------------------------------------------------------------------
 
+    def select(self, graph_state: GraphState) -> Optional[int]:
+        scores, probs, frontier_nodes = self.forward(graph_state)
         if len(frontier_nodes) == 0:
             return None
-
         if self.stochastic:
             if self.temperature != 1.0:
                 probs = F.softmax(scores / self.temperature, dim=0)

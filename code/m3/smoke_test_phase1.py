@@ -17,11 +17,10 @@ from ogb.graphproppred import DglGraphPropPredDataset
 
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_loop import RevealLoop
-from active_graph_reader.strategies.registry import get_strategy
-from active_graph_reader.cost.registry import get_cost_model
-from active_graph_reader.encoder.subgraph_builder import SubgraphBuilder
-from active_graph_reader.encoder.gin_encoder import GINEEncoder
-from active_graph_reader.encoder.classifier import GraphClassifier
+from active_graph_reader.reader.fixed.registry import get_strategy
+from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
+from active_graph_reader.gnn.gin_encoder import GINEEncoder
+from active_graph_reader.gnn.classifier import GraphClassifier
 
 
 def smoke_test():
@@ -47,8 +46,7 @@ def smoke_test():
     print("\n[2] Running Reader (BFS, budget=10, seed=42)...")
     state = GraphState(g, seed_node=42)
     strategy = get_strategy('bfs')
-    cost_model = get_cost_model('unit')
-    loop = RevealLoop(state, strategy, cost_model)
+    loop = RevealLoop(state, strategy)
     stats = loop.run(budget=10)
     print(f"  revealed nodes: {stats['n_revealed']}/{stats['n_total']} "
           f"({stats['reveal_ratio']:.2%})")
@@ -99,12 +97,12 @@ def smoke_test():
     print("\n[6] Batch test (2 subgraphs with different budgets)...")
 
     state1 = GraphState(g, seed_node=42)
-    loop1 = RevealLoop(state1, get_strategy('bfs'), get_cost_model('unit'))
+    loop1 = RevealLoop(state1, get_strategy('bfs'))
     loop1.run(budget=5)
     sub_g1, ids1 = builder.build(state1)
 
     state2 = GraphState(g, seed_node=42)
-    loop2 = RevealLoop(state2, get_strategy('bfs'), get_cost_model('unit'))
+    loop2 = RevealLoop(state2, get_strategy('bfs'))
     loop2.run(budget=20)
     sub_g2, ids2 = builder.build(state2)
 
