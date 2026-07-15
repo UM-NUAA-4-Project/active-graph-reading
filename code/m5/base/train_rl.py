@@ -84,7 +84,9 @@ def train_one_epoch(
         batch_end = min(batch_start + batch_size, len(graph_order))
         batch_indices = graph_order[batch_start:batch_end]
 
-        batch_losses = []
+        traj_subgraphs = []
+        traj_labels = []
+        traj_log_probs = []
 
         for local_i in batch_indices:
             g_raw = graphs[local_i]
@@ -100,9 +102,7 @@ def train_one_epoch(
             for seed_i in range(n_seeds):
                 seed_node = deterministic_seed(graph_idx, seed_i, n_nodes)
 
-                # 构建初始状态（图已预计算自环，直接移到 GPU）
-                g = g_raw.to(device)
-                state = GraphState(g, seed_node=seed_node)
+                state = GraphState(g_raw, seed_node=seed_node)
                 state._budget_limit = B
                 reader.reset()
                 initial_frontier = list(state._initial_frontier)
@@ -125,30 +125,42 @@ def train_one_epoch(
                 if not log_probs:
                     continue
 
-                # 终端分类
                 sub_g, _ = builder.build(state)
-                sub_g = sub_g.to(device)
-                nids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=device)
-                with torch.no_grad():
-                    logits = classifier(sub_g, nids)
-                ce = F.cross_entropy(logits, y).item()
-                correct = 1.0 if logits.argmax(dim=-1).item() == label else 0.0
+                traj_subgraphs.append(sub_g)
+                traj_labels.append(y)
+                traj_log_probs.append(log_probs)
 
-                if correct:
-                    total_correct += 1
+        if not traj_subgraphs:
+            continue
 
-                if reward_type == 'tanh':
-                    R = math.tanh(1.0 - ce / LN_K)
-                else:  # binary
-                    R = 1.0 if correct else 0.0
+        # 批量 classifier 前向
+        batch_g = dgl.batch(traj_subgraphs).to(device)
+        nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
+        with torch.no_grad():
+            all_logits = classifier(batch_g, nids)  # (n_trajs, K)
 
-                total_R += R
-                total_trajs += 1
+        # 逐 trajectory 计算 reward 和 loss
+        batch_losses = []
+        for i, log_probs in enumerate(traj_log_probs):
+            logits_i = all_logits[i:i + 1]
+            ce = F.cross_entropy(logits_i, traj_labels[i]).item()
+            correct = 1.0 if logits_i.argmax(dim=-1).item() == traj_labels[i].item() else 0.0
 
-                # REINFORCE: loss = -R * Σ log π_t(a_t)
-                sum_log_prob = torch.stack(log_probs).sum()
-                rl_loss = -R * sum_log_prob
-                batch_losses.append(rl_loss)
+            if correct:
+                total_correct += 1
+
+            if reward_type == 'tanh':
+                R = math.tanh(1.0 - ce / LN_K)
+            else:  # binary
+                R = 1.0 if correct else 0.0
+
+            total_R += R
+            total_trajs += 1
+
+            # REINFORCE: loss = -R * Σ log π_t(a_t)
+            sum_log_prob = torch.stack(log_probs).sum()
+            rl_loss = -R * sum_log_prob
+            batch_losses.append(rl_loss)
 
         if not batch_losses:
             continue
@@ -189,8 +201,12 @@ def val_one_epoch(
     total_trajs = 0
     total_correct = 0
 
+    # 第一阶段：收集所有 (sub_g, y, label) — reveal 仍逐轨迹串行
+    val_subgraphs = []
+    val_labels = []
+
     for local_i in tqdm(range(len(graphs)), desc="  Validating"):
-        g_raw = graphs[local_i]
+        g_raw = graphs[local_i]  # 已预加载到 GPU
         graph_idx = ogb_indices[local_i]
         label = int(labels_tensor[graph_idx].item())
         y = torch.tensor([label], device=device)
@@ -200,8 +216,7 @@ def val_one_epoch(
             B = max(1, int(budget_ratio * n_nodes))
             seed_node = deterministic_seed(graph_idx, 0, n_nodes)
 
-            g = g_raw.to(device)
-            state = GraphState(g, seed_node=seed_node)
+            state = GraphState(g_raw, seed_node=seed_node)
             state._budget_limit = B
             reader.reset()
             initial_frontier = list(state._initial_frontier)
@@ -218,12 +233,21 @@ def val_one_epoch(
                 reveal_node(state, chosen)
 
             sub_g, _ = builder.build(state)
-            sub_g = sub_g.to(device)
-            nids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=device)
-            logits = classifier(sub_g, nids)
-            ce = F.cross_entropy(logits, y).item()
+            val_subgraphs.append(sub_g)
+            val_labels.append((y, label))
 
-            if logits.argmax(dim=-1).item() == label:
+    # 第二阶段：批量 classifier 前向
+    for i in tqdm(range(0, len(val_subgraphs), 512), desc="  Classifying"):
+        chunk_sub = val_subgraphs[i:i + 512]
+        chunk_labels = val_labels[i:i + 512]
+
+        batch_g = dgl.batch(chunk_sub).to(device)
+        nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
+        logits = classifier(batch_g, nids)  # (chunk_size, K)
+
+        for j, (y, label) in enumerate(chunk_labels):
+            ce = F.cross_entropy(logits[j:j + 1], y).item()
+            if logits[j].argmax(dim=-1).item() == label:
                 total_correct += 1
             total_ce += ce
             total_trajs += 1
@@ -290,9 +314,9 @@ def main():
 
     print(f"\n=== Loading {len(train_indices)} training graphs ===")
     train_graphs, train_labels = dgl.load_graphs(processed_path, idx_list=train_indices)
-    # 预计算自环（避免每次 trajectory 重复调用），保留在 CPU 供 per-graph 使用
-    train_graphs = [dgl.add_self_loop(g) for g in train_graphs]
-    print(f"  Loaded {len(train_graphs)} graphs (self-loops pre-computed)")
+    # 预计算自环 + 预加载到 GPU（避免每次 trajectory 重复 CPU→GPU 传输）
+    train_graphs = [dgl.add_self_loop(g).to(device) for g in train_graphs]
+    print(f"  Loaded {len(train_graphs)} graphs on {device} (self-loops pre-computed)")
 
     # ---- 2. 加载 val 图（从 valid split，分层抽样） ----
     val_graphs, val_labels, val_indices = None, None, None
@@ -322,14 +346,14 @@ def main():
             elif len(sampled) < args.val_graphs:
                 remaining = [i for i in range(len(all_graphs)) if i not in set(sampled)]
                 sampled.extend(random.sample(remaining, min(args.val_graphs - len(sampled), len(remaining))))
-            val_graphs = [dgl.add_self_loop(all_graphs[i]) for i in sampled]
+            val_graphs = [dgl.add_self_loop(all_graphs[i]).to(device) for i in sampled]
             val_indices = [all_val_indices[i] for i in sampled]
             val_labels = {'labels': all_labels['labels'][[i for i in val_indices]]}
         else:
-            val_graphs = [dgl.add_self_loop(g) for g in all_graphs]
+            val_graphs = [dgl.add_self_loop(g).to(device) for g in all_graphs]
             val_labels, val_indices = all_labels, all_val_indices
 
-        print(f"  Validation set: {len(val_graphs)} graphs (self-loops pre-computed) "
+        print(f"  Validation set: {len(val_graphs)} graphs on {device} (self-loops pre-computed) "
               f"({len(set(int(val_labels['labels'][idx].item()) for idx in val_indices))}/{K} classes)")
 
     # ---- 3. 加载 classifier（冻结） ----

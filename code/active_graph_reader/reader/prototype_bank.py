@@ -1,7 +1,6 @@
 """PrototypeBank: 可学习高斯混合原型库 + 闭式查询。
 
 每步独立查询：v_t(300) → PCA降维 → 混合高斯后验 → b_t(37)
-μ 可学习（原型跟随），Σ/π/PCA 固定。
 
 用法:
   bank = PrototypeBank(mu_init, sigma2, class_id, pi, pca_W)
