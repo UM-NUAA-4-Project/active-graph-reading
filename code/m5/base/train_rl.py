@@ -151,6 +151,8 @@ def train_one_epoch(
 
             if reward_type == 'tanh':
                 R = math.tanh(1.0 - ce / LN_K)
+            elif reward_type == 'asymmetric':
+                R = 1.0 if correct else -0.1
             else:  # binary
                 R = 1.0 if correct else 0.0
 
@@ -271,7 +273,7 @@ def main():
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--graphs-per-batch', type=int, default=8,
+    parser.add_argument('--graphs-per-batch', type=int, default=32,
                         help='每 batch 的图数量 (x)')
     parser.add_argument('--seeds-per-graph', type=int, default=4,
                         help='每张图用几个 seed (n), batch size = x * n')
@@ -287,8 +289,8 @@ def main():
                         help='从指定 checkpoint 恢复训练')
     parser.add_argument('--val-graphs', type=int, default=0,
                         help='验证集图数量 (0=跳过验证)')
-    parser.add_argument('--reward-type', choices=['binary', 'tanh'], default='binary',
-                        help='R 计算方式: binary=0/1正确性, tanh=tanh(1-CE/ln37)')
+    parser.add_argument('--reward-type', choices=['binary', 'tanh', 'asymmetric'], default='binary',
+                        help='R 计算方式: binary=0/1正确性, tanh=tanh(1-CE/ln37), asymmetric=正确+1/错误-0.1')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 

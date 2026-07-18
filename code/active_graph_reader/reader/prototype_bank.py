@@ -1,9 +1,9 @@
 """PrototypeBank: 可学习高斯混合原型库 + 闭式查询。
 
-每步独立查询：v_t(300) → PCA降维 → 混合高斯后验 → b_t(37)
+每步独立查询：v_t(300) → PCA降维 → 混合高斯后验（均匀先验） → b_t(37)
 
 用法:
-  bank = PrototypeBank(mu_init, sigma2, class_id, pi, pca_W)
+  bank = PrototypeBank(mu_init, sigma2, class_id, pca_W)
   b_t = bank.query(v_t)   # v_t: (batch, 300) → b_t: (batch, 37)
 """
 
@@ -25,23 +25,20 @@ class PrototypeBank(nn.Module):
         对角方差（Ledoit-Wolf shrinkage 后），固定。
     class_id : Tensor (K_total,)
         每个原型对应的类别标签 (0..36)。
-    pi : Tensor (37,)
-        类先验 P(c=k)，固定。
     pca_W : Tensor (300, d)
         PCA 变换矩阵，固定。
     """
 
-    def __init__(self, mu_init, sigma2, class_id, pi, pca_W):
+    def __init__(self, mu_init, sigma2, class_id, pca_W):
         super().__init__()
         self.mu = nn.Parameter(mu_init.clone())
         self.register_buffer('sigma2', sigma2)
         self.register_buffer('class_id', class_id)
-        self.register_buffer('pi', pi)
         self.register_buffer('pca_W', pca_W)
 
         self._K_total = mu_init.shape[0]
         self._d = mu_init.shape[1]
-        self._n_classes = pi.shape[0]
+        self._n_classes = int(class_id.max().item()) + 1
 
         # 预计算每类的 log(1/M_k) 混合权重
         M_k = torch.bincount(class_id, minlength=self._n_classes).float()
@@ -106,9 +103,8 @@ class PrototypeBank(nn.Module):
             log_N_weighted, self.class_id, self._n_classes
         )                                                   # (batch, 37)
 
-        # 后验 = softmax(log prior + log likelihood)
-        log_post = log_p + self.pi.log()                   # (batch, 37)
-        return log_post
+        # 均匀先验 P(c)=1/37，常数项在 softmax 中约掉
+        return log_p                                       # (batch, 37)
 
     # ------------------------------------------------------------------
     # Properties
