@@ -9,6 +9,7 @@
 
 from typing import List, Tuple
 
+import dgl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -87,3 +88,65 @@ class FrontierNodesEncoder(nn.Module):
 
         frontier_embeds = h[n_revealed:]
         return frontier_embeds, frontier
+
+    def forward_batch(
+        self, subgraphs: List[FrontierSubgraph],
+    ) -> List[Tuple[torch.Tensor, List[int]]]:
+        """一次 GNN forward 编码多个扩展子图，返回每个子图的 frontier embedding。
+
+        将多个小图的 GNN kernel launch 合并为一次，减少 GPU kernel overhead。
+        """
+        if not subgraphs:
+            return []
+
+        device = self.node_type_emb.weight.device
+        batch_g = dgl.batch([sg.g.to(device) for sg in subgraphs])
+        n_total = batch_g.num_nodes()
+
+        # 计算每个子图在 batch 中的偏移
+        node_counts = [sg.g.num_nodes() for sg in subgraphs]
+        offsets = [0]
+        for c in node_counts:
+            offsets.append(offsets[-1] + c)
+
+        # 构建 node type embedding，子图内前 n_revealed 为 revealed(0)，后为 frontier(1)
+        node_types = torch.zeros(n_total, dtype=torch.long, device=device)
+        frontier_starts: List[int] = []
+        frontier_counts: List[int] = []
+        for i, sg in enumerate(subgraphs):
+            start = offsets[i]
+            n_rev = sg.n_revealed
+            n_fr = len(sg.frontier_original_ids)
+            frontier_starts.append(start + n_rev)
+            frontier_counts.append(n_fr)
+            if n_fr > 0:
+                node_types[start + n_rev:start + n_rev + n_fr] = 1
+
+        h = self.node_type_emb(node_types)
+        for start, cnt in zip(frontier_starts, frontier_counts):
+            if cnt > 0:
+                h[start:start + cnt] = 0  # frontier 初始化为零
+
+        edge_feat = batch_g.edata.get('feat',
+                      torch.empty(0, 7, device=device))
+
+        # GNN（一次 forward）
+        for i in range(self.n_layers):
+            h = self.convs[i](batch_g, h, edge_feat)
+            h = self.bns[i](h)
+            if i < self.n_layers - 1:
+                h = F.dropout(F.relu(h), p=self.dropout, training=self.training)
+            else:
+                h = F.dropout(h, p=self.dropout, training=self.training)
+
+        # 拆分回每个子图的 frontier embeddings
+        results: List[Tuple[torch.Tensor, List[int]]] = []
+        for i, sg in enumerate(subgraphs):
+            start = frontier_starts[i]
+            cnt = frontier_counts[i]
+            if cnt == 0:
+                results.append((torch.empty(0, self.hidden_dim, device=device), []))
+            else:
+                results.append((h[start:start + cnt], sg.frontier_original_ids))
+
+        return results

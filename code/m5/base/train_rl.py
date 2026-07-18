@@ -44,6 +44,7 @@ from active_graph_reader.gnn.classifier import GraphClassifier
 from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
+from active_graph_reader.reader.gsae import compute_structural_features
 from training_utils import patch_old_checkpoint
 
 K = 37
@@ -99,36 +100,70 @@ def train_one_epoch(
             budget_ratio = random.choice(BUDGET_OPTIONS)
             B = max(1, int(budget_ratio * n_nodes))
 
+            # ---- 创建所有 seed 的 state ----
+            states = []
             for seed_i in range(n_seeds):
                 seed_node = deterministic_seed(graph_idx, seed_i, n_nodes)
-
                 state = GraphState(g_raw, seed_node=seed_node)
                 state._budget_limit = B
-                reader.reset()
-                initial_frontier = list(state._initial_frontier)
-                if initial_frontier:
-                    reader.on_new_frontier(initial_frontier)
+                states.append(state)
 
-                log_probs = []
-                for _step in range(B):
-                    if state.is_frontier_empty:
-                        break
+            active = [True] * n_seeds
+            log_probs_per_seed: list = [[] for _ in range(n_seeds)]
 
-                    scores, probs, frontier_nodes, action_idx, log_prob = reader.forward(state, sample=True)
+            # ---- lockstep：每步 batch 所有 seed 的 frontier subgraph ----
+            for _step in range(B):
+                active_idx = [j for j in range(n_seeds) if active[j] and not states[j].is_frontier_empty]
+                if not active_idx:
+                    break
 
-                    if len(frontier_nodes) == 0:
-                        break
-                    log_probs.append(log_prob)
+                # 构建子图 + batch-encode
+                subgraphs = [reader.frontier_builder.build(states[j]) for j in active_idx]
+                batch_results = reader.frontier_encoder.forward_batch(subgraphs)
+
+                for k, j in enumerate(active_idx):
+                    frontier_embeds, frontier_nodes = batch_results[k]
+                    if not frontier_nodes:
+                        active[j] = False
+                        continue
+
+                    state = states[j]
+                    sg = subgraphs[k]
+
+                    remaining = state.get_budget_ratio_remaining()
+                    remaining_tensor = torch.full(
+                        (len(frontier_nodes), 1), remaining,
+                        device=frontier_embeds.device, dtype=frontier_embeds.dtype,
+                    )
+
+                    struct_all = compute_structural_features(sg.g, sg.n_revealed)
+                    struct_frontier = struct_all[sg.n_revealed:].to(
+                        device=frontier_embeds.device, dtype=frontier_embeds.dtype,
+                    )
+
+                    combined = torch.cat([frontier_embeds, remaining_tensor, struct_frontier], dim=-1)
+                    scores = reader.reader_mlp(combined)
+
+                    if reader.temperature != 1.0:
+                        probs = F.softmax(scores / reader.temperature, dim=0)
+                    else:
+                        probs = F.softmax(scores, dim=0)
+
+                    dist = torch.distributions.Categorical(probs)
+                    action_idx = dist.sample()
+                    log_prob = dist.log_prob(action_idx)
+
+                    log_probs_per_seed[j].append(log_prob)
                     chosen = frontier_nodes[action_idx.item()]
                     reveal_node(state, chosen)
 
-                if not log_probs:
-                    continue
-
-                sub_g, _ = builder.build(state)
-                traj_subgraphs.append(sub_g)
-                traj_labels.append(y)
-                traj_log_probs.append(log_probs)
+            # ---- 收集轨迹结果 ----
+            for j in range(n_seeds):
+                if log_probs_per_seed[j]:
+                    sub_g, _ = builder.build(states[j])
+                    traj_subgraphs.append(sub_g)
+                    traj_labels.append(y)
+                    traj_log_probs.append(log_probs_per_seed[j])
 
         if not traj_subgraphs:
             continue
