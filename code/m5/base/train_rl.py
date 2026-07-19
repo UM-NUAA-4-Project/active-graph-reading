@@ -18,6 +18,7 @@ python code/m5/base/train_rl.py --root /mnt/data --reward-type binary --epochs 1
   python code/m5/base/train_rl.py --root /mnt/data --epochs 10 --temperature 1.5
   python code/m5/base/train_rl.py --root /mnt/data --temperature 0.2 --val-graphs 10000
   python code/m5/base/train_rl.py --root /mnt/data --reward-type tanh --epochs 10 --temperature 0.2
+  python code/m5/base/train_rl.py --root /mnt/data --temperature 0.2 --reward-type asymmetric --output-dir m5/base/rl/asymmetric
 """
 import argparse
 import json
@@ -351,9 +352,9 @@ def main():
 
     print(f"\n=== Loading {len(train_indices)} training graphs ===")
     train_graphs, train_labels = dgl.load_graphs(processed_path, idx_list=train_indices)
-    # 预计算自环 + 预加载到 GPU（避免每次 trajectory 重复 CPU→GPU 传输）
-    train_graphs = [dgl.add_self_loop(g).to(device) for g in train_graphs]
-    print(f"  Loaded {len(train_graphs)} graphs on {device} (self-loops pre-computed)")
+    # 预计算自环，保持在 CPU（78K 图全加载 GPU 占用 ~8 GB，子图构建路径已支持 CPU→GPU 按需传输）
+    train_graphs = [dgl.add_self_loop(g) for g in train_graphs]
+    print(f"  Loaded {len(train_graphs)} graphs (CPU, self-loops pre-computed)")
 
     # ---- 2. 加载 val 图（从 valid split，分层抽样） ----
     val_graphs, val_labels, val_indices = None, None, None
@@ -383,14 +384,14 @@ def main():
             elif len(sampled) < args.val_graphs:
                 remaining = [i for i in range(len(all_graphs)) if i not in set(sampled)]
                 sampled.extend(random.sample(remaining, min(args.val_graphs - len(sampled), len(remaining))))
-            val_graphs = [dgl.add_self_loop(all_graphs[i]).to(device) for i in sampled]
+            val_graphs = [dgl.add_self_loop(all_graphs[i]) for i in sampled]
             val_indices = [all_val_indices[i] for i in sampled]
             val_labels = {'labels': all_labels['labels'][[i for i in val_indices]]}
         else:
-            val_graphs = [dgl.add_self_loop(g).to(device) for g in all_graphs]
+            val_graphs = [dgl.add_self_loop(g) for g in all_graphs]
             val_labels, val_indices = all_labels, all_val_indices
 
-        print(f"  Validation set: {len(val_graphs)} graphs on {device} (self-loops pre-computed) "
+        print(f"  Validation set: {len(val_graphs)} graphs (CPU, self-loops pre-computed) "
               f"({len(set(int(val_labels['labels'][idx].item()) for idx in val_indices))}/{K} classes)")
 
     # ---- 3. 加载 classifier（冻结） ----
