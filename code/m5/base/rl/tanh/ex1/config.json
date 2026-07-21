@@ -1,0 +1,11 @@
+{
+  "git_commit": "deb5f69",
+  "data_split": "full training set (train.csv.gz)",
+  "classifier_checkpoint": "code/m3/best_model_ft.pt (epoch 12, val_acc=0.6419)",
+  "bootstrap_reader_checkpoint": "code/m5/base/checkpoint/best_reader.pt (epoch 0, val_acc=0.4956)",
+  "rl_output_dir": "code/m5/base/rl/tanh",
+  "reward_type": "tanh (+1.0 correct, 0.0 incorrect)",
+  "temperature": 0.2,
+  "batch_construction": "8 graphs x 4 rollouts = 32 trajectories per optimizer.step()",
+  "checkpoint_selection_rule": "max training accuracy across all epochs"
+}

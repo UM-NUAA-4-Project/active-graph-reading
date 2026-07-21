@@ -24,6 +24,7 @@ from typing import Dict, List, Tuple, Optional
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 import dgl
 from tqdm import tqdm
 
@@ -40,6 +41,7 @@ from active_graph_reader.engine.reveal_action import reveal_node
 from active_graph_reader.gnn.classifier import GraphClassifier
 from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
 from training_utils import patch_old_checkpoint
+from active_graph_reader.reader.gsae import compute_structural_features
 
 BUDGETS_REL = [0.05, 0.10, 0.15]
 FIXED_STRATEGIES = ['random', 'bfs']
@@ -78,17 +80,16 @@ def pick_seeds_by_degree(g: dgl.DGLGraph) -> Tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
-def run_one_seed(
+def run_one_seed_collect(
     reader,
     g_raw: dgl.DGLGraph,
     seed_node: int,
     label: int,
-    device: torch.device,
-    classifier: GraphClassifier,
     builder: SubgraphBuilder,
     budgets_rel: List[float],
     budgets_abs: List[int],
-) -> List[float]:
+) -> List[Tuple[dgl.DGLGraph, int, float]]:
+    """Collect (sub_g, label, budget_ratio) for batched classifier evaluation."""
     state = GraphState(g_raw, seed_node=seed_node)
     state._budget_limit = max(budgets_abs)
 
@@ -97,9 +98,9 @@ def run_one_seed(
     if initial_frontier:
         reader.on_new_frontier(initial_frontier)
 
-    per_budget_correct = []
+    collected = []
 
-    for abs_b in budgets_abs:
+    for bi, abs_b in enumerate(budgets_abs):
         while state.get_budget_used() < abs_b:
             nxt = reader.select(state)
             if nxt is None:
@@ -109,17 +110,145 @@ def run_one_seed(
                 reader.on_new_frontier(new_frontier)
 
         sub_g, _ = builder.build(state)
-        sub_g = sub_g.to(device)
-        nids = torch.zeros(sub_g.num_nodes(), dtype=torch.long, device=device)
-        logits = classifier(sub_g, nids)
-        per_budget_correct.append(1.0 if logits.argmax().item() == label else 0.0)
+        collected.append((sub_g, label, budgets_rel[bi]))
 
-    return per_budget_correct
+    return collected
 
 
 # ---------------------------------------------------------------------------
 # evaluate one split for one strategy
 # ---------------------------------------------------------------------------
+
+def _evaluate_learnable_batched(
+    reader,
+    graphs: List[dgl.DGLGraph],
+    labels_tensor: torch.Tensor,
+    indices: List[int],
+    classifier: GraphClassifier,
+    device: torch.device,
+    desc: str,
+    budgets_rel_sorted: List[float],
+    results: Dict,
+    per_class: Dict,
+    chunk_size: int = 32,
+):
+    """Lockstep batched evaluation: Reader GNN + Classifier both batched.
+
+    Processes chunk_size graphs in parallel lockstep — at each reveal step,
+    all active states' extended subgraphs are batched through the FrontierEncoder
+    GNN (matching the training-loop pattern).  Final subgraphs are accumulated
+    and batch-classified afterwards.
+    """
+    subgraph_builder = SubgraphBuilder()
+    classify_queue: List[Tuple[dgl.DGLGraph, int, str, float]] = []
+
+    for chunk_start in tqdm(range(0, len(graphs), chunk_size), desc=desc):
+        chunk_end = min(chunk_start + chunk_size, len(graphs))
+
+        # ---- create all states for this chunk ----
+        state_infos: List[dict] = []
+        for i in range(chunk_start, chunk_end):
+            g = dgl.add_self_loop(graphs[i])
+            ogb_idx = indices[i]
+            label = int(labels_tensor[ogb_idx].item())
+            n_nodes = g.num_nodes()
+            budgets_abs = [compute_budget(n_nodes, r) for r in budgets_rel_sorted]
+
+            best_seed, worst_seed = pick_seeds_by_degree(g)
+
+            for seed_type, seed_node in [('best', best_seed), ('worst', worst_seed)]:
+                state = GraphState(g, seed_node=seed_node)
+                state._budget_limit = max(budgets_abs)
+                state_infos.append({
+                    'state': state, 'label': label, 'seed_type': seed_type,
+                    'budgets_abs': budgets_abs,
+                })
+
+        active = [True] * len(state_infos)
+        budget_recorded = [[False] * len(budgets_rel_sorted) for _ in state_infos]
+        max_steps = max(max(s['budgets_abs']) for s in state_infos)
+
+        # ---- lockstep reveal loop ----
+        for _step in range(max_steps):
+            active_idx = [j for j in range(len(state_infos))
+                          if active[j] and not state_infos[j]['state'].is_frontier_empty]
+            if not active_idx:
+                break
+
+            subgraphs = [reader.frontier_builder.build(state_infos[j]['state'])
+                         for j in active_idx]
+            batch_results = reader.frontier_encoder.forward_batch(subgraphs)
+
+            for k, j in enumerate(active_idx):
+                frontier_embeds, frontier_nodes = batch_results[k]
+                if not frontier_nodes:
+                    active[j] = False
+                    continue
+
+                si = state_infos[j]
+                state = si['state']
+                sg = subgraphs[k]
+
+                remaining = state.get_budget_ratio_remaining()
+                remaining_tensor = torch.full(
+                    (len(frontier_nodes), 1), remaining,
+                    device=frontier_embeds.device, dtype=frontier_embeds.dtype,
+                )
+                struct_all = compute_structural_features(sg.g, sg.n_revealed)
+                struct_frontier = struct_all[sg.n_revealed:].to(
+                    device=frontier_embeds.device, dtype=frontier_embeds.dtype,
+                )
+                combined = torch.cat(
+                    [frontier_embeds, remaining_tensor, struct_frontier], dim=-1,
+                )
+                scores = reader.reader_mlp(combined)
+                probs = F.softmax(scores, dim=0)
+                chosen = frontier_nodes[probs.argmax().item()]
+                reveal_node(state, chosen)
+
+                budget_used = state.get_budget_used()
+                for bi, abs_b in enumerate(si['budgets_abs']):
+                    if not budget_recorded[j][bi] and budget_used >= abs_b:
+                        budget_recorded[j][bi] = True
+                        sub_g, _ = subgraph_builder.build(state)
+                        classify_queue.append(
+                            (sub_g, si['label'], si['seed_type'], budgets_rel_sorted[bi])
+                        )
+
+        # catch thresholds not reached (frontier emptied early)
+        for j, si in enumerate(state_infos):
+            for bi in range(len(budgets_rel_sorted)):
+                if not budget_recorded[j][bi]:
+                    sub_g, _ = subgraph_builder.build(si['state'])
+                    classify_queue.append(
+                        (sub_g, si['label'], si['seed_type'], budgets_rel_sorted[bi])
+                    )
+
+    # ---- batch classify all queued subgraphs ----
+    for c_start in tqdm(range(0, len(classify_queue), 512), desc="  Classifying"):
+        c_end = min(c_start + 512, len(classify_queue))
+        chunk = classify_queue[c_start:c_end]
+
+        batch_g = dgl.batch([dgl.add_self_loop(item[0]) for item in chunk]).to(device)
+        nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
+        logits = classifier(batch_g, nids)
+
+        for j, (_, lbl, seed_type, rel_b) in enumerate(chunk):
+            pred = logits[j].argmax(dim=-1).item()
+            correct = 1.0 if pred == lbl else 0.0
+            results[seed_type][rel_b].append(correct)
+            per_class[seed_type][lbl][rel_b].append(correct)
+
+    aggregated = {
+        'best': dict(results['best']),
+        'worst': dict(results['worst']),
+    }
+    per_class_clean = {
+        'best': {cls: dict(budgets) for cls, budgets in per_class['best'].items()},
+        'worst': {cls: dict(budgets) for cls, budgets in per_class['worst'].items()},
+    }
+    return aggregated, per_class_clean
+
 
 @torch.no_grad()
 def evaluate_strategy_split(
@@ -144,6 +273,16 @@ def evaluate_strategy_split(
         'worst': defaultdict(lambda: defaultdict(list)),
     }
 
+    # --- learnable: full lockstep batching (Reader GNN + Classifier) ---
+    if hasattr(reader, 'frontier_encoder'):
+        return _evaluate_learnable_batched(
+            reader, graphs, labels_tensor, indices, classifier, device, desc,
+            budgets_rel_sorted, results, per_class,
+        )
+
+    # --- fixed strategies (random / bfs): collect subgraphs, batch classify ---
+    classify_queue: List[Tuple[dgl.DGLGraph, int, str, float]] = []
+
     for i, ogb_idx in enumerate(tqdm(indices, desc=desc)):
         g_raw = dgl.add_self_loop(graphs[i])
         label = int(labels_tensor[ogb_idx].item())
@@ -152,23 +291,27 @@ def evaluate_strategy_split(
 
         best_seed, worst_seed = pick_seeds_by_degree(g_raw)
 
-        # best seed
-        best_rec = run_one_seed(
-            reader, g_raw, best_seed, label, device, classifier, builder,
-            budgets_rel_sorted, budgets_abs,
-        )
-        for j, rel_b in enumerate(budgets_rel_sorted):
-            results['best'][rel_b].append(best_rec[j])
-            per_class['best'][label][rel_b].append(best_rec[j])
+        for seed_type, seed_node in [('best', best_seed), ('worst', worst_seed)]:
+            collected = run_one_seed_collect(
+                reader, g_raw, seed_node, label, builder,
+                budgets_rel_sorted, budgets_abs,
+            )
+            for sub_g, lbl, rel_b in collected:
+                classify_queue.append((sub_g, lbl, seed_type, rel_b))
 
-        # worst seed
-        worst_rec = run_one_seed(
-            reader, g_raw, worst_seed, label, device, classifier, builder,
-            budgets_rel_sorted, budgets_abs,
-        )
-        for j, rel_b in enumerate(budgets_rel_sorted):
-            results['worst'][rel_b].append(worst_rec[j])
-            per_class['worst'][label][rel_b].append(worst_rec[j])
+    for c_start in tqdm(range(0, len(classify_queue), 512), desc="  Classifying"):
+        c_end = min(c_start + 512, len(classify_queue))
+        chunk = classify_queue[c_start:c_end]
+
+        batch_g = dgl.batch([dgl.add_self_loop(item[0]) for item in chunk]).to(device)
+        nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
+        logits = classifier(batch_g, nids)
+
+        for j, (_, lbl, seed_type, rel_b) in enumerate(chunk):
+            pred = logits[j].argmax(dim=-1).item()
+            correct = 1.0 if pred == lbl else 0.0
+            results[seed_type][rel_b].append(correct)
+            per_class[seed_type][lbl][rel_b].append(correct)
 
     aggregated = {
         'best': dict(results['best']),
