@@ -53,8 +53,7 @@ BUDGET_OPTIONS = [0.05, 0.10, 0.15]
 
 
 def deterministic_seed(graph_idx: int, seed_i: int, n_nodes: int) -> int:
-    offset = random.randint(0, 500)
-    return (graph_idx * 31 + seed_i * 17 + offset) % n_nodes
+    return (graph_idx * 31 + seed_i * 17 + 7) % n_nodes
 
 
 # ---------------------------------------------------------------------------
