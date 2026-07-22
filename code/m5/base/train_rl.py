@@ -45,7 +45,6 @@ from active_graph_reader.gnn.classifier import GraphClassifier
 from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
-from active_graph_reader.reader.gsae import compute_structural_features
 from training_utils import patch_old_checkpoint
 
 K = 37
@@ -118,37 +117,15 @@ def train_one_epoch(
                 if not active_idx:
                     break
 
-                # 构建子图 + batch-encode
-                subgraphs = [reader.frontier_builder.build(states[j]) for j in active_idx]
-                batch_results = reader.frontier_encoder.forward_batch(subgraphs)
+                batch_results = reader.forward_states(
+                    [states[j] for j in active_idx], temperature=reader.temperature,
+                )
 
                 for k, j in enumerate(active_idx):
-                    frontier_embeds, frontier_nodes = batch_results[k]
+                    scores, probs, frontier_nodes = batch_results[k]
                     if not frontier_nodes:
                         active[j] = False
                         continue
-
-                    state = states[j]
-                    sg = subgraphs[k]
-
-                    remaining = state.get_budget_ratio_remaining()
-                    remaining_tensor = torch.full(
-                        (len(frontier_nodes), 1), remaining,
-                        device=frontier_embeds.device, dtype=frontier_embeds.dtype,
-                    )
-
-                    struct_all = compute_structural_features(sg.g, sg.n_revealed)
-                    struct_frontier = struct_all[sg.n_revealed:].to(
-                        device=frontier_embeds.device, dtype=frontier_embeds.dtype,
-                    )
-
-                    combined = torch.cat([frontier_embeds, remaining_tensor, struct_frontier], dim=-1)
-                    scores = reader.reader_mlp(combined)
-
-                    if reader.temperature != 1.0:
-                        probs = F.softmax(scores / reader.temperature, dim=0)
-                    else:
-                        probs = F.softmax(scores, dim=0)
 
                     dist = torch.distributions.Categorical(probs)
                     action_idx = dist.sample()
@@ -156,7 +133,7 @@ def train_one_epoch(
 
                     log_probs_per_seed[j].append(log_prob)
                     chosen = frontier_nodes[action_idx.item()]
-                    reveal_node(state, chosen)
+                    reveal_node(states[j], chosen)
 
             # ---- 收集轨迹结果 ----
             for j in range(n_seeds):

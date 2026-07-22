@@ -98,6 +98,54 @@ class LearnableReader(BaseReader, nn.Module):
 
         return scores, probs, frontier_nodes
 
+    def forward_states(
+        self, states: List[GraphState], temperature: float = 1.0,
+    ) -> List[Tuple[torch.Tensor, torch.Tensor, List[int]]]:
+        """Batch encode + score multiple graph states.
+
+        Builds extended subgraphs for all states, runs a single batched GNN
+        forward through FrontierEncoder, then computes per-state MLP scores.
+        This is the shared core of lockstep training, evaluation, and diagnosis.
+
+        Returns:
+            List of (scores, probs, frontier_nodes) — one tuple per input state.
+            States with empty frontier receive (empty, empty, []).
+        """
+        if not states:
+            return []
+
+        subgraphs = [self.frontier_builder.build(s) for s in states]
+        batch_results = self.frontier_encoder.forward_batch(subgraphs)
+
+        results: List[Tuple[torch.Tensor, torch.Tensor, List[int]]] = []
+        for k, (frontier_embeds, frontier_nodes) in enumerate(batch_results):
+            if not frontier_nodes:
+                results.append((torch.empty(0), torch.empty(0), []))
+                continue
+
+            sg = subgraphs[k]
+            n_f = len(frontier_nodes)
+
+            remaining = states[k].get_budget_ratio_remaining()
+            remaining_tensor = torch.full(
+                (n_f, 1), remaining,
+                device=frontier_embeds.device, dtype=frontier_embeds.dtype,
+            )
+
+            struct_all = compute_structural_features(sg.g, sg.n_revealed)
+            struct_frontier = struct_all[sg.n_revealed:].to(
+                device=frontier_embeds.device, dtype=frontier_embeds.dtype,
+            )
+
+            combined = torch.cat(
+                [frontier_embeds, remaining_tensor, struct_frontier], dim=-1,
+            )
+            scores = self.reader_mlp(combined)
+            probs = F.softmax(scores / temperature, dim=0)
+            results.append((scores, probs, frontier_nodes))
+
+        return results
+
     def select(self, graph_state: GraphState) -> Optional[int]:
         """选择节点。stochastic=False 时 argmax，True 时从概率分布采样。"""
         scores, probs, frontier_nodes = self.forward(graph_state)

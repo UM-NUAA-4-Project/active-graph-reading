@@ -30,7 +30,6 @@ sys.path.insert(0, str(_repo_root))
 import numpy as np
 import pandas as pd
 import torch
-import torch.nn.functional as F
 import dgl
 from tqdm import tqdm
 
@@ -40,7 +39,6 @@ from active_graph_reader.engine.reveal_action import reveal_node
 from active_graph_reader.gnn.classifier import GraphClassifier
 from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
 from m5.training_utils import infer_reader_config, patch_old_checkpoint
-from active_graph_reader.reader.gsae import compute_structural_features
 
 K = 37
 BUDGET_OPTIONS = [0.05, 0.10, 0.15]
@@ -110,35 +108,19 @@ def run_batched_trajectories(reader, states_info, temperature, device):
         if not active_idx:
             break
 
-        subgraphs = [reader.frontier_builder.build(states_info[j]['state'])
-                     for j in active_idx]
-        batch_results = reader.frontier_encoder.forward_batch(subgraphs)
+        batch_results = reader.forward_states(
+            [states_info[j]['state'] for j in active_idx], temperature=temperature,
+        )
 
         for k, j in enumerate(active_idx):
-            frontier_embeds, frontier_nodes = batch_results[k]
+            scores, probs, frontier_nodes = batch_results[k]
             if not frontier_nodes:
                 active[j] = False
                 continue
 
             si = states_info[j]
             state = si['state']
-            sg = subgraphs[k]
             n_f = len(frontier_nodes)
-
-            remaining = state.get_budget_ratio_remaining()
-            remaining_tensor = torch.full(
-                (n_f, 1), remaining,
-                device=frontier_embeds.device, dtype=frontier_embeds.dtype,
-            )
-            struct_all = compute_structural_features(sg.g, sg.n_revealed)
-            struct_frontier = struct_all[sg.n_revealed:].to(
-                device=frontier_embeds.device, dtype=frontier_embeds.dtype,
-            )
-            combined = torch.cat(
-                [frontier_embeds, remaining_tensor, struct_frontier], dim=-1,
-            )
-            scores = reader.reader_mlp(combined)
-            probs = F.softmax(scores / temperature, dim=0)
 
             # norm entropy
             p = probs.detach().cpu().numpy()
