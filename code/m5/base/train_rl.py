@@ -53,8 +53,8 @@ BUDGET_OPTIONS = [0.05, 0.10, 0.15]
 
 
 def deterministic_seed(graph_idx: int, seed_i: int, n_nodes: int) -> int:
-    """确定性种子公式（与 CLAUDE.md 一致）。"""
-    return (graph_idx * 31 + seed_i * 17 + 7) % n_nodes
+    offset = random.randint(0, 500)
+    return (graph_idx * 31 + seed_i * 17 + offset) % n_nodes
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +67,13 @@ def train_one_epoch(
     n_seeds, batch_size, device,
     reward_type='binary',
 ):
-    """Self-sampled REINFORCE。每张图用 n_seeds 个 seed 各采样一条轨迹。"""
+    """Self-sampled REINFORCE with cross-graph lockstep.
+
+    All graphs in a batch run simultaneously — batch_size × n_seeds states
+    advance step-by-step together through a single lockstep loop.  Graphs
+    with smaller budgets drop out early while larger graphs keep running.
+    Loss and optimizer.step() fire once per batch over all trajectories.
+    """
     reader.train()
     classifier.eval()
 
@@ -76,7 +82,6 @@ def train_one_epoch(
     total_correct = 0
     total_loss = 0.0
 
-    # shuffle graph indices for batching
     graph_order = list(range(len(graphs)))
     random.shuffle(graph_order)
 
@@ -84,75 +89,83 @@ def train_one_epoch(
     for batch_start in pbar:
         batch_end = min(batch_start + batch_size, len(graph_order))
         batch_indices = graph_order[batch_start:batch_end]
+        n_graphs = len(batch_indices)
 
-        traj_subgraphs = []
-        traj_labels = []
-        traj_log_probs = []
+        # ---- Pass 1: create ALL states (n_graphs × n_seeds) ----
+        all_states = []
+        state_labels = []       # label tensor per state
+        per_state_log_probs = []  # list-of-lists: log-prob per step per state
 
-        for local_i in batch_indices:
+        for gi, local_i in enumerate(batch_indices):
             g_raw = graphs[local_i]
             graph_idx = ogb_indices[local_i]
             label = int(labels_tensor[graph_idx].item())
             y = torch.tensor([label], device=device)
             n_nodes = g_raw.num_nodes()
 
-            # 随机 budget
             budget_ratio = random.choice(BUDGET_OPTIONS)
             B = max(1, int(budget_ratio * n_nodes))
 
-            # ---- 创建所有 seed 的 state ----
-            states = []
             for seed_i in range(n_seeds):
                 seed_node = deterministic_seed(graph_idx, seed_i, n_nodes)
                 state = GraphState(g_raw, seed_node=seed_node)
                 state._budget_limit = B
-                states.append(state)
+                all_states.append(state)
+                state_labels.append(y)
+                per_state_log_probs.append([])
 
-            active = [True] * n_seeds
-            log_probs_per_seed: list = [[] for _ in range(n_seeds)]
+        n_total = len(all_states)  # = n_graphs × n_seeds
+        active = [True] * n_total
+        max_budget = max(s._budget_limit for s in all_states)
 
-            # ---- lockstep：每步 batch 所有 seed 的 frontier subgraph ----
-            for _step in range(B):
-                active_idx = [j for j in range(n_seeds) if active[j] and not states[j].is_frontier_empty]
-                if not active_idx:
-                    break
+        # ---- Pass 2: cross-graph lockstep ----
+        for _step in range(max_budget):
+            active_idx = [j for j in range(n_total)
+                          if active[j] and not all_states[j].is_frontier_empty]
+            if not active_idx:
+                break
 
-                batch_results = reader.forward_states(
-                    [states[j] for j in active_idx], temperature=reader.temperature,
-                )
+            batch_results = reader.forward_states(
+                [all_states[j] for j in active_idx],
+                temperature=reader.temperature,
+            )
 
-                for k, j in enumerate(active_idx):
-                    scores, probs, frontier_nodes = batch_results[k]
-                    if not frontier_nodes:
-                        active[j] = False
-                        continue
+            for k, j in enumerate(active_idx):
+                scores, probs, frontier_nodes = batch_results[k]
+                if not frontier_nodes:
+                    active[j] = False
+                    continue
 
-                    dist = torch.distributions.Categorical(probs)
-                    action_idx = dist.sample()
-                    log_prob = dist.log_prob(action_idx)
+                dist = torch.distributions.Categorical(probs)
+                action_idx = dist.sample()
+                per_state_log_probs[j].append(dist.log_prob(action_idx))
+                reveal_node(all_states[j], frontier_nodes[action_idx.item()])
 
-                    log_probs_per_seed[j].append(log_prob)
-                    chosen = frontier_nodes[action_idx.item()]
-                    reveal_node(states[j], chosen)
+                # budget exhausted → drop from dgl batch
+                if all_states[j].get_budget_used() >= all_states[j]._budget_limit:
+                    active[j] = False
 
-            # ---- 收集轨迹结果 ----
-            for j in range(n_seeds):
-                if log_probs_per_seed[j]:
-                    sub_g, _ = builder.build(states[j])
-                    traj_subgraphs.append(sub_g)
-                    traj_labels.append(y)
-                    traj_log_probs.append(log_probs_per_seed[j])
+        # ---- Pass 3: collect trajectories ----
+        traj_subgraphs = []
+        traj_labels = []
+        traj_log_probs = []
+
+        for j in range(n_total):
+            if per_state_log_probs[j]:
+                sub_g, _ = builder.build(all_states[j])
+                traj_subgraphs.append(sub_g)
+                traj_labels.append(state_labels[j])
+                traj_log_probs.append(per_state_log_probs[j])
 
         if not traj_subgraphs:
             continue
 
-        # 批量 classifier 前向
+        # ---- batch classify + REINFORCE loss (unchanged logic) ----
         batch_g = dgl.batch(traj_subgraphs).to(device)
         nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
         with torch.no_grad():
-            all_logits = classifier(batch_g, nids)  # (n_trajs, K)
+            all_logits = classifier(batch_g, nids)
 
-        # 逐 trajectory 计算 reward 和 loss
         batch_losses = []
         for i, log_probs in enumerate(traj_log_probs):
             logits_i = all_logits[i:i + 1]
@@ -166,16 +179,14 @@ def train_one_epoch(
                 R = math.tanh(1.0 - ce / LN_K)
             elif reward_type == 'asymmetric':
                 R = 1.0 if correct else -0.1
-            else:  # binary
+            else:
                 R = 1.0 if correct else 0.0
 
             total_R += R
             total_trajs += 1
 
-            # REINFORCE: loss = -R * Σ log π_t(a_t)
             sum_log_prob = torch.stack(log_probs).sum()
-            rl_loss = -R * sum_log_prob
-            batch_losses.append(rl_loss)
+            batch_losses.append(-R * sum_log_prob)
 
         if not batch_losses:
             continue
@@ -310,6 +321,8 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
 
     repo_root = _repo_root
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
