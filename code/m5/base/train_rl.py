@@ -18,7 +18,7 @@ python code/m5/base/train_rl.py --root /mnt/data --reward-type binary --epochs 1
   python code/m5/base/train_rl.py --root /mnt/data --epochs 10 --temperature 1.5
   python code/m5/base/train_rl.py --root /mnt/data --temperature 0.2 --val-graphs 10000
   python code/m5/base/train_rl.py --root /mnt/data --reward-type tanh --epochs 10 --temperature 0.2
-  python code/m5/base/train_rl.py --root /mnt/data --temperature 0.2 --reward-type asymmetric --output-dir m5/base/rl/asymmetric
+  python code/m5/base/train_rl.py --root /mnt/data --temperature 0.2 --reward-type asymmetric --output-dir m5/base/rl/asymmetric --resume-checkpoint m5/base/rl/asymmetric/checkpoint_epoch6.pt
 """
 import argparse
 import json

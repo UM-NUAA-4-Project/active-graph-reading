@@ -107,7 +107,7 @@ def train_one_epoch(
     batch_size: int,
     device: torch.device,
 ) -> float:
-    """单轮 BC 训练，返回平均 step loss。"""
+    """单轮 BC 训练（跨图锁步批处理），返回平均 step loss。"""
     reader.train()
     total_loss = 0.0
     total_steps = 0
@@ -119,43 +119,67 @@ def train_one_epoch(
     for batch_idx, batch_start in enumerate(pbar):
         batch_end = min(batch_start + batch_size, len(train_trajs))
         batch_trajs = train_trajs[batch_start:batch_end]
-        batch_losses = []
-        batch_steps = 0
+
+        # ---- Pass 1: create states for each trajectory ----
+        all_states = []
+        reveal_orders = []
+        step_counters = []
 
         for traj in batch_trajs:
             g, _label = graph_cache[traj.graph_idx]
             state = GraphState(g, seed_node=traj.seed_node)
             state._budget_limit = len(traj.reveal_order)
-            step_losses = []
+            all_states.append(state)
+            reveal_orders.append(traj.reveal_order)
+            step_counters.append(0)
 
-            for teacher_node in traj.reveal_order:
-                scores, probs, frontier_nodes = reader.forward(state)
-                n_frontier = len(frontier_nodes)
-                if n_frontier == 0:
-                    break
+        n_total = len(all_states)
+        active = [True] * n_total
+        max_budget = max(len(ro) for ro in reveal_orders)
+        step_losses = []
+
+        # ---- Pass 2: cross-graph lockstep ----
+        for _step in range(max_budget):
+            active_idx = [j for j in range(n_total)
+                          if active[j] and not all_states[j].is_frontier_empty
+                          and step_counters[j] < len(reveal_orders[j])]
+            if not active_idx:
+                break
+
+            batch_results = reader.forward_states(
+                [all_states[j] for j in active_idx], temperature=1.0)
+
+            for k, j in enumerate(active_idx):
+                scores, probs, frontier_nodes = batch_results[k]
+                if not frontier_nodes:
+                    active[j] = False
+                    continue
+
+                teacher_node = reveal_orders[j][step_counters[j]]
                 try:
                     target_idx = frontier_nodes.index(teacher_node)
                 except ValueError:
-                    break
-                loss_t = -torch.log(probs[target_idx] + 1e-8)
-                step_losses.append(loss_t)
-                reveal_node(state, teacher_node)
+                    active[j] = False
+                    continue
 
-            if step_losses:
-                traj_loss = torch.stack(step_losses).mean()
-                batch_losses.append(traj_loss)
-                batch_steps += len(step_losses)
+                step_losses.append(-torch.log(probs[target_idx] + 1e-8))
+                reveal_node(all_states[j], teacher_node)
+                step_counters[j] += 1
 
-        if not batch_losses:
+                if step_counters[j] >= len(reveal_orders[j]):
+                    active[j] = False
+
+        if not step_losses:
             continue
 
-        batch_loss = torch.stack(batch_losses).mean()
+        batch_loss = torch.stack(step_losses).mean()
         batch_loss.backward()
         optimizer.step()
         optimizer.zero_grad()
 
-        total_loss += batch_loss.item() * len(batch_losses)
-        total_steps += batch_steps
+        n = len(step_losses)
+        total_loss += batch_loss.item() * n
+        total_steps += n
 
         avg_step_loss = total_loss / max(total_steps, 1)
         pbar.set_postfix({
@@ -354,7 +378,7 @@ def val_one_epoch(
     batch_size: int,
     device: torch.device,
 ) -> float:
-    """单轮 BC 验证（v0 LearnableReader），返回平均 step loss。"""
+    """单轮 BC 验证（跨图锁步批处理），返回平均 step loss。"""
     reader.eval()
     total_loss = 0.0
     total_steps = 0
@@ -364,28 +388,53 @@ def val_one_epoch(
         batch_end = min(batch_start + batch_size, len(val_trajs))
         batch_trajs = val_trajs[batch_start:batch_end]
 
+        # ---- Pass 1: create states for each trajectory ----
+        all_states = []
+        reveal_orders = []
+        step_counters = []
+
         for traj in batch_trajs:
             g, _label = graph_cache[traj.graph_idx]
             state = GraphState(g, seed_node=traj.seed_node)
             state._budget_limit = len(traj.reveal_order)
-            step_losses = []
+            all_states.append(state)
+            reveal_orders.append(traj.reveal_order)
+            step_counters.append(0)
 
-            for teacher_node in traj.reveal_order:
-                scores, probs, frontier_nodes = reader.forward(state)
-                n_frontier = len(frontier_nodes)
-                if n_frontier == 0:
-                    break
+        n_total = len(all_states)
+        active = [True] * n_total
+        max_budget = max(len(ro) for ro in reveal_orders)
+
+        # ---- Pass 2: cross-graph lockstep ----
+        for _step in range(max_budget):
+            active_idx = [j for j in range(n_total)
+                          if active[j] and not all_states[j].is_frontier_empty
+                          and step_counters[j] < len(reveal_orders[j])]
+            if not active_idx:
+                break
+
+            batch_results = reader.forward_states(
+                [all_states[j] for j in active_idx], temperature=1.0)
+
+            for k, j in enumerate(active_idx):
+                scores, probs, frontier_nodes = batch_results[k]
+                if not frontier_nodes:
+                    active[j] = False
+                    continue
+
+                teacher_node = reveal_orders[j][step_counters[j]]
                 try:
                     target_idx = frontier_nodes.index(teacher_node)
                 except ValueError:
-                    break
-                loss_t = -torch.log(probs[target_idx] + 1e-8)
-                step_losses.append(loss_t)
-                reveal_node(state, teacher_node)
+                    active[j] = False
+                    continue
 
-            if step_losses:
-                total_loss += torch.stack(step_losses).sum().item()
-                total_steps += len(step_losses)
+                total_loss -= torch.log(probs[target_idx] + 1e-8).item()
+                total_steps += 1
+                reveal_node(all_states[j], teacher_node)
+                step_counters[j] += 1
 
-    avg_step_loss = total_loss / max(total_steps, 1)
-    return avg_step_loss
+                if step_counters[j] >= len(reveal_orders[j]):
+                    active[j] = False
+
+    return total_loss / max(total_steps, 1)
