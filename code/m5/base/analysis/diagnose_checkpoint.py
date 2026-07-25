@@ -43,7 +43,7 @@ from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
 from m5.training_utils import infer_reader_config, patch_old_checkpoint
 
 K = 37
-BUDGET_OPTIONS = [0.05, 0.10, 0.15]
+BUDGET_OPTIONS = [0.10]
 
 
 def deterministic_seed(graph_idx: int, seed_i: int, n_nodes: int) -> int:
