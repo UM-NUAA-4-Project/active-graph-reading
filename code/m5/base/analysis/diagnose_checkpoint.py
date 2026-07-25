@@ -11,8 +11,10 @@
   python code/m5/base/analysis/diagnose_checkpoint.py \
     --checkpoint m5/base/rl/binary/checkpoint_epoch4.pt \
     --classifier m3/best_model_ft.pt \
-    --n-graphs 500 --samples-per-graph 10 \
+    --n-graphs 0 --samples-per-graph 4 \
     --temperature 0.2
+    --root /mnt/data \
+    --output-dir m5/base/rl/eval_results_asymmetric/ex1/diagnosis
 """
 
 import argparse
