@@ -375,9 +375,23 @@ def main():
 
         # Easy / middle / hard
         successes = r['per_graph_success']
-        easy = sum(1 for v in successes if v > 0.8)
-        middle = sum(1 for v in successes if 0.2 <= v <= 0.8)
-        hard = sum(1 for v in successes if v < 0.2)
+        graph_indices = r['graph_info']  # list of (ogb_idx, label, n_nodes)
+
+        easy_list = []
+        middle_list = []
+        hard_list = []
+        for i, v in enumerate(successes):
+            ogb_idx, label, n_nodes = graph_indices[i]
+            entry = {'ogb_idx': ogb_idx, 'label': label, 'n_nodes': n_nodes,
+                     'success_rate': round(v, 4)}
+            if v > 0.8:
+                easy_list.append(entry)
+            elif 0.2 <= v <= 0.8:
+                middle_list.append(entry)
+            else:
+                hard_list.append(entry)
+
+        easy, middle, hard = len(easy_list), len(middle_list), len(hard_list)
         n_graphs = len(successes)
 
         # 每类准确率
@@ -415,6 +429,13 @@ def main():
         print(f"  Classes with data: {len(per_class_acc)}")
 
         final_results['by_budget'][budget_pct] = {
+            'accuracy_description': (
+                "Per-graph success_rate = fraction of sampled trajectories (same fixed "
+                "seed node, different Categorical sampling noise) that were classified "
+                "correctly by the frozen classifier. Difficulty bins: "
+                "easy = success_rate > 0.8, middle = 0.2 ≤ success_rate ≤ 0.8, "
+                "hard = success_rate < 0.2."
+            ),
             'n_graphs': n_graphs,
             'easy_count': easy,
             'middle_count': middle,
@@ -422,6 +443,9 @@ def main():
             'easy_ratio': easy / max(n_graphs, 1),
             'middle_ratio': middle / max(n_graphs, 1),
             'hard_ratio': hard / max(n_graphs, 1),
+            'easy_graphs': easy_list,
+            'middle_graphs': middle_list,
+            'hard_graphs': hard_list,
             'mean_success_rate': float(np.mean(successes)),
             'fixed_start_similarity_mean': mean_sim,
             'fixed_start_similarity_std': std_sim,

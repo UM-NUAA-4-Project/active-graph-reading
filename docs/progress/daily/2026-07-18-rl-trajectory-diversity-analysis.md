@@ -20,7 +20,7 @@
 
 **同一张图的 10 条采样轨迹，最终子图的重合程度。**
 
-![Similarity Distribution](figures/2026-07-18-similarity_distribution_b100.png)
+![Similarity Distribution](figures/RL/binary/ex1/diversity/2026-07-18-similarity_distribution_b100.png)
 
 - **总体 mean similarity = 0.311 ± 0.274**
 - 左图：每点一张图的 mean pairwise similarity，大部分散在 0.1–0.5 区间
@@ -28,7 +28,7 @@
 
 **结论**：同一张图、同一模型、不同 seed 的轨迹之间平均只重合 31% 的节点。
 
-![Per-Class Similarity](figures/2026-07-18-similarity_per_class_b100.png)
+![Per-Class Similarity](figures/RL/binary/ex1/diversity/2026-07-18-similarity_per_class_b100.png)
 
 - 37 个类的 mean similarity 在 0.23–0.38 之间，std 均在 0.25–0.31
 - **没有任一类明显更容易学到稳定策略** — 最好类 (c34, 0.379) 与最差类 (c9, 0.233) 差距仅 0.15
@@ -40,4 +40,4 @@
 
 **每步 action probability 分布的熵——衡量 reader 的选择确定性。**
 
-![Entropy Curve](figures/2026-07-18-entropy_curve_b100.png)
+![Entropy Curve](figures/RL/binary/ex1/diversity/2026-07-18-entropy_curve_b100.png)
