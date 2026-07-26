@@ -48,70 +48,41 @@
 
 ## 3. 评估结果
 
-### 3.1 BC Baseline（Bootstrap Reader）
+### 3.1 策略对比总览
 
-![BC Eval Plot](figures/BC/BC_base_reader_eval_plot.png)
+![Eval Comparison](figures/RL/asymmetric/ex1/2026-07-26-eval_plot.png)
 
-| Budget | Valid (best) | Valid (worst) | Test (best) | Test (worst) |
-| ------ | ------------ | ------------- | ----------- | ------------ |
-| 5%     | 11.07%       | 9.34%         | 10.60%      | 8.99%        |
-| 10%    | 12.49%       | 11.22%        | 12.57%      | 11.48%       |
-| 15%    | 13.90%       | 12.89%        | 14.15%      | 13.00%       |
+| Budget | Random | BFS    | BC     | RL (asymmetric) | Full-Graph |
+| ------ | ------ | ------ | ------ | --------------- | ---------- |
+| 5%     | 2.66%  | 6.31%  | 11.07% | 29.97%          | 64.19%     |
+| 10%    | 5.68%  | 8.93%  | 12.49% | 39.14%          | 64.19%     |
+| 15%    | 8.24%  | 10.44% | 13.90% | 44.35%          | 64.19%     |
 
-BC 训练的 reader 仅略高于 random baseline（2.7%），说明纯行为克隆学到的策略很弱——teacher 轨迹的多样性不足，BC 无法泛化。
+**BC vs RL 提升幅度（Valid, Best）**：
 
-### 3.2 RL 训练后准确率
+| Budget | BC → RL  | 倍数  |
+| ------ | --------- | ----- |
+| 5%     | +18.90 pp | 2.7× |
+| 10%    | +26.65 pp | 3.1× |
+| 15%    | +30.45 pp | 3.2× |
 
-![RL Eval Plot](figures/RL/asymmetric/ex1/2026-07-26-eval_plot.png)
-
-| Budget | Valid (best ckpt) | Valid (worst ckpt) | Test (best ckpt) | Test (worst ckpt) |
-| ------ | ----------------- | ------------------ | ---------------- | ----------------- |
-| 5%     | 29.97%            | 27.05%             | 30.76%           | 27.83%            |
-| 10%    | 39.14%            | 37.61%             | 40.55%           | 39.43%            |
-| 15%    | 44.35%            | 43.14%             | 46.32%           | 45.66%            |
-
-### 3.3 BC vs RL 对比（Valid, Best Checkpoint）
-
-| Budget | BC     | RL (asymmetric) | 提升                        |
-| ------ | ------ | --------------- | --------------------------- |
-| 5%     | 11.07% | 29.97%          | **+18.90 pp (2.7×)** |
-| 10%    | 12.49% | 39.14%          | **+26.65 pp (3.1×)** |
-| 15%    | 13.90% | 44.35%          | **+30.45 pp (3.2×)** |
-
-- Full-graph classifier reference (valid): **64.19%**
-- RL 在 10% budget 下达到 full-graph 性能的 **61.0%**（39.14 / 64.19）
-
-**关键发现**：RL 训练大幅提升了 reader 性能——valid accuracy 从 BC 的 12.5% 提升至 39.1%（@10% budget），提升 **3.1 倍**。Asymmetric reward 虽然训练信号弱（avg R ~0.04），但通过 RL exploration 仍学到了远超 BC 的策略。
-
-### 3.4 Per-Class 准确率（Test, Best Checkpoint）
+### 3.2 Per-Class 准确率（Test, Best / Worst CheckpointBest Checkpoint）
 
 ![Per-Class Test Best](figures/RL/asymmetric/ex1/2026-07-26-per_class_test_best.png)
 
 **最好 5 类**：
 
-| Class | Acc@10% |
-| ----- | ------- |
-| 4     | 78.64%  |
-| 3     | 68.89%  |
-| 19    | 59.75%  |
-| 7     | 54.33%  |
-| 24    | 54.33%  |
-
-**最差 5 类**：
-
-| Class | Acc@10% |
-| ----- | ------- |
-| 13    | 10.00%  |
-| 28    | 15.83%  |
-| 8     | 14.33%  |
-| 32    | 14.00%  |
-| 35    | 14.71%  |
+| top-5 Class   | 4      | 3      | 19     | 7      | 24     |
+| -------------- | ------ | ------ | ------ | ------ | ------ |
+| Acc@10%        | 78.64% | 68.89% | 59.75% | 54.33% | 54.33% |
+| bottom-5 Class | 13     | 28     | 8      | 32     | 35     |
+| Acc@10%        | 10.00% | 15.83% | 14.33% | 14.00% | 14.71% |
 
 类间差距极大：最好类 (78.6%) 与最差类 (10.0%) 相差 **68.6 个百分点**。
 
 ![Per-Class Test Worst](figures/RL/asymmetric/ex1/2026-07-26-per_class_test_worst.png)
 
-### 3.5 Per-Class 准确率（Valid, Best / Worst Checkpoint）
+### 3.3 Per-Class 准确率（Valid, Best / Worst Checkpoint）
 
 ![Per-Class Valid Best](figures/RL/asymmetric/ex1/2026-07-26-per_class_valid_best.png)
 
@@ -134,7 +105,6 @@ BC 训练的 reader 仅略高于 random baseline（2.7%），说明纯行为克�
 | Hard   | success_rate < 0.2 | 9,676  | 12.4% |
 
 - Mean success rate: **69.56%**
-- 近半数图 reader 可稳定分类正确，但仍有 12.4% 的图几乎无法正确分类
 
 ### 4.2 轨迹一致性（Fixed-Start Similarity）
 
@@ -150,7 +120,6 @@ BC 训练的 reader 仅略高于 random baseline（2.7%），说明纯行为克�
 | ------ | ------ | ------- | ------- | ------- |
 | 0.895  | 0.293  | 0.245   | 0.226   | 0.208   |
 
-归一化熵 H(π)/log(|frontier|) 从初始的 0.895 快速下降至约 0.21，说明 reader 在早期步骤后迅速变得高度确定——后续决策几乎没有 exploration。
 
 ### 4.4 Per-Class 成功率
 
@@ -162,6 +131,5 @@ BC 训练的 reader 仅略高于 random baseline（2.7%），说明纯行为克�
 | Class 34  | 89.92% | Class 25  | 52.73% |
 | Class 8   | 89.63% | Class 33  | 52.90% |
 
-37 类 per-class 成功率均值为 72.6%，但方差极大——class 4（93.2%）与 class 31（47.6%）相差 45.6 个百分点。
 
 ---
