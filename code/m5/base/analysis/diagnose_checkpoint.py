@@ -380,10 +380,13 @@ def main():
         easy_list = []
         middle_list = []
         hard_list = []
+        all_entries = []
         for i, v in enumerate(successes):
             ogb_idx, label, n_nodes = graph_indices[i]
+            level = 'easy' if v > 0.8 else ('middle' if v >= 0.2 else 'hard')
             entry = {'ogb_idx': ogb_idx, 'label': label, 'n_nodes': n_nodes,
-                     'success_rate': round(v, 4)}
+                     'success_rate': round(v, 4), 'level': level}
+            all_entries.append(entry)
             if v > 0.8:
                 easy_list.append(entry)
             elif 0.2 <= v <= 0.8:
@@ -443,9 +446,6 @@ def main():
             'easy_ratio': easy / max(n_graphs, 1),
             'middle_ratio': middle / max(n_graphs, 1),
             'hard_ratio': hard / max(n_graphs, 1),
-            'easy_graphs': easy_list,
-            'middle_graphs': middle_list,
-            'hard_graphs': hard_list,
             'mean_success_rate': float(np.mean(successes)),
             'fixed_start_similarity_mean': mean_sim,
             'fixed_start_similarity_std': std_sim,
@@ -454,6 +454,10 @@ def main():
             'largest_class': int(largest_class),
             'largest_class_acc': largest_class_acc,
         }
+
+        csv_path = output_dir / f'difficulty_mapping_{budget_pct}.csv'
+        pd.DataFrame(all_entries).to_csv(str(csv_path), index=False)
+        print(f"  Difficulty mapping saved: {csv_path}")
 
     # ---- 9. 保存结果 ----
     output_path = output_dir / 'diagnosis.json'
