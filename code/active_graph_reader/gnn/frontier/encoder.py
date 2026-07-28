@@ -27,6 +27,7 @@ class FrontierNodesEncoder(nn.Module):
     hidden_dim : int     隐层维度（默认 128）
     n_layers : int       GNN 层数（默认 2）
     dropout : float      Dropout 概率（默认 0.1）
+    node_feat_dim : int  原始节点特征维度（0=无节点特征，用 type embedding）
     """
 
     def __init__(
@@ -35,6 +36,7 @@ class FrontierNodesEncoder(nn.Module):
         hidden_dim: int = 128,
         n_layers: int = 2,
         dropout: float = 0.1,
+        node_feat_dim: int = 0,
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
@@ -42,6 +44,9 @@ class FrontierNodesEncoder(nn.Module):
         self.dropout = dropout
 
         self.node_type_emb = nn.Embedding(2, hidden_dim)
+        self.node_feat_proj = (
+            nn.Linear(node_feat_dim, hidden_dim) if node_feat_dim > 0 else None
+        )
 
         self.convs = nn.ModuleList()
         self.bns = nn.ModuleList()
@@ -65,17 +70,17 @@ class FrontierNodesEncoder(nn.Module):
         n_total = g.num_nodes()
         edge_feat = g.edata['feat']
 
-        # 节点初始特征：revealed 有原图特征则用，否则 type embedding；frontier 恒为零
-        if 'feat' in g.ndata:
-            node_feat = g.ndata['feat'].to(device)
-            if node_feat.shape[1] != self.hidden_dim:
-                node_feat = F.pad(node_feat, (0, self.hidden_dim - node_feat.shape[1]))
-            h = node_feat
+        # 节点初始特征：
+        #   有原始节点特征 → 投影 revealed，frontier 恒为零
+        #   无原始节点特征 → type embedding（revealed=0），frontier 恒为零
+        if 'feat' in g.ndata and self.node_feat_proj is not None:
+            h = self.node_feat_proj(g.ndata['feat'].to(device))
+            h[n_revealed:] = 0
         else:
             node_types = torch.zeros(n_total, dtype=torch.long, device=device)
             node_types[n_revealed:] = 1
             h = self.node_type_emb(node_types)
-            h[n_revealed:] = 0  # frontier 恒为零
+            h[n_revealed:] = 0
 
         # GNN 前向传播
         for i in range(self.n_layers):
@@ -109,23 +114,37 @@ class FrontierNodesEncoder(nn.Module):
         for c in node_counts:
             offsets.append(offsets[-1] + c)
 
-        # 构建 node type embedding，子图内前 n_revealed 为 revealed(0)，后为 frontier(1)
-        node_types = torch.zeros(n_total, dtype=torch.long, device=device)
         frontier_starts: List[int] = []
         frontier_counts: List[int] = []
-        for i, sg in enumerate(subgraphs):
-            start = offsets[i]
-            n_rev = sg.n_revealed
-            n_fr = len(sg.frontier_original_ids)
-            frontier_starts.append(start + n_rev)
-            frontier_counts.append(n_fr)
-            if n_fr > 0:
-                node_types[start + n_rev:start + n_rev + n_fr] = 1
 
-        h = self.node_type_emb(node_types)
-        for start, cnt in zip(frontier_starts, frontier_counts):
-            if cnt > 0:
-                h[start:start + cnt] = 0  # frontier 初始化为零
+        # 节点初始特征：
+        #   有原始节点特征 → 投影 revealed，frontier 恒为零
+        #   无原始节点特征 → type embedding（revealed=0），frontier 恒为零
+        if 'feat' in batch_g.ndata and self.node_feat_proj is not None:
+            h = self.node_feat_proj(batch_g.ndata['feat'].to(device))
+            for i, sg in enumerate(subgraphs):
+                start = offsets[i]
+                n_rev = sg.n_revealed
+                n_fr = len(sg.frontier_original_ids)
+                frontier_starts.append(start + n_rev)
+                frontier_counts.append(n_fr)
+                if n_fr > 0:
+                    h[start + n_rev:start + n_rev + n_fr] = 0
+        else:
+            node_types = torch.zeros(n_total, dtype=torch.long, device=device)
+            for i, sg in enumerate(subgraphs):
+                start = offsets[i]
+                n_rev = sg.n_revealed
+                n_fr = len(sg.frontier_original_ids)
+                frontier_starts.append(start + n_rev)
+                frontier_counts.append(n_fr)
+                if n_fr > 0:
+                    node_types[start + n_rev:start + n_rev + n_fr] = 1
+
+            h = self.node_type_emb(node_types)
+            for start, cnt in zip(frontier_starts, frontier_counts):
+                if cnt > 0:
+                    h[start:start + cnt] = 0
 
         edge_feat = batch_g.edata.get('feat',
                       torch.empty(0, 7, device=device))
