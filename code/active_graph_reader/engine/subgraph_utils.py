@@ -10,19 +10,6 @@ from .reveal_action import reveal_node
 from ..gnn.subgraph_builder import SubgraphBuilder
 
 
-def ensure_self_loop_with_feat(g: dgl.DGLGraph) -> dgl.DGLGraph:
-    """add_self_loop，自环边特征填零（对齐 GINEEncoder 预期）。"""
-    n_old = g.num_edges()
-    g = dgl.add_self_loop(g)
-    if 'feat' in g.edata:
-        feat = g.edata['feat']
-        n_new = g.num_edges()
-        if n_new > n_old:
-            feat[n_old:] = 0
-            g.edata['feat'] = feat
-    return g
-
-
 def build_subgraph_from_reveal(
     full_g: dgl.DGLGraph,
     seed: int,
@@ -43,7 +30,6 @@ def build_subgraph_from_reveal(
             continue
         reveal_node(state, v)
     sub_g, original_ids = SubgraphBuilder().build(state)
-    sub_g = ensure_self_loop_with_feat(sub_g)
     return sub_g, original_ids
 
 
@@ -68,7 +54,6 @@ def reveal_with_checkpoints(
         while (cp_idx < len(checkpoints_sorted)
                and state._budget_used >= checkpoints_sorted[cp_idx]):
             sub_g, oids = SubgraphBuilder().build(state)
-            sub_g = ensure_self_loop_with_feat(sub_g)
             results.append((checkpoints_sorted[cp_idx], sub_g, oids))
             cp_idx += 1
         if cp_idx >= len(checkpoints_sorted):
@@ -80,7 +65,6 @@ def reveal_with_checkpoints(
     while cp_idx < len(checkpoints_sorted):
         if state._budget_used >= checkpoints_sorted[cp_idx]:
             sub_g, oids = SubgraphBuilder().build(state)
-            sub_g = ensure_self_loop_with_feat(sub_g)
             results.append((checkpoints_sorted[cp_idx], sub_g, oids))
             cp_idx += 1
         else:

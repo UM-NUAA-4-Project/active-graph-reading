@@ -171,6 +171,7 @@ def test_subgraph_builder_vectorized():
 
             if not state.revealed_edge_keys:
                 sub_g = dgl.graph(([], []), num_nodes=n_nodes)
+                sub_g = dgl.add_self_loop(sub_g)
                 return sub_g, original_ids
 
             src_list, dst_list, feat_list = [], [], []
@@ -190,6 +191,7 @@ def test_subgraph_builder_vectorized():
             sub_g = dgl.graph((src_t, dst_t), num_nodes=n_nodes)
             if feat_list:
                 sub_g.edata['feat'] = torch.stack(feat_list, dim=0)
+            sub_g = dgl.add_self_loop(sub_g)
             return sub_g, original_ids
 
     ref_builder = ReferenceBuilder()

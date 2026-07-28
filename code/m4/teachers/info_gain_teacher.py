@@ -146,7 +146,9 @@ class InfoGainTeacher(Teacher):
 
         edge_keys = list(edge_keys)
         if not edge_keys:
-            return dgl.graph(([], []), num_nodes=n_nodes)
+            sub_g = dgl.graph(([], []), num_nodes=n_nodes)
+            sub_g = dgl.add_self_loop(sub_g)
+            return sub_g
 
         edge_ids = [state._edge_key_to_id[k] for k in edge_keys]
         edge_feats = state.edge_feat[edge_ids]
@@ -167,4 +169,5 @@ class InfoGainTeacher(Teacher):
 
         sub_g = dgl.graph((src, dst), num_nodes=n_nodes)
         sub_g.edata['feat'] = edge_feats.repeat_interleave(2, dim=0)
+        sub_g = dgl.add_self_loop(sub_g)
         return sub_g

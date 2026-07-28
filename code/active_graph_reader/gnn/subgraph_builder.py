@@ -50,6 +50,7 @@ class SubgraphBuilder:
             sub_g = dgl.graph(([], []), num_nodes=n_nodes)
             if node_feat_t is not None:
                 sub_g.ndata['feat'] = node_feat_t
+            sub_g = dgl.add_self_loop(sub_g)
             return sub_g, original_ids
 
         # 向量化边收集
