@@ -2,8 +2,6 @@
 
 from ..core.base_reader import BaseReader
 from .learnable_reader import LearnableReader
-from .prototype_reader import PrototypeReader
-from .prototype_bank import PrototypeBank, scatter_logsumexp
 from ..gnn.frontier.graph_builder import FrontierGraphBuilder, FrontierSubgraph
 from ..gnn.frontier.encoder import FrontierNodesEncoder
 from ..gnn.subgraph_encoder import SubgraphEncoder, build_g_phi_from_fclass
@@ -20,9 +18,6 @@ __all__ = [
     'BaseReader',
     'FixedStrategyReader',
     'LearnableReader',
-    'PrototypeReader',
-    'PrototypeBank',
-    'scatter_logsumexp',
     'SubgraphEncoder',
     'build_g_phi_from_fclass',
     'FrontierGraphBuilder',
