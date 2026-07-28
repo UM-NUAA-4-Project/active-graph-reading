@@ -30,7 +30,7 @@ from active_graph_reader.gnn.classifier import GraphClassifier
 from training_utils import (
     TEACHER_NAMES, BUDGET_RATIOS,
     merge_trajectories, load_graphs_for_trajectories,
-    split_trajectories, train_one_epoch, val_one_epoch, infer_reader_config,
+    train_one_epoch, infer_reader_config,
     patch_old_checkpoint,
 )
 
@@ -55,8 +55,6 @@ def main():
     parser.add_argument('--finetune', default='',
                         help='从 checkpoint 微调（自动推断 hidden_dim，推荐 --lr 1e-4）')
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--val-split', type=float, default=0.2,
-                        help='Validation split ratio (0 = all train, no val)')
     args = parser.parse_args()
 
     repo_root = _repo_root
@@ -80,17 +78,10 @@ def main():
     needed_graphs = {t.graph_idx for t in all_trajs}
     graph_cache = load_graphs_for_trajectories(args.root, needed_graphs)
 
-    # 划分 train/val
-    if args.val_split > 0:
-        print("\n=== Splitting trajectories ===")
-        train_trajs, val_trajs = split_trajectories(
-            all_trajs, args.root, val_ratio=args.val_split, random_seed=args.seed,
-        )
-    else:
-        train_trajs, val_trajs = all_trajs, []
-        print(f"\nUsing all {len(train_trajs)} trajectories for training (no val split)")
+    train_trajs = all_trajs
+    print(f"\nUsing all {len(train_trajs)} trajectories for training")
 
-    # ---- 2. 加载 classifier（仅参考，不参与训练） ----
+    # ---- 2. 加载 classifier ----
     print("\n=== Loading classifier (reference only) ===")
     classifier = GraphClassifier(
         edge_feat_dim=7, n_classes=37, hidden_dim=300, n_layers=5, dropout=0.5,
@@ -166,13 +157,6 @@ def main():
             'epoch': epoch + 1,
             'train_loss': train_loss,
         }
-
-        if val_trajs:
-            val_loss = val_one_epoch(
-                reader, graph_cache, val_trajs, args.batch_size, device,
-            )
-            print(f"  Val loss:   {val_loss:.4f}")
-            log_entry['val_loss'] = val_loss
 
         training_log.append(log_entry)
 

@@ -212,79 +212,6 @@ def train_one_epoch(
 
 
 # ---------------------------------------------------------------------------
-# validation (deterministic argmax)
-# ---------------------------------------------------------------------------
-
-@torch.no_grad()
-def val_one_epoch(
-    reader, classifier, builder,
-    graphs, ogb_indices, labels_tensor,
-    device,
-):
-    reader.eval()
-    total_ce = 0.0
-    total_trajs = 0
-    total_correct = 0
-
-    # 第一阶段：收集所有 (sub_g, y, label) — reveal 仍逐轨迹串行
-    val_subgraphs = []
-    val_labels = []
-
-    for local_i in tqdm(range(len(graphs)), desc="  Validating"):
-        g_raw = graphs[local_i]  # 已预加载到 GPU
-        graph_idx = ogb_indices[local_i]
-        label = int(labels_tensor[graph_idx].item())
-        y = torch.tensor([label], device=device)
-        n_nodes = g_raw.num_nodes()
-
-        for budget_ratio in BUDGET_OPTIONS:
-            B = max(1, int(budget_ratio * n_nodes))
-            seed_node = deterministic_seed(graph_idx, 0, n_nodes)
-
-            state = GraphState(g_raw, seed_node=seed_node)
-            state._budget_limit = B
-            reader.reset()
-            initial_frontier = list(state._initial_frontier)
-            if initial_frontier:
-                reader.on_new_frontier(initial_frontier)
-
-            for _step in range(B):
-                if state.is_frontier_empty:
-                    break
-                scores, probs, frontier_nodes = reader.forward(state)
-                if len(frontier_nodes) == 0:
-                    break
-                chosen = frontier_nodes[probs.argmax().item()]
-                reveal_node(state, chosen)
-
-            sub_g, _ = builder.build(state)
-            val_subgraphs.append(sub_g)
-            val_labels.append((y, label))
-
-    # 第二阶段：批量 classifier 前向
-    for i in tqdm(range(0, len(val_subgraphs), 512), desc="  Classifying"):
-        chunk_sub = val_subgraphs[i:i + 512]
-        chunk_labels = val_labels[i:i + 512]
-
-        batch_g = dgl.batch(chunk_sub).to(device)
-        nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
-        logits = classifier(batch_g, nids)  # (chunk_size, K)
-
-        for j, (y, label) in enumerate(chunk_labels):
-            ce = F.cross_entropy(logits[j:j + 1], y).item()
-            if logits[j].argmax(dim=-1).item() == label:
-                total_correct += 1
-            total_ce += ce
-            total_trajs += 1
-
-    n = max(total_trajs, 1)
-    return {
-        'avg_CE': total_ce / n,
-        'acc': total_correct / n,
-    }
-
-
-# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -310,8 +237,6 @@ def main():
     parser.add_argument('--output-dir', default='m5/base/rl/binary')
     parser.add_argument('--resume-checkpoint', default='',
                         help='从指定 checkpoint 恢复训练')
-    parser.add_argument('--val-graphs', type=int, default=0,
-                        help='验证集图数量 (0=跳过验证)')
     parser.add_argument('--reward-type', choices=['binary', 'tanh', 'asymmetric'], default='binary',
                         help='R 计算方式: binary=0/1正确性, tanh=tanh(1-CE/ln37), asymmetric=正确+1/错误-0.1')
     parser.add_argument('--seed', type=int, default=42)
@@ -345,45 +270,7 @@ def main():
     train_graphs = [dgl.add_self_loop(g) for g in train_graphs]
     print(f"  Loaded {len(train_graphs)} graphs (CPU, self-loops pre-computed)")
 
-    # ---- 2. 加载 val 图（从 valid split，分层抽样） ----
-    val_graphs, val_labels, val_indices = None, None, None
-    if args.val_graphs > 0:
-        val_csv = root_path / 'ogbg_ppa' / 'split' / 'species' / 'valid.csv.gz'
-        all_val_indices = pd.read_csv(val_csv, compression='gzip', header=None).values.flatten().tolist()
-        print(f"=== Loading {len(all_val_indices)} validation graphs ===")
-        all_graphs, all_labels = dgl.load_graphs(processed_path, idx_list=all_val_indices)
-        print(f"  Loaded {len(all_graphs)} graphs")
-
-        if args.val_graphs < len(all_graphs):
-            from collections import defaultdict
-            class_to_local = defaultdict(list)
-            for i, ogb_idx in enumerate(all_val_indices):
-                lbl = int(all_labels['labels'][ogb_idx].item())
-                class_to_local[lbl].append(i)
-            total = len(all_val_indices)
-            sampled = []
-            for cls in range(K):
-                pool = class_to_local.get(cls, [])
-                n = max(1, int(args.val_graphs * len(pool) / total))
-                n = min(n, len(pool))
-                if n > 0:
-                    sampled.extend(random.sample(pool, n))
-            if len(sampled) > args.val_graphs:
-                sampled = random.sample(sampled, args.val_graphs)
-            elif len(sampled) < args.val_graphs:
-                remaining = [i for i in range(len(all_graphs)) if i not in set(sampled)]
-                sampled.extend(random.sample(remaining, min(args.val_graphs - len(sampled), len(remaining))))
-            val_graphs = [dgl.add_self_loop(all_graphs[i]) for i in sampled]
-            val_indices = [all_val_indices[i] for i in sampled]
-            val_labels = {'labels': all_labels['labels'][[i for i in val_indices]]}
-        else:
-            val_graphs = [dgl.add_self_loop(g) for g in all_graphs]
-            val_labels, val_indices = all_labels, all_val_indices
-
-        print(f"  Validation set: {len(val_graphs)} graphs (CPU, self-loops pre-computed) "
-              f"({len(set(int(val_labels['labels'][idx].item()) for idx in val_indices))}/{K} classes)")
-
-    # ---- 3. 加载 classifier（冻结） ----
+    # ---- 2. 加载 classifier（冻结） ----
     print("\n=== Loading classifier ===")
     classifier = GraphClassifier(
         edge_feat_dim=7, n_classes=K, hidden_dim=300, n_layers=5, dropout=0.5,
@@ -396,7 +283,7 @@ def main():
         p.requires_grad = False
     print(f"  val_acc={ckpt.get('val_acc', 'N/A')}")
 
-    # ---- 4. 加载/恢复 reader ----
+    # ---- 3. 加载/恢复 reader ----
     print("\n=== Loading LearnableReader ===")
     reader = LearnableReader(
         edge_feat_dim=7, hidden_dim=args.hidden_dim,
@@ -444,7 +331,7 @@ def main():
     print(f"  Graphs per batch: {args.graphs_per_batch}, Seeds per graph: {args.seeds_per_graph}")
     print(f"  Effective batch size: {args.graphs_per_batch * args.seeds_per_graph} trajectories")
 
-    # ---- 5. Self-Sampled REINFORCE 训练 ----
+    # ---- 4. 训练 ----
     for epoch in range(start_epoch, args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
         metrics = train_one_epoch(
@@ -457,15 +344,6 @@ def main():
 
         log_entry = {'epoch': epoch + 1, 'train_loss': metrics['loss'],
                      'train_avg_R': metrics['avg_R'], 'train_acc': metrics['acc']}
-
-        if val_graphs is not None:
-            val_metrics = val_one_epoch(
-                reader, classifier, builder,
-                val_graphs, val_indices, val_labels['labels'],
-                device,
-            )
-            print(f"  Val:   avg_CE={val_metrics['avg_CE']:.3f}  acc={val_metrics['acc']:.3f}")
-            log_entry.update({f'val_{k}': v for k, v in val_metrics.items()})
 
         training_log.append(log_entry)
 
