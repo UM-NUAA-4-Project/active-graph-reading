@@ -116,6 +116,7 @@ class FrontierGraphBuilder:
             g = dgl.graph((src, dst), num_nodes=n_total)
 
         g.edata['feat'] = edge_feat
+        g = dgl.add_self_loop(g)
 
         # 节点特征：revealed 用原图特征，frontier 填零
         if state.has_node_feat and state.node_feat is not None:
