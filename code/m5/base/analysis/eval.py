@@ -67,13 +67,10 @@ def compute_budget(n_nodes: int, ratio: float) -> int:
     return max(1, int(ratio * n_nodes))
 
 
-def pick_seeds_by_degree(g: dgl.DGLGraph) -> Tuple[int, int]:
-    indeg = g.in_degrees().float()
-    outdeg = g.out_degrees().float()
-    total_deg = indeg + outdeg
-    best_seed = int(total_deg.argmax().item())
-    worst_seed = int(total_deg.argmin().item())
-    return best_seed, worst_seed
+def pick_seeds_deterministic(graph_idx: int, n_nodes: int) -> Tuple[int, int]:
+    s0 = (graph_idx * 31 + 0 * 17 + 7) % n_nodes
+    s1 = (graph_idx * 31 + 1 * 17 + 7) % n_nodes
+    return s0, s1
 
 
 # ---------------------------------------------------------------------------
@@ -155,9 +152,9 @@ def _evaluate_learnable_batched(
             n_nodes = g.num_nodes()
             budgets_abs = [compute_budget(n_nodes, r) for r in budgets_rel_sorted]
 
-            best_seed, worst_seed = pick_seeds_by_degree(g)
+            s0, s1 = pick_seeds_deterministic(ogb_idx, n_nodes)
 
-            for seed_type, seed_node in [('best', best_seed), ('worst', worst_seed)]:
+            for seed_type, seed_node in [('s0', s0), ('s1', s1)]:
                 state = GraphState(g, seed_node=seed_node)
                 state._budget_limit = max(budgets_abs)
                 state_infos.append({
@@ -178,6 +175,7 @@ def _evaluate_learnable_batched(
 
             batch_results = reader.forward_states(
                 [state_infos[j]['state'] for j in active_idx],
+                temperature=reader.temperature,
             )
 
             for k, j in enumerate(active_idx):
@@ -274,9 +272,9 @@ def evaluate_strategy_split(
         n_nodes = g_raw.num_nodes()
         budgets_abs = [compute_budget(n_nodes, r) for r in budgets_rel_sorted]
 
-        best_seed, worst_seed = pick_seeds_by_degree(g_raw)
+        s0, s1 = pick_seeds_deterministic(ogb_idx, n_nodes)
 
-        for seed_type, seed_node in [('best', best_seed), ('worst', worst_seed)]:
+        for seed_type, seed_node in [('s0', s0), ('s1', s1)]:
             collected = run_one_seed_collect(
                 reader, g_raw, seed_node, label, builder,
                 budgets_rel_sorted, budgets_abs,
@@ -511,6 +509,8 @@ def main():
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='Limit graphs per split (0 = all)')
     parser.add_argument('--dropout', type=float, default=0.1)
+    parser.add_argument('--temperature', type=float, default=0.2,
+                        help='Reader temperature (must match training)')
     parser.add_argument('--skip-fixed', action='store_true',
                         help='Skip random/bfs evaluation, only run learnable')
     parser.add_argument('--strategies', nargs='+',
@@ -581,7 +581,7 @@ def main():
 
         learnable_reader = LearnableReader(
             edge_feat_dim=7, hidden_dim=hidden_dim, n_layers=n_layers,
-            dropout=args.dropout,
+            dropout=args.dropout, temperature=args.temperature,
         ).to(device)
         reader_sd, _ = patch_old_checkpoint(reader_ckpt['reader_state_dict'])
         learnable_reader.load_state_dict(reader_sd)

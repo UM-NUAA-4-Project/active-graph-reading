@@ -140,8 +140,41 @@ def main():
     total_params = sum(p.numel() for p in reader.parameters())
     print(f"  Params: {total_params:,}")
 
-    # ---- 4. 训练循环 ----
+    # ---- 4. 保存 config.json ----
+    try:
+        import subprocess
+        git_commit = subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            cwd=str(_repo_root), text=True,
+        ).strip()
+    except Exception:
+        git_commit = 'unknown'
+
     mode = "Fine-tuning" if is_finetune else ("Resuming" if resume_path else "Training")
+
+    config = {
+        'git_commit': git_commit,
+        'data_split': 'M4 teacher trajectories',
+        'training_mode': mode,
+        'data_dir': args.data_dir,
+        'output_dir': str(output_dir),
+        'bootstrap_checkpoint': str(resume_path) if resume_path else 'random init',
+        'lr': args.lr,
+        'batch_size': args.batch_size,
+        'epochs': args.epochs,
+        'hidden_dim': reader.frontier_encoder.hidden_dim,
+        'n_layers': reader.frontier_encoder.n_layers,
+        'dropout': reader.frontier_encoder.dropout,
+        'total_params': total_params,
+        'n_train_trajs': len(train_trajs),
+        'seed': args.seed,
+    }
+    config_path = output_dir / 'config.json'
+    with open(config_path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+    print(f"  Config saved: {config_path}")
+
+    # ---- 5. 训练循环 ----
     print(f"\n=== {mode}: epoch {start_epoch + 1} → {args.epochs}, lr={args.lr} ===")
     print(f"  Train trajectories: {len(train_trajs)}")
 

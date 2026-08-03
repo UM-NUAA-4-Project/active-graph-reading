@@ -331,6 +331,40 @@ def main():
     print(f"  Graphs per batch: {args.graphs_per_batch}, Seeds per graph: {args.seeds_per_graph}")
     print(f"  Effective batch size: {args.graphs_per_batch * args.seeds_per_graph} trajectories")
 
+    # ---- 3.5. 保存 config.json ----
+    try:
+        import subprocess
+        git_commit = subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            cwd=str(repo_root), text=True,
+        ).strip()
+    except Exception:
+        git_commit = 'unknown'
+
+    config = {
+        'git_commit': git_commit,
+        'data_split': 'full training set (train.csv.gz)',
+        'classifier_checkpoint': f'{args.classifier} (val_acc={ckpt.get("val_acc", "N/A")})',
+        'bootstrap_reader_checkpoint': str(args.bootstrap_checkpoint),
+        'output_dir': str(output_dir),
+        'reward_type': args.reward_type,
+        'temperature': args.temperature,
+        'batch_construction': f'{args.graphs_per_batch} graphs x {args.seeds_per_graph} rollouts = {args.graphs_per_batch * args.seeds_per_graph} trajectories per optimizer.step()',
+        'lr': args.lr,
+        'epochs': args.epochs,
+        'hidden_dim': args.hidden_dim,
+        'n_layers': args.n_layers,
+        'dropout': args.dropout,
+        'budget_options': BUDGET_OPTIONS,
+        'total_params': total_params,
+        'checkpoint_selection_rule': 'max training accuracy across all epochs',
+        'seed': args.seed,
+    }
+    config_path = output_dir / 'config.json'
+    with open(config_path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+    print(f"  Config saved: {config_path}")
+
     # ---- 4. 训练 ----
     for epoch in range(start_epoch, args.epochs):
         print(f"\n--- Epoch {epoch + 1}/{args.epochs} ---")
