@@ -208,7 +208,10 @@ def _evaluate_learnable_batched(
                     )
 
     # ---- batch classify all queued subgraphs ----
-    for c_start in tqdm(range(0, len(classify_queue), 512), desc="  Classifying"):
+    running_correct = defaultdict(int)
+    running_total = defaultdict(int)
+    pbar = tqdm(range(0, len(classify_queue), 512), desc="  Classifying")
+    for c_start in pbar:
         c_end = min(c_start + 512, len(classify_queue))
         chunk = classify_queue[c_start:c_end]
 
@@ -221,6 +224,14 @@ def _evaluate_learnable_batched(
             correct = 1.0 if pred == lbl else 0.0
             results[seed_type][rel_b].append(correct)
             per_class[seed_type][lbl][rel_b].append(correct)
+            running_correct[rel_b] += correct
+            running_total[rel_b] += 1
+
+        postfix = {}
+        for b in sorted(running_total.keys()):
+            acc = running_correct[b] / running_total[b] if running_total[b] > 0 else 0.0
+            postfix[f'b={b:.0%}'] = f'{acc:.4f}'
+        pbar.set_postfix(postfix)
 
     aggregated = {
         'best': dict(results['best']),
@@ -282,7 +293,10 @@ def evaluate_strategy_split(
             for sub_g, lbl, rel_b in collected:
                 classify_queue.append((sub_g, lbl, seed_type, rel_b))
 
-    for c_start in tqdm(range(0, len(classify_queue), 512), desc="  Classifying"):
+    running_correct = defaultdict(int)
+    running_total = defaultdict(int)
+    pbar = tqdm(range(0, len(classify_queue), 512), desc="  Classifying")
+    for c_start in pbar:
         c_end = min(c_start + 512, len(classify_queue))
         chunk = classify_queue[c_start:c_end]
 
@@ -295,6 +309,14 @@ def evaluate_strategy_split(
             correct = 1.0 if pred == lbl else 0.0
             results[seed_type][rel_b].append(correct)
             per_class[seed_type][lbl][rel_b].append(correct)
+            running_correct[rel_b] += correct
+            running_total[rel_b] += 1
+
+        postfix = {}
+        for b in sorted(running_total.keys()):
+            acc = running_correct[b] / running_total[b] if running_total[b] > 0 else 0.0
+            postfix[f'b={b:.0%}'] = f'{acc:.4f}'
+        pbar.set_postfix(postfix)
 
     aggregated = {
         'best': dict(results['best']),
