@@ -634,12 +634,17 @@ def main():
             all_stats[split_name][strategy_name] = aggregated
             all_per_class[split_name][strategy_name] = per_class
 
-            # 即时输出 overall stats
+            # 即时输出：按 budget 平均（合并所有 seed）
             stats = compute_stats({strategy_name: aggregated}, [strategy_name])
-            for kind in ('best', 'worst'):
-                for b_key, s in stats[strategy_name][kind].items():
-                    print(f"    {kind:5s} budget={b_key}: "
-                          f"mean={s['mean']:.4f}, std={s['std']:.4f} (n={s['n']})")
+            seed_kinds = list(aggregated.keys())
+            for b_key in sorted(BUDGETS_REL):
+                b_key_str = f'{b_key:.2f}'
+                all_accs = []
+                for kind in seed_kinds:
+                    accs = aggregated[kind].get(b_key, [])
+                    all_accs.extend(accs)
+                mean = np.mean(all_accs) if all_accs else 0.0
+                print(f"    budget={b_key_str}: acc={mean:.4f}  (n={len(all_accs)})")
 
             gc.collect()
             if device.type == 'cuda':
