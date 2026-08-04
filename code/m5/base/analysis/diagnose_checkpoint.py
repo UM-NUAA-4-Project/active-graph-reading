@@ -138,6 +138,8 @@ def run_batched_trajectories(reader, states_info, temperature, device):
             chosen = frontier_nodes[action_idx.item()]
             si['revealed'].add(chosen)
             reveal_node(state, chosen)
+            if state.get_budget_used() >= state._budget_limit:
+                active[j] = False
 
     # pad norm_entropies for states that finished early (frontier emptied)
     for j in range(n_states):
@@ -322,7 +324,7 @@ def main():
                 chunk_si = states_info[c_start:c_end]
 
                 batch_g = dgl.batch([
-                    dgl.add_self_loop(builder.build(si['state'])[0])
+                    builder.build(si['state'])[0]
                     for si in chunk_si
                 ]).to(device)
                 nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)

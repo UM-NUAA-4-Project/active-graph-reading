@@ -197,6 +197,8 @@ def _evaluate_learnable_batched(
                         classify_queue.append(
                             (sub_g, si['label'], si['seed_type'], budgets_rel_sorted[bi])
                         )
+                if budget_used >= max(si['budgets_abs']):
+                    active[j] = False
 
         # catch thresholds not reached (frontier emptied early)
         for j, si in enumerate(state_infos):
@@ -215,7 +217,7 @@ def _evaluate_learnable_batched(
         c_end = min(c_start + 512, len(classify_queue))
         chunk = classify_queue[c_start:c_end]
 
-        batch_g = dgl.batch([dgl.add_self_loop(item[0]) for item in chunk]).to(device)
+        batch_g = dgl.batch([item[0] for item in chunk]).to(device)
         nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
         logits = classifier(batch_g, nids)
 
@@ -300,7 +302,7 @@ def evaluate_strategy_split(
         c_end = min(c_start + 512, len(classify_queue))
         chunk = classify_queue[c_start:c_end]
 
-        batch_g = dgl.batch([dgl.add_self_loop(item[0]) for item in chunk]).to(device)
+        batch_g = dgl.batch([item[0] for item in chunk]).to(device)
         nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
         logits = classifier(batch_g, nids)
 
