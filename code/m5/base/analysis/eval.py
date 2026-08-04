@@ -154,7 +154,7 @@ def _evaluate_learnable_batched(
 
             s0, s1 = pick_seeds_deterministic(ogb_idx, n_nodes)
 
-            for seed_type, seed_node in [('s0', s0), ('s1', s1)]:
+            for seed_type, seed_node in [('best', s0), ('worst', s1)]:
                 state = GraphState(g, seed_node=seed_node)
                 state._budget_limit = max(budgets_abs)
                 state_infos.append({
@@ -285,7 +285,7 @@ def evaluate_strategy_split(
 
         s0, s1 = pick_seeds_deterministic(ogb_idx, n_nodes)
 
-        for seed_type, seed_node in [('s0', s0), ('s1', s1)]:
+        for seed_type, seed_node in [('best', s0), ('worst', s1)]:
             collected = run_one_seed_collect(
                 reader, g_raw, seed_node, label, builder,
                 budgets_rel_sorted, budgets_abs,
