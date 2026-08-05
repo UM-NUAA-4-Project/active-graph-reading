@@ -175,8 +175,27 @@ def main():
           f"(budget={args.budget_ratio:.0%}, temperature={args.temperature}) ===")
 
     builder = SubgraphBuilder()
-    CHUNK_SIZE = 32
+    CHUNK_SIZE = 16
+    CLASSIFY_CHUNK = 512  # matches eval.py: accumulate subgraphs, batch-classify
     results = []  # (ogb_idx, label, mean_ce)
+    classify_queue = []  # subgraph states accumulated for batched classification
+
+    def _flush_classify():
+        nonlocal classify_queue
+        if not classify_queue:
+            return
+        for c_start in range(0, len(classify_queue), CLASSIFY_CHUNK):
+            c_end = min(c_start + CLASSIFY_CHUNK, len(classify_queue))
+            chunk_si = classify_queue[c_start:c_end]
+            batch_g = dgl.batch([
+                builder.build(si['state'])[0] for si in chunk_si
+            ]).to(device)
+            nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
+            logits = classifier(batch_g, nids)
+            for j, si in enumerate(chunk_si):
+                y = torch.tensor([si['label']], device=logits.device)
+                si['ce'] = float(F.cross_entropy(logits[j:j + 1], y).item())
+        classify_queue = []
 
     for chunk_start in tqdm(range(0, len(easy_entries), CHUNK_SIZE), desc="  Graphs"):
         chunk_end = min(chunk_start + CHUNK_SIZE, len(easy_entries))
@@ -197,22 +216,16 @@ def main():
 
         run_batched_trajectories(reader, states_info, args.temperature, device)
 
-        for c_start in range(0, len(states_info), 512):
-            c_end = min(c_start + 512, len(states_info))
-            chunk_si = states_info[c_start:c_end]
-            batch_g = dgl.batch([
-                builder.build(si['state'])[0] for si in chunk_si
-            ]).to(device)
-            nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
-            logits = classifier(batch_g, nids)
-            for j, si in enumerate(chunk_si):
-                y = torch.tensor([si['label']], device=logits.device)
-                si['ce'] = float(F.cross_entropy(logits[j:j + 1], y).item())
+        classify_queue.extend(states_info)
+        if len(classify_queue) >= CLASSIFY_CHUNK:
+            _flush_classify()
 
         for gi, (ogb_idx, label) in enumerate(chunk):
             gi_sis = [si for si in states_info if si['graph_gi'] == gi]
             mean_ce = float(np.mean([si['ce'] for si in gi_sis]))
             results.append((ogb_idx, label, mean_ce))
+
+    _flush_classify()
 
     # ---- 6. 排序 + 取前 keep_ratio ----
     results.sort(key=lambda r: r[2], reverse=True)
@@ -242,7 +255,8 @@ def main():
         pd.Series(middle_hard.tolist()),
     ], ignore_index=True).sort_values().reset_index(drop=True)
     combined_path = output_dir / 'train_filtered.csv.gz'
-    combined.to_csv(str(combined_path), index=False, compression='gzip')
+    combined.to_csv(str(combined_path), index=False, header=False,
+                    compression='gzip')
     print(f"  Filtered train split saved: {combined_path} "
           f"({len(combined)} graphs)")
 
