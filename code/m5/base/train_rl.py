@@ -234,6 +234,9 @@ def main():
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='限制加载训练图总数 (0=全部)')
+    parser.add_argument('--train-split', default='',
+                        help='自定义训练集索引 CSV（gzip, 单列 ogb_idx），'
+                             '由 filter_by_classifier.py 生成；为空则用官方 train.csv.gz')
     parser.add_argument('--output-dir', default='m5/base/rl/binary')
     parser.add_argument('--resume-checkpoint', default='',
                         help='从指定 checkpoint 恢复训练')
@@ -258,9 +261,18 @@ def main():
     # ---- 1. 加载训练图 ----
     root_path = Path(args.root)
     processed_path = str(root_path / 'ogbg_ppa' / 'processed' / 'dgl_data_processed')
-    train_csv = root_path / 'ogbg_ppa' / 'split' / 'species' / 'train.csv.gz'
-
-    train_indices = pd.read_csv(train_csv, compression='gzip', header=None).values.flatten().tolist()
+    if args.train_split:
+        split_path = repo_root / args.train_split
+        if not split_path.exists():
+            raise FileNotFoundError(f"Train split not found: {split_path}")
+        train_indices = pd.read_csv(split_path, compression='gzip', header=None
+                                    ).values.flatten().tolist()
+        split_label = str(split_path)
+    else:
+        train_csv = root_path / 'ogbg_ppa' / 'split' / 'species' / 'train.csv.gz'
+        train_indices = pd.read_csv(train_csv, compression='gzip', header=None
+                                    ).values.flatten().tolist()
+        split_label = 'full training set (train.csv.gz)'
     if args.max_graphs > 0 and args.max_graphs < len(train_indices):
         train_indices = train_indices[:args.max_graphs]
 
@@ -343,7 +355,7 @@ def main():
 
     config = {
         'git_commit': git_commit,
-        'data_split': 'full training set (train.csv.gz)',
+        'data_split': split_label,
         'classifier_checkpoint': f'{args.classifier} (val_acc={ckpt.get("val_acc", "N/A")})',
         'bootstrap_reader_checkpoint': str(args.bootstrap_checkpoint),
         'output_dir': str(output_dir),

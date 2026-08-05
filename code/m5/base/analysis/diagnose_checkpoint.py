@@ -25,15 +25,16 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-_script_dir = Path(__file__).resolve().parent
-_repo_root = _script_dir.parent.parent.parent
-sys.path.insert(0, str(_repo_root))
-
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 import dgl
 from tqdm import tqdm
+
+_script_dir = Path(__file__).resolve().parent
+_repo_root = _script_dir.parent.parent.parent
+sys.path.insert(0, str(_repo_root))
 
 from active_graph_reader.reader.learnable_reader import LearnableReader
 from active_graph_reader.engine.graph_state import GraphState
@@ -285,6 +286,7 @@ def main():
     for br in BUDGET_OPTIONS:
         results_by_budget[br] = {
             'per_graph_success': [],
+            'per_graph_ce': [],
             'per_class_correct': defaultdict(int),
             'per_class_total': defaultdict(int),
             'all_similarities': [],
@@ -333,6 +335,8 @@ def main():
                 for j, si in enumerate(chunk_si):
                     pred = logits[j].argmax(dim=-1).item()
                     si['correct'] = (pred == chunk[si['graph_gi']][2])
+                    y = torch.tensor([chunk[si['graph_gi']][2]], device=logits.device)
+                    si['ce'] = float(F.cross_entropy(logits[j:j + 1], y).item())
 
             # -- aggregate per-graph results --
             r = results_by_budget[budget_ratio]
@@ -341,11 +345,14 @@ def main():
                 n_nodes = all_graphs[chunk_start + gi].num_nodes()
                 gi_sis = [si for si in states_info if si['graph_gi'] == gi]
                 correct_list = [si['correct'] for si in gi_sis]
+                ce_list = [si.get('ce', 0.0) for si in gi_sis]
 
                 success_rate = sum(correct_list) / len(correct_list)
+                mean_ce = float(np.mean(ce_list)) if ce_list else 0.0
                 sims = compute_pairwise_jaccard([si['revealed'] for si in gi_sis])
 
                 r['per_graph_success'].append(success_rate)
+                r['per_graph_ce'].append(mean_ce)
                 r['all_similarities'].append(sims)
                 r['all_norm_entropies'].extend(
                     [si['norm_entropies'] for si in gi_sis],
@@ -377,6 +384,7 @@ def main():
 
         # Easy / middle / hard
         successes = r['per_graph_success']
+        mean_ces = r['per_graph_ce']
         graph_indices = r['graph_info']  # list of (ogb_idx, label, n_nodes)
 
         easy_list = []
@@ -387,7 +395,8 @@ def main():
             ogb_idx, label, n_nodes = graph_indices[i]
             level = 'easy' if v > 0.8 else ('middle' if v >= 0.2 else 'hard')
             entry = {'ogb_idx': ogb_idx, 'label': label, 'n_nodes': n_nodes,
-                     'success_rate': round(v, 4), 'level': level}
+                     'success_rate': round(v, 4), 'level': level,
+                     'mean_ce': round(mean_ces[i], 4)}
             all_entries.append(entry)
             if v > 0.8:
                 easy_list.append(entry)

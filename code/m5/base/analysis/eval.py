@@ -7,14 +7,14 @@
   - eval_learnable.json      learnable（checkpoint 相关）
 
 用法：
-  python phase1_eval.py                                          # 默认三种策略
-  python phase1_eval.py --skip-fixed                             # 仅 learnable
-  python phase1_eval.py --checkpoint m5/base/rl/checkpoint_epoch7.pt  # 指定 checkpoint
-  python code/m5/base/analysis/phase1_eval.py --skip-fixed --root /mnt/data
+  python eval.py                                          # 默认三种策略
+  python eval.py --skip-fixed                             # 仅 learnable
+  python eval.py --checkpoint m5/base/rl/checkpoint_epoch7.pt  # 指定 checkpoint
+  python code/m5/base/analysis/eval.py --skip-fixed --root /mnt/data
   --checkpoint m5/base/rl/asymmetric/ex1/checkpoint_epoch6.pt 
   --output-dir code/m5/base/analysis/eval_results_asymmetric
 """
-
+    
 import argparse
 import gc
 import json
