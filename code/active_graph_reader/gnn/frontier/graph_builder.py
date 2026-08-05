@@ -1,7 +1,7 @@
 """FrontierGraphBuilder：从 GraphState 构建扩展子图。
 
-扩展子图 = V_revealed ∪ frontier_nodes + revealed↔revealed 边（双向）+ revealed↔frontier 边（双向）
-与 encoder/subgraph_builder.py 的 SubgraphBuilder 模式一致。
+扩展子图 = V_revealed ∪ frontier_nodes + revealed↔revealed 边（双向）+ revealed→frontier 边（单向）
+frontier 节点尚未揭示，其身份未知，不应反向影响 revealed 节点表征。
 """
 
 from dataclasses import dataclass
@@ -37,7 +37,7 @@ class FrontierGraphBuilder:
 
     构建内容：
     - 节点：V_revealed ∪ frontier_nodes（升序排列）
-    - 边：revealed↔revealed（双向）+ revealed↔frontier（双向）
+    - 边：revealed↔revealed（双向）+ revealed  → frontier（单向）
     - 边特征：复制自原图 edge_feat，存入 g.edata['feat']，反向边复用特征
     - 无节点特征（由 encoder 分配可训练 type embedding）
     """
