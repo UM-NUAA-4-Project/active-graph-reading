@@ -179,6 +179,7 @@ def main():
     CLASSIFY_CHUNK = 512  # matches eval.py: accumulate subgraphs, batch-classify
     results = []  # (ogb_idx, label, mean_ce)
     classify_queue = []  # subgraph states accumulated for batched classification
+    chunk_sis = []  # (chunk, states_info) deferred until all CE computed
 
     def _flush_classify():
         nonlocal classify_queue
@@ -217,15 +218,18 @@ def main():
         run_batched_trajectories(reader, states_info, args.temperature, device)
 
         classify_queue.extend(states_info)
+        chunk_sis.append((chunk, states_info))
         if len(classify_queue) >= CLASSIFY_CHUNK:
             _flush_classify()
 
+    _flush_classify()
+
+    # CE is only filled in after _flush_classify(); compute means now.
+    for chunk, states_info in chunk_sis:
         for gi, (ogb_idx, label) in enumerate(chunk):
             gi_sis = [si for si in states_info if si['graph_gi'] == gi]
             mean_ce = float(np.mean([si['ce'] for si in gi_sis]))
             results.append((ogb_idx, label, mean_ce))
-
-    _flush_classify()
 
     # ---- 6. 排序 + 取前 keep_ratio ----
     results.sort(key=lambda r: r[2], reverse=True)
