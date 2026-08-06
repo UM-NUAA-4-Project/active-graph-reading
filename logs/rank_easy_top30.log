@@ -1,0 +1,17 @@
+Device: cuda:0
+
+=== Reading difficulty mapping: m5/base/rl/asymmetric/ex2/diagnosis/difficulty_mapping_10%.csv ===
+  Total rows: 78200
+  easy=38213  middle=25539  hard=14448
+
+=== Loading 38213 easy graphs ===
+  Loaded 38213 graphs (CPU, self-loops added)
+
+=== Loading classifier ===
+  val_acc=0.6418847006651884
+
+=== Loading LearnableReader ===
+  hidden_dim=128, n_layers=2, epoch=7
+
+=== Sampling 4 trajectories per easy graph (budget=10%, temperature=0.2) ===
+  Graphs:   0%|          | 0/2389 [00:00<?, ?it/s]

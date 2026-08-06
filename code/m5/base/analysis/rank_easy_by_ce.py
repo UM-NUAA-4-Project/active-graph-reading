@@ -18,6 +18,7 @@
 """
 
 import argparse
+import gc
 import json
 import math
 import random
@@ -179,10 +180,13 @@ def main():
     CLASSIFY_CHUNK = 512  # matches eval.py: accumulate subgraphs, batch-classify
     results = []  # (ogb_idx, label, mean_ce)
     classify_queue = []  # subgraph states accumulated for batched classification
-    chunk_sis = []  # (chunk, states_info) deferred until all CE computed
+    # States are only kept until their CE is computed, then released. Keeping all
+    # ~4x38213 GraphState objects (each with a full _edge_key_to_id dict) until the
+    # end exhausted RAM at ~45% and triggered swap (50x slowdown, 2026-08-06).
+    pending = []  # (chunk, states_info) waiting for CE
 
     def _flush_classify():
-        nonlocal classify_queue
+        nonlocal classify_queue, pending
         if not classify_queue:
             return
         for c_start in range(0, len(classify_queue), CLASSIFY_CHUNK):
@@ -197,6 +201,14 @@ def main():
                 y = torch.tensor([si['label']], device=logits.device)
                 si['ce'] = float(F.cross_entropy(logits[j:j + 1], y).item())
         classify_queue = []
+        # Every flushed state now has 'ce'; fold pending chunks into results.
+        for chunk, states_info in pending:
+            for gi, (ogb_idx, label) in enumerate(chunk):
+                gi_sis = [si for si in states_info if si['graph_gi'] == gi]
+                mean_ce = float(np.mean([si['ce'] for si in gi_sis]))
+                results.append((ogb_idx, label, mean_ce))
+        pending = []
+        gc.collect()
 
     for chunk_start in tqdm(range(0, len(easy_entries), CHUNK_SIZE), desc="  Graphs"):
         chunk_end = min(chunk_start + CHUNK_SIZE, len(easy_entries))
@@ -218,18 +230,11 @@ def main():
         run_batched_trajectories(reader, states_info, args.temperature, device)
 
         classify_queue.extend(states_info)
-        chunk_sis.append((chunk, states_info))
+        pending.append((chunk, states_info))
         if len(classify_queue) >= CLASSIFY_CHUNK:
             _flush_classify()
 
     _flush_classify()
-
-    # CE is only filled in after _flush_classify(); compute means now.
-    for chunk, states_info in chunk_sis:
-        for gi, (ogb_idx, label) in enumerate(chunk):
-            gi_sis = [si for si in states_info if si['graph_gi'] == gi]
-            mean_ce = float(np.mean([si['ce'] for si in gi_sis]))
-            results.append((ogb_idx, label, mean_ce))
 
     # ---- 6. 排序 + 取前 keep_ratio ----
     results.sort(key=lambda r: r[2], reverse=True)
