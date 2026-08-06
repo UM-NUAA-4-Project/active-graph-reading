@@ -1,0 +1,15 @@
+{
+  "checkpoint": "m5/base/rl/asymmetric/ex2/checkpoint_epoch8.pt",
+  "classifier": "m3/best_model_ft.pt",
+  "difficulty_csv": "m5/base/rl/asymmetric/ex2/diagnosis/difficulty_mapping_10%.csv",
+  "samples_per_graph": 4,
+  "temperature": 0.2,
+  "budget_ratio": 0.1,
+  "easy_total": 38213,
+  "easy_kept": 11464,
+  "keep_ratio": 0.3,
+  "easy_mean_ce_min": 0.002865213049517479,
+  "easy_mean_ce_max": 22.883642807602882,
+  "train_filtered_size": 51451,
+  "description": "Easy graphs ranked by mean CE of reader trajectories (higher = reader still struggles). Kept = top keep_ratio of easy by mean CE, combined with all middle + hard graphs to form the filtered split."
+}
