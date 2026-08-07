@@ -256,12 +256,12 @@ def main():
     print(f"  Ranked easy CSV saved: {ranked_path}")
 
     kept_set = {r[0] for r in kept}
+    kept_easy = len(kept_set)
 
-    middle_hard = pd.concat([middle_df['ogb_idx'], hard_df['ogb_idx']],
-                            ignore_index=True).astype(int)
+    # combine: kept easy + all middle (no hard)
     combined = pd.concat([
         pd.Series(sorted(kept_set)),
-        pd.Series(middle_hard.tolist()),
+        pd.Series(middle_df['ogb_idx'].astype(int).tolist()),
     ], ignore_index=True).sort_values().reset_index(drop=True)
     combined_path = output_dir / 'train_filtered.csv.gz'
     combined.to_csv(str(combined_path), index=False, header=False,
@@ -282,10 +282,13 @@ def main():
         'easy_mean_ce_min': float(kept[-1][2]),
         'easy_mean_ce_max': float(kept[0][2]),
         'train_filtered_size': int(len(combined)),
+        'easy_kept_ce_threshold': float(kept[-1][2]),
+        'middle_count': int(len(middle_df)),
+        'hard_excluded': int(len(hard_df)),
         'description': (
             'Easy graphs ranked by mean CE of reader trajectories (higher = '
             'reader still struggles). Kept = top keep_ratio of easy by mean CE, '
-            'combined with all middle + hard graphs to form the filtered split.'
+            'combined with all middle graphs. Hard graphs excluded.'
         ),
     }
     report_path = output_dir / 'filter_report.json'
