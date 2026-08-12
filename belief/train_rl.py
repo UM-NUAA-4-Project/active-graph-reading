@@ -6,6 +6,11 @@ Loss = alpha * (-R_i · Σ_{t=1}^{B_i} log π_t(a_t)) + (1-alpha) * CE(reader.cl
 用法:
   python belief/train_rl.py --bootstrap belief/bc/reader_belief_final.pt --epochs 10
   python belief/train_rl.py --reward binary --epochs 10 --alpha 0.5
+  python belief/train_rl.py --bootstrap belief/bc/reader_belief_epoch5.pt --epochs 10 
+  --resume-checkpoint belief/rl/checkpoint_epoch1.pt 
+  --reward asymmetric --graphs-per-batch 32 --seeds-per-graph 2
+  --root /mnt/data
+  --output-dir belief/rl/ex1
 """
 
 import argparse

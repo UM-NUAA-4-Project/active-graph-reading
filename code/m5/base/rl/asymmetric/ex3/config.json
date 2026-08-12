@@ -1,0 +1,23 @@
+{
+  "git_commit": "6c15462",
+  "data_split": "/mnt/code/active-graph-reading/code/m5/base/filtered/easy_top30/train_filtered.csv.gz",
+  "classifier_checkpoint": "m3/best_model_ft.pt (val_acc=0.6418847006651884)",
+  "bootstrap_reader_checkpoint": "m5/base/checkpoint/best_reader.pt",
+  "output_dir": "/mnt/code/active-graph-reading/code/m5/base/rl/asymmetric/ex3",
+  "reward_type": "asymmetric",
+  "temperature": 0.2,
+  "batch_construction": "32 graphs x 4 rollouts = 128 trajectories per optimizer.step()",
+  "lr": 0.0001,
+  "epochs": 10,
+  "hidden_dim": 128,
+  "n_layers": 2,
+  "dropout": 0.1,
+  "budget_options": [
+    0.05,
+    0.1,
+    0.15
+  ],
+  "total_params": 169347,
+  "checkpoint_selection_rule": "max training accuracy across all epochs",
+  "seed": 42
+}
