@@ -14,7 +14,7 @@ CLAUDE.md
 .claude/
 .superpowers/
 .vscode/
-new_structure/
+
 pyrightconfig.json
 # PyTorch model/trajectory files
 *.pt
