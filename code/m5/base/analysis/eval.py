@@ -9,6 +9,7 @@
 用法：
   python eval.py                                          # 默认三种策略
   python eval.py --skip-fixed                             # 仅 learnable
+  python eval.py --only-fixed                             # 仅 fixed 策略 (random/bfs)
   python eval.py --checkpoint m5/base/rl/checkpoint_epoch7.pt  # 指定 checkpoint
   python code/m5/base/analysis/eval.py --skip-fixed --root /mnt/data
   --checkpoint m5/base/rl/asymmetric/ex1/checkpoint_epoch6.pt 
@@ -537,6 +538,8 @@ def main():
                         help='Reader temperature (must match training)')
     parser.add_argument('--skip-fixed', action='store_true',
                         help='Skip random/bfs evaluation, only run learnable')
+    parser.add_argument('--only-fixed', action='store_true',
+                        help='Only run fixed strategies (random/bfs), skip learnable')
     parser.add_argument('--strategies', nargs='+',
                         default=['random', 'bfs', 'learnable'],
                         help='Strategies to evaluate (default: random bfs learnable)')
@@ -557,7 +560,9 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # 确定要跑的策略
-    if args.skip_fixed:
+    if args.only_fixed:
+        strategies_to_run = [s for s in FIXED_STRATEGIES if s in args.strategies]
+    elif args.skip_fixed:
         strategies_to_run = ['learnable']
     else:
         strategies_to_run = [s for s in args.strategies if s in ALL_STRATEGIES]
