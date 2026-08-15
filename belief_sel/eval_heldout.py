@@ -10,6 +10,7 @@ code/m5/base/analysis/eval.py's eval_learnable.json.
   python belief_sel/eval_heldout.py --checkpoint belief_sel/bc/reader_sel_final.pt --split test
   python belief_sel/eval_heldout.py --checkpoint belief_sel/rl/checkpoint_epoch5.pt --split valid
   python belief_sel/eval_heldout.py --checkpoint PATH --split test --max-graphs 5000
+  python belief_sel/eval_heldout.py --checkpoint PATH --split test --argmax  # argmax 选择（默认按分布采样）
 """
 
 import argparse
@@ -38,9 +39,14 @@ from training_utils import (
 
 @torch.no_grad()
 def evaluate_heldout(reader, classifier, builder, graphs, ogb_indices,
-                     labels_tensor, device, chunk_size=64):
+                     labels_tensor, device, chunk_size=64,
+                     argmax=False, seed=42):
     """Cross-graph lockstep held-out eval, per-budget accuracy."""
     reader.eval()
+
+    torch.manual_seed(seed)
+    if device.type == 'cuda':
+        torch.cuda.manual_seed_all(seed)
 
     all_subgraphs = []
     all_labels = []
@@ -104,7 +110,11 @@ def evaluate_heldout(reader, classifier, builder, graphs, ogb_indices,
                 if not frontier_nodes:
                     active[j] = False
                     continue
-                chosen = frontier_nodes[probs.argmax().item()]
+                if argmax:
+                    chosen = frontier_nodes[probs.argmax().item()]
+                else:
+                    chosen = frontier_nodes[
+                        torch.distributions.Categorical(probs).sample().item()]
                 batch_states.append(all_states[j])
                 batch_nodes.append(chosen)
                 batch_local_idx.append(j)
@@ -186,6 +196,10 @@ def main():
                         help='number of attention heads in FrontierPointer and BeliefState')
     parser.add_argument('--chunk-size', type=int, default=64,
                         help='Graphs per lockstep chunk')
+    parser.add_argument('--argmax', action='store_true',
+                        help='Select argmax node each step (default: sample from distribution)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for node sampling reproducibility')
     parser.add_argument('--output-dir', default=str(Path(__file__).resolve().parent / 'eval_results'),
                         help='Directory for eval_heldout_{split}.json')
     args = parser.parse_args()
@@ -250,10 +264,12 @@ def main():
 
     # ---- 4. run eval ----
     print(f"\n=== Held-out evaluation ({args.split}) ===")
+    print(f"  Selection: {'argmax' if args.argmax else 'sample'} (seed={args.seed})")
     results, per_class_outcomes = evaluate_heldout(
         reader, classifier, builder,
         eval_graphs, all_indices, eval_labels['labels'],
         device, chunk_size=args.chunk_size,
+        argmax=args.argmax, seed=args.seed,
     )
 
     print(f"\n  Graphs evaluated: {results['n_graphs']}")
@@ -303,6 +319,8 @@ def main():
             'm': args.m,
             'n_heads': args.n_heads,
             'temperature': 1.0,
+            'selection': 'argmax' if args.argmax else 'sample',
+            'seed': args.seed,
             'split': args.split,
             'max_graphs': args.max_graphs,
             'chunk_size': args.chunk_size,

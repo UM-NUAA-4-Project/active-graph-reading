@@ -19,6 +19,9 @@ Loss = alpha * (-R_i · Σ_{t=1}^{B_i} log π_t(a_t)) + (1-alpha) * CE(reader.cl
   # 分支 2：头冻结（新增 --freeze-head）
   python belief/train_rl.py --freeze-head --bootstrap belief/bc/reader_belief_final.pt \
       --epochs 10 --reward binary --output-dir belief/rl/ex_frozen
+  # 小数据集训练（base reader 产出的 filter CSV，相对 code/）
+  python belief/train_rl.py --train-split m5/base/filtered/easy_top30/train_filtered.csv.gz \
+      --bootstrap belief/bc/reader_belief_epoch5.pt --epochs 10
 """
 
 import argparse
@@ -284,6 +287,9 @@ def main():
     parser.add_argument('--n-heads', type=int, default=4,
                         help='number of attention heads in FrontierPointer and BeliefState')
     parser.add_argument('--max-graphs', type=int, default=0)
+    parser.add_argument('--train-split', default='',
+                        help='自定义训练集索引 CSV（gzip, 单列 ogb_idx），'
+                             '由 filter_by_classifier.py 生成；为空则用官方 train.csv.gz')
     parser.add_argument('--output-dir', default='belief/rl/belief')
     parser.add_argument('--resume-checkpoint', default='')
     parser.add_argument('--alpha', type=float, default=0.5,
@@ -313,14 +319,23 @@ def main():
     # ---- 1. load training graphs ----
     root_path = Path(args.root)
     processed_path = str(root_path / 'ogbg_ppa' / 'processed' / 'dgl_data_processed')
-    train_csv = root_path / 'ogbg_ppa' / 'split' / 'species' / 'train.csv.gz'
-
-    train_indices = pd.read_csv(train_csv, compression='gzip', header=None
-                                ).values.flatten().tolist()
+    if args.train_split:
+        split_path = _repo_root / args.train_split
+        if not split_path.exists():
+            raise FileNotFoundError(f"Train split not found: {split_path}")
+        train_indices = pd.read_csv(split_path, compression='gzip', header=None
+                                    ).values.flatten().tolist()
+        split_label = str(split_path)
+    else:
+        train_csv = root_path / 'ogbg_ppa' / 'split' / 'species' / 'train.csv.gz'
+        train_indices = pd.read_csv(train_csv, compression='gzip', header=None
+                                    ).values.flatten().tolist()
+        split_label = 'full training set (train.csv.gz)'
     if args.max_graphs > 0 and args.max_graphs < len(train_indices):
         train_indices = train_indices[:args.max_graphs]
 
     print(f"\n=== Loading {len(train_indices)} training graphs ===")
+    print(f"  Split: {split_label}")
     train_graphs, train_labels = dgl.load_graphs(processed_path, idx_list=train_indices)
     train_graphs = [dgl.add_self_loop(g) for g in train_graphs]
     print(f"  Loaded {len(train_graphs)} graphs (CPU)")
@@ -397,6 +412,7 @@ def main():
 
     # Save config
     config = {
+        'data_split': split_label,
         'hidden_dim': reader.frontier_encoder.hidden_dim,
         'n_layers': reader.frontier_encoder.n_layers,
         'dropout': reader.frontier_encoder.dropout,

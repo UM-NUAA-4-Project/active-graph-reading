@@ -277,13 +277,21 @@ def main():
         optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
         if was_patched:
             print("  NOTE: checkpoint architecture patched, using fresh optimizer")
-        elif not missing:
+        elif not missing and not is_finetune:
             try:
                 optimizer.load_state_dict(reader_ckpt['optimizer_state_dict'])
+                print("  Optimizer state loaded (lr from checkpoint)")
             except (KeyError, ValueError, RuntimeError) as e:
                 print(f"  WARNING: optimizer state unavailable ({e}), using fresh optimizer")
+        elif is_finetune:
+            print(f"  Finetune: fresh optimizer (lr={args.lr})")
 
-        start_epoch = reader_ckpt.get('epoch', -1) + 1
+        if is_finetune:
+            start_epoch = 0
+            print(f"  Finetune: restarting epoch counter at 0 "
+                  f"(source epoch={reader_ckpt.get('epoch', 'N/A')})")
+        else:
+            start_epoch = reader_ckpt.get('epoch', -1) + 1
         training_log = reader_ckpt.get('training_log', [])
     else:
         reader = LearnableReader(

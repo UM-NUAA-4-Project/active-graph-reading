@@ -12,8 +12,9 @@
   python eval.py --only-fixed                             # 仅 fixed 策略 (random/bfs)
   python eval.py --checkpoint m5/base/rl/checkpoint_epoch7.pt  # 指定 checkpoint
   python code/m5/base/analysis/eval.py --skip-fixed --root /mnt/data
-  --checkpoint m5/base/rl/asymmetric/ex1/checkpoint_epoch6.pt 
+  --checkpoint m5/base/rl/asymmetric/ex1/checkpoint_epoch6.pt
   --output-dir code/m5/base/analysis/eval_results_asymmetric
+  python eval.py --skip-fixed --argmax                # argmax 选择（默认按分布采样）
 """
     
 import argparse
@@ -130,6 +131,7 @@ def _evaluate_learnable_batched(
     results: Dict,
     per_class: Dict,
     chunk_size: int = 32,
+    argmax: bool = False,
 ):
     """Lockstep batched evaluation: Reader GNN + Classifier both batched.
 
@@ -187,7 +189,11 @@ def _evaluate_learnable_batched(
 
                 si = state_infos[j]
                 state = si['state']
-                chosen = frontier_nodes[probs.argmax().item()]
+                if argmax:
+                    chosen = frontier_nodes[probs.argmax().item()]
+                else:
+                    chosen = frontier_nodes[
+                        torch.distributions.Categorical(probs).sample().item()]
                 reveal_node(state, chosen)
 
                 budget_used = state.get_budget_used()
@@ -257,6 +263,7 @@ def evaluate_strategy_split(
     classifier: GraphClassifier,
     device: torch.device,
     desc: str = "Evaluating",
+    argmax: bool = False,
 ):
     builder = SubgraphBuilder()
     budgets_rel_sorted = sorted(BUDGETS_REL)
@@ -275,6 +282,7 @@ def evaluate_strategy_split(
         return _evaluate_learnable_batched(
             reader, graphs, labels_tensor, indices, classifier, device, desc,
             budgets_rel_sorted, results, per_class,
+            argmax=argmax,
         )
 
     # --- fixed strategies (random / bfs): collect subgraphs, batch classify ---
@@ -544,7 +552,9 @@ def main():
                         default=['random', 'bfs', 'learnable'],
                         help='Strategies to evaluate (default: random bfs learnable)')
     parser.add_argument('--seed', type=int, default=42,
-                        help='Random seed for random strategy reproducibility')
+                        help='Random seed (fixed strategies and learnable sampling)')
+    parser.add_argument('--argmax', action='store_true',
+                        help='Select argmax node each step (default: sample from distribution)')
     parser.add_argument('--ref-valid', type=float, default=None,
                         help='Full-graph classifier valid accuracy '
                              '(auto-read from checkpoint if omitted)')
@@ -616,6 +626,8 @@ def main():
         learnable_reader.load_state_dict(reader_sd)
         learnable_reader.eval()
         print(f"  Params: {sum(p.numel() for p in learnable_reader.parameters()):,}")
+        print(f"  Selection: {'argmax' if args.argmax else 'sample'} "
+              f"(seed={args.seed}, temperature={args.temperature})")
 
     # ---- 3. 加载已有的 fixed 结果（如果 skip-fixed 且有缓存） ----
     cached_fixed = None
@@ -651,6 +663,9 @@ def main():
             if strategy_name == 'learnable':
                 reader = learnable_reader
                 reader.eval()
+                torch.manual_seed(args.seed)
+                if device.type == 'cuda':
+                    torch.cuda.manual_seed_all(args.seed)
             else:
                 random.seed(args.seed)
                 reader = FixedStrategyReader(strategy_name)
@@ -659,6 +674,7 @@ def main():
                 reader, strategy_name, graphs, label_dict['labels'], split_indices,
                 classifier, device,
                 desc=f"  {split_name.capitalize()} / {strategy_name}",
+                argmax=args.argmax,
             )
             all_stats[split_name][strategy_name] = aggregated
             all_per_class[split_name][strategy_name] = per_class
@@ -763,6 +779,9 @@ def main():
                 'hidden_dim': hidden_dim,
                 'n_layers': n_layers,
                 'strategies': ['learnable'],
+                'temperature': args.temperature,
+                'selection': 'argmax' if args.argmax else 'sample',
+                'seed': args.seed,
             },
         }
         learnable_path = output_dir / 'eval_learnable.json'
