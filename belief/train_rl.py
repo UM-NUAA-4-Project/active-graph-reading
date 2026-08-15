@@ -6,11 +6,19 @@ Loss = alpha * (-R_i · Σ_{t=1}^{B_i} log π_t(a_t)) + (1-alpha) * CE(reader.cl
 用法:
   python belief/train_rl.py --bootstrap belief/bc/reader_belief_final.pt --epochs 10
   python belief/train_rl.py --reward binary --epochs 10 --alpha 0.5
+  python belief/train_rl.py --freeze-head --reward binary --epochs 10  # 头冻结，纯 REINFORCE
   python belief/train_rl.py --bootstrap belief/bc/reader_belief_epoch5.pt --epochs 10 
   --resume-checkpoint belief/rl/checkpoint_epoch1.pt 
   --reward asymmetric --graphs-per-batch 32 --seeds-per-graph 2
   --root /mnt/data
   --output-dir belief/rl/ex1
+  # 分支 1：头共更新（现有默认行为，未动）
+  python belief/train_rl.py --bootstrap belief/bc/reader_belief_final.pt \
+      --epochs 10 --reward binary --alpha 0.5 --output-dir belief/rl/ex_joint
+
+  # 分支 2：头冻结（新增 --freeze-head）
+  python belief/train_rl.py --freeze-head --bootstrap belief/bc/reader_belief_final.pt \
+      --epochs 10 --reward binary --output-dir belief/rl/ex_frozen
 """
 
 import argparse
@@ -69,12 +77,13 @@ def train_one_epoch(
     reader, optimizer,
     graphs, ogb_indices, labels_tensor,
     n_seeds, batch_size, device,
-    reward_type='binary', alpha=0.5,
+    reward_type='binary', alpha=0.5, freeze_head=False,
 ):
     """REINFORCE + CE: self-sampled trajectories + lockstep + belief classification.
 
     Loss per trajectory i (budget B_i):
       L_i = α · (-R_i · Σ_{t=1}^{B_i} log π_t(a_t)) + (1-α) · CE(y_i, f(h_i))
+      (freeze_head=True 时 CE 项禁用，R_i 由冻结头给出，纯 REINFORCE)
 
     R_i = reward from internal belief head (binary/tanh/asymmetric)
     π_t = Categorical(softmax(score(frontier_embeds, belief_t)))
@@ -86,6 +95,8 @@ def train_one_epoch(
     and the classification head receive gradients.
     """
     reader.train()
+    if freeze_head:
+        reader.belief_state.classifier.eval()
 
     total_R = 0.0
     total_trajs = 0
@@ -217,15 +228,19 @@ def train_one_epoch(
                 continue
 
             rl_loss = torch.stack(batch_losses).mean()
-            cls_logits = torch.cat(cls_logits_list, dim=0)
-            cls_labels = torch.cat(cls_labels_list, dim=0)
-            cls_loss = F.cross_entropy(cls_logits, cls_labels.squeeze(-1))
-
-            loss = (alpha * rl_loss + (1 - alpha) * cls_loss) / n_micro
+            if freeze_head:
+                loss = rl_loss / n_micro
+                cls_val = 0.0
+            else:
+                cls_logits = torch.cat(cls_logits_list, dim=0)
+                cls_labels = torch.cat(cls_labels_list, dim=0)
+                cls_loss = F.cross_entropy(cls_logits, cls_labels.squeeze(-1))
+                loss = (alpha * rl_loss + (1 - alpha) * cls_loss) / n_micro
+                cls_val = cls_loss.item()
             loss.backward()
 
             total_loss += loss.item() * len(batch_losses) * n_micro
-            total_cls += cls_loss.item() * len(batch_losses)
+            total_cls += cls_val * len(batch_losses)
 
         optimizer.step()
         n = max(total_trajs, 1)
@@ -277,6 +292,9 @@ def main():
                         choices=['binary', 'tanh', 'asymmetric'],
                         help='reward type: binary=0/1, tanh=tanh(1-CE/ln37), '
                              'asymmetric=+1/-0.1')
+    parser.add_argument('--freeze-head', action='store_true',
+                        help='Freeze classification head during RL: reward from '
+                             'frozen head, CE term disabled (alpha forced to 1.0)')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 
@@ -358,11 +376,23 @@ def main():
 
     total_params = sum(p.numel() for p in reader.parameters())
     print(f"  Reader params: {total_params:,}")
+
+    if args.freeze_head:
+        for p in reader.belief_state.classifier.parameters():
+            p.requires_grad = False
+        reader.belief_state.classifier.eval()
+        if args.alpha != 1.0:
+            print(f"  NOTE: --freeze-head forces alpha=1.0 (was {args.alpha})")
+        alpha_eff = 1.0
+    else:
+        alpha_eff = args.alpha
+
     print(f"  Belief tokens: {args.m}")
     print(f"  Attention heads: {args.n_heads}")
     print(f"  Temperature: {args.temperature}")
     print(f"  Reward: {args.reward}")
-    print(f"  Alpha: {args.alpha} (RL weight)")
+    print(f"  Alpha: {alpha_eff} (RL weight)")
+    print(f"  Freeze head: {args.freeze_head}")
     print(f"  Graphs/batch: {args.graphs_per_batch}, Seeds/graph: {args.seeds_per_graph}")
 
     # Save config
@@ -374,7 +404,8 @@ def main():
         'n_heads': args.n_heads,
         'temperature': args.temperature,
         'reward_type': args.reward,
-        'alpha': args.alpha,
+        'alpha': alpha_eff,
+        'freeze_head': args.freeze_head,
         'lr': args.lr,
         'graphs_per_batch': args.graphs_per_batch,
         'seeds_per_graph': args.seeds_per_graph,
@@ -393,7 +424,8 @@ def main():
             reader, optimizer,
             train_graphs, train_indices, train_labels['labels'],
             args.seeds_per_graph, args.graphs_per_batch, device,
-            reward_type=args.reward, alpha=args.alpha,
+            reward_type=args.reward, alpha=alpha_eff,
+            freeze_head=args.freeze_head,
         )
         print(f"  Train: loss={metrics['loss']:.4f}  "
               f"cls={metrics['cls']:.4f}  "
@@ -418,7 +450,8 @@ def main():
                 'lr': args.lr,
                 'temperature': args.temperature,
                 'reward_type': args.reward,
-                'alpha': args.alpha,
+                'alpha': alpha_eff,
+                'freeze_head': args.freeze_head,
                 'graphs_per_batch': args.graphs_per_batch,
                 'seeds_per_graph': args.seeds_per_graph,
                 'm': args.m,
