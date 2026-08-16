@@ -1,19 +1,22 @@
 """Held-out evaluation for selector LearnableReader (no classification head).
 
-Evaluates a reader checkpoint on held-out graphs (test or valid split),
+Evaluates a reader checkpoint on held-out graphs (train and test splits
+sequentially, releasing each split's memory before the next),
 reporting accuracy at each budget level (5%, 10%, 15%).  Classification is
-done entirely by the external GraphClassifier.
+done entirely by the external GraphClassifier — the selector reader has no
+classification head of its own.
 Saves results to eval_heldout_{split}.json, structure aligned with
 code/m5/base/analysis/eval.py's eval_learnable.json.
 
 用法:
-  python belief_sel/eval_heldout.py --checkpoint belief_sel/bc/reader_sel_final.pt --split test
-  python belief_sel/eval_heldout.py --checkpoint belief_sel/rl/checkpoint_epoch5.pt --split valid
-  python belief_sel/eval_heldout.py --checkpoint PATH --split test --max-graphs 5000
-  python belief_sel/eval_heldout.py --checkpoint PATH --split test --argmax  # argmax 选择（默认按分布采样）
+  python belief_sel/eval_heldout.py --checkpoint belief_sel/bc/reader_sel_final.pt   # 依次验证 train + test
+  python belief_sel/eval_heldout.py --checkpoint PATH --split train                  # 仅训练集
+  python belief_sel/eval_heldout.py --checkpoint PATH --split test --max-graphs 5000 # 仅测试集
+  python belief_sel/eval_heldout.py --checkpoint PATH --argmax                       # argmax 选择（默认按分布采样）
 """
 
 import argparse
+import gc
 import json
 from collections import defaultdict
 from pathlib import Path
@@ -165,6 +168,8 @@ def evaluate_heldout(reader, classifier, builder, graphs, ogb_indices,
             per_budget_outcomes[budget].append(correct)
             per_class_outcomes[budget][label].append(correct)
 
+    del all_subgraphs, all_labels, all_budgets
+
     results = {}
     for budget in BUDGET_OPTIONS:
         acc = per_budget_correct[budget] / max(per_budget_total[budget], 1)
@@ -183,8 +188,8 @@ def evaluate_heldout(reader, classifier, builder, graphs, ogb_indices,
 def main():
     parser = argparse.ArgumentParser(description='Held-out eval for attention reader')
     parser.add_argument('--checkpoint', required=True, help='Path to reader checkpoint')
-    parser.add_argument('--split', default='test', choices=['test', 'valid'],
-                        help='Data split to evaluate on')
+    parser.add_argument('--split', default='both', choices=['train', 'valid', 'test', 'both'],
+                        help="Data split to evaluate: 'both' = train + test sequentially (default)")
     parser.add_argument('--root', default=r'D:\ogb-master\dataset')
     parser.add_argument('--classifier', default='m3/best_model_ft.pt')
     parser.add_argument('--device', default='cuda:0')
@@ -207,23 +212,12 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
-    # ---- 1. load eval graphs ----
+    splits = ['train', 'test'] if args.split == 'both' else [args.split]
+
     root_path = Path(args.root)
     processed_path = str(root_path / 'ogbg_ppa' / 'processed' / 'dgl_data_processed')
-    split_file = f'{args.split}.csv.gz'
-    csv_path = root_path / 'ogbg_ppa' / 'split' / 'species' / split_file
 
-    all_indices = pd.read_csv(csv_path, compression='gzip', header=None
-                              ).values.flatten().tolist()
-    if args.max_graphs > 0 and args.max_graphs < len(all_indices):
-        all_indices = all_indices[:args.max_graphs]
-
-    print(f"\n=== Loading {len(all_indices)} {args.split} graphs ===")
-    eval_graphs, eval_labels = dgl.load_graphs(processed_path, idx_list=all_indices)
-    eval_graphs = [dgl.add_self_loop(g) for g in eval_graphs]
-    print(f"  Loaded {len(eval_graphs)} graphs (CPU)")
-
-    # ---- 2. load classifier (frozen) ----
+    # ---- 1. load classifier (frozen, 所有 split 复用) ----
     print("\n=== Loading classifier ===")
     classifier = GraphClassifier(
         edge_feat_dim=7, n_classes=K, hidden_dim=300, n_layers=5, dropout=0.5,
@@ -235,7 +229,7 @@ def main():
         p.requires_grad = False
     print(f"  val_acc={ckpt.get('val_acc', 'N/A')}")
 
-    # ---- 3. load reader ----
+    # ---- 2. load reader (复用) ----
     print("\n=== Loading reader ===")
     checkpoint_path = Path(args.checkpoint)
     if not checkpoint_path.is_absolute():
@@ -262,28 +256,6 @@ def main():
 
     builder = SubgraphBuilder()
 
-    # ---- 4. run eval ----
-    print(f"\n=== Held-out evaluation ({args.split}) ===")
-    print(f"  Selection: {'argmax' if args.argmax else 'sample'} (seed={args.seed})")
-    results, per_class_outcomes = evaluate_heldout(
-        reader, classifier, builder,
-        eval_graphs, all_indices, eval_labels['labels'],
-        device, chunk_size=args.chunk_size,
-        argmax=args.argmax, seed=args.seed,
-    )
-
-    print(f"\n  Graphs evaluated: {results['n_graphs']}")
-    print(f"  Trajectories:     {results['n_trajectories']}")
-    print(f"  ─────────────────────────")
-    for budget in BUDGET_OPTIONS:
-        key = f'acc_{int(budget * 100)}%'
-        print(f"  Budget {int(budget * 100):2d}%:       {results[key]:.4f}  "
-              f"({results[key] * 100:.2f}%)")
-    print(f"  ─────────────────────────")
-    print(f"  Overall:         {results['acc_overall']:.4f}  "
-          f"({results['acc_overall'] * 100:.2f}%)")
-
-    # ---- 5. save JSON (aligned with m5/base/analysis/eval.py) ----
     def _budget_stats(outcomes):
         arr = np.array(outcomes, dtype=float)
         return {
@@ -292,47 +264,90 @@ def main():
             'n': len(arr),
         }
 
-    outcomes = results['outcomes']
-    best_stats = {f'{b:.2f}': _budget_stats(outcomes[b]) for b in BUDGET_OPTIONS}
+    # ---- 3. evaluate splits sequentially, release memory after each ----
+    for split in splits:
+        # ---- 3a. load eval graphs ----
+        csv_path = root_path / 'ogbg_ppa' / 'split' / 'species' / f'{split}.csv.gz'
+        all_indices = pd.read_csv(csv_path, compression='gzip', header=None
+                                  ).values.flatten().tolist()
+        if args.max_graphs > 0 and args.max_graphs < len(all_indices):
+            all_indices = all_indices[:args.max_graphs]
 
-    all_labels = sorted({lbl for b in BUDGET_OPTIONS for lbl in per_class_outcomes[b]})
-    per_class_best = {
-        str(lbl): {
-            f'{b:.2f}': _budget_stats(per_class_outcomes[b].get(lbl, []))
-            for b in BUDGET_OPTIONS
+        print(f"\n=== Loading {len(all_indices)} {split} graphs ===")
+        eval_graphs, eval_labels = dgl.load_graphs(processed_path, idx_list=all_indices)
+        eval_graphs = [dgl.add_self_loop(g) for g in eval_graphs]
+        print(f"  Loaded {len(eval_graphs)} graphs (CPU)")
+
+        # ---- 3b. run eval ----
+        print(f"\n=== Held-out evaluation ({split}) ===")
+        print(f"  Selection: {'argmax' if args.argmax else 'sample'} (seed={args.seed})")
+        results, per_class_outcomes = evaluate_heldout(
+            reader, classifier, builder,
+            eval_graphs, all_indices, eval_labels['labels'],
+            device, chunk_size=args.chunk_size,
+            argmax=args.argmax, seed=args.seed,
+        )
+
+        print(f"\n  Graphs evaluated: {results['n_graphs']}")
+        print(f"  Trajectories:     {results['n_trajectories']}")
+        print(f"  ─────────────────────────")
+        for budget in BUDGET_OPTIONS:
+            key = f'acc_{int(budget * 100)}%'
+            print(f"  Budget {int(budget * 100):2d}%:       {results[key]:.4f}  "
+                  f"({results[key] * 100:.2f}%)")
+        print(f"  ─────────────────────────")
+        print(f"  Overall:         {results['acc_overall']:.4f}  "
+              f"({results['acc_overall'] * 100:.2f}%)")
+
+        # ---- 3c. save JSON (aligned with m5/base/analysis/eval.py) ----
+        outcomes = results['outcomes']
+        best_stats = {f'{b:.2f}': _budget_stats(outcomes[b]) for b in BUDGET_OPTIONS}
+
+        all_labels = sorted({lbl for b in BUDGET_OPTIONS for lbl in per_class_outcomes[b]})
+        per_class_best = {
+            str(lbl): {
+                f'{b:.2f}': _budget_stats(per_class_outcomes[b].get(lbl, []))
+                for b in BUDGET_OPTIONS
+            }
+            for lbl in all_labels
         }
-        for lbl in all_labels
-    }
 
-    json_out = {
-        args.split: {'learnable': {'best': best_stats}},
-        f'per_class_{args.split}': {'learnable': {'best': per_class_best}},
-        'config': {
-            'classifier': str(_repo_root / args.classifier),
-            'budgets': BUDGET_OPTIONS,
-            'seed_method': "single deterministic seed (seed_i=0, "
-                           "same formula as eval.py's s0/'best')",
-            'full_graph_ref': {'valid': ckpt.get('val_acc', None), 'test': None},
-            'checkpoint': str(checkpoint_path),
-            'hidden_dim': hidden_dim,
-            'n_layers': n_layers,
-            'm': args.m,
-            'n_heads': args.n_heads,
-            'temperature': 1.0,
-            'selection': 'argmax' if args.argmax else 'sample',
-            'seed': args.seed,
-            'split': args.split,
-            'max_graphs': args.max_graphs,
-            'chunk_size': args.chunk_size,
-            'strategies': ['learnable'],
-        },
-    }
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f'eval_heldout_{args.split}.json'
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(json_out, f, indent=2, ensure_ascii=False)
-    print(f"\nJSON saved to {output_path}")
+        json_out = {
+            split: {'learnable': {'best': best_stats}},
+            f'per_class_{split}': {'learnable': {'best': per_class_best}},
+            'config': {
+                'classifier': str(_repo_root / args.classifier),
+                'budgets': BUDGET_OPTIONS,
+                'seed_method': "single deterministic seed (seed_i=0, "
+                               "same formula as eval.py's s0/'best')",
+                'full_graph_ref': {'valid': ckpt.get('val_acc', None), 'test': None},
+                'checkpoint': str(checkpoint_path),
+                'hidden_dim': hidden_dim,
+                'n_layers': n_layers,
+                'm': args.m,
+                'n_heads': args.n_heads,
+                'temperature': 1.0,
+                'selection': 'argmax' if args.argmax else 'sample',
+                'seed': args.seed,
+                'split': split,
+                'max_graphs': args.max_graphs,
+                'chunk_size': args.chunk_size,
+                'strategies': ['learnable'],
+            },
+        }
+        output_dir = Path(args.output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f'eval_heldout_{split}.json'
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(json_out, f, indent=2, ensure_ascii=False)
+        print(f"\nJSON saved to {output_path}")
+
+        # ---- 3d. release memory before next split ----
+        del eval_graphs, eval_labels, all_indices, results, per_class_outcomes
+        gc.collect()
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+        print(f"  Memory released after {split} split.")
 
 
 if __name__ == '__main__':
