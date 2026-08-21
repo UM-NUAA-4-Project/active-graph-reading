@@ -5,10 +5,11 @@
   "m": 4,
   "n_heads": 4,
   "temperature": 1.0,
-  "max_trajs": 20,
+  "alpha": 0.8,
+  "alpha_schedule": null,
   "lr": 0.001,
-  "batch_size": 8,
-  "epochs": 1,
+  "batch_size": 64,
+  "epochs": 10,
   "teacher_filter": "all",
-  "total_params": 771781
+  "total_params": 842474
 }
