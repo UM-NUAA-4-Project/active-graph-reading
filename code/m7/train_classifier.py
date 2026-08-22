@@ -6,6 +6,8 @@ GINEEncoder 通过 node_feat_dim 支持节点特征（如 CIFAR10 的 5 维）�
 最后一轮为最终产物，评估统一走 code/m7/eval.py 的 test 划分。
 
 用法:
+    python code/m7/train_classifier.py --dataset cifar10 --root /mnt/data/superpixels 
+    --device cuda:0 --batch-size 128 --epochs 100 --lr 0.001 --hidden-dim 256
   python code/m7/train_classifier.py --dataset cifar10 --root D:\\superpixels --device cuda:0
   python code/m7/train_classifier.py --dataset cifar10 --root D:\\superpixels \
       --device cpu --epochs 2 --max-graphs 200   # 冒烟
@@ -91,7 +93,7 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
-    ds = get_dataset(args.dataset)
+    ds = get_dataset(args.dataset, root=args.root)
     spec = ds.spec
     print(f"Dataset {spec.name}: {spec.n_classes} classes, "
           f"node_feat_dim={spec.node_feat_dim}, edge_feat_dim={spec.edge_feat_dim}")
