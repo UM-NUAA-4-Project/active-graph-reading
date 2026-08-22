@@ -22,6 +22,15 @@ from ..gnn.frontier.encoder import FrontierNodesEncoder
 from ..engine.graph_state import GraphState
 
 
+def _stable_probs(scores: torch.Tensor, temperature: float = 1.0,
+                  min_prob: float = 1e-3) -> torch.Tensor:
+    """softmax 后托底：防极端尖锐分布下概率精确下溢为 0（log(0)=-inf → loss NaN）。
+
+    正常训练时概率均 > min_prob，clamp 完全不生效；仅在下溢边缘托底。
+    """
+    probs = F.softmax(scores / temperature, dim=0)
+    probs = probs.clamp(min=min_prob)
+    return probs / probs.sum()
 
 
 class LearnableReader(BaseReader, nn.Module):
@@ -89,11 +98,11 @@ class LearnableReader(BaseReader, nn.Module):
         frontier_embeds = torch.cat([frontier_embeds, remaining_tensor, struct_frontier], dim=-1)
 
         scores = self.reader_mlp(frontier_embeds)
-        probs = F.softmax(scores, dim=0)
+        probs = _stable_probs(scores)
 
         if sample:
             if self.temperature != 1.0:
-                probs = F.softmax(scores / self.temperature, dim=0)
+                probs = _stable_probs(scores, self.temperature)
             dist = torch.distributions.Categorical(probs)
             action_idx = dist.sample()
             log_prob = dist.log_prob(action_idx)
@@ -144,7 +153,7 @@ class LearnableReader(BaseReader, nn.Module):
                 [frontier_embeds, remaining_tensor, struct_frontier], dim=-1,
             )
             scores = self.reader_mlp(combined)
-            probs = F.softmax(scores / temperature, dim=0)
+            probs = _stable_probs(scores, temperature)
             results.append((scores, probs, frontier_nodes))
 
         return results
@@ -158,7 +167,7 @@ class LearnableReader(BaseReader, nn.Module):
 
         if self.stochastic:
             if self.temperature != 1.0:
-                probs = F.softmax(scores / self.temperature, dim=0)
+                probs = _stable_probs(scores, self.temperature)
             idx = torch.distributions.Categorical(probs).sample().item()
         else:
             idx = probs.argmax().item()

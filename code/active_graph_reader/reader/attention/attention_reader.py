@@ -28,6 +28,17 @@ from .belief_state import BeliefState
 from .new_info_encoder import NewInfoEncoder
 
 
+def _stable_probs(scores: torch.Tensor, temperature: float = 1.0,
+                  min_prob: float = 1e-3) -> torch.Tensor:
+    """softmax 后托底：防极端尖锐分布下概率精确下溢为 0（log(0)=-inf → loss NaN）。
+
+    正常训练时概率均 > min_prob，clamp 完全不生效；仅在下溢边缘托底。
+    """
+    probs = F.softmax(scores / temperature, dim=0)
+    probs = probs.clamp(min=min_prob)
+    return probs / probs.sum()
+
+
 class AttentionReader(BaseReader, nn.Module):
     """Attention-enhanced selector reader with belief state (no classification head).
 
@@ -131,7 +142,7 @@ class AttentionReader(BaseReader, nn.Module):
             combined = self._build_combined(frontier_embeds, sg, states[k])
 
             scores = self.frontier_pointer(combined, belief=beliefs[k])
-            probs = F.softmax(scores / temperature, dim=0)
+            probs = _stable_probs(scores, temperature)
 
             results.append((scores, probs, frontier_nodes))
 
@@ -304,8 +315,8 @@ class AttentionReader(BaseReader, nn.Module):
 
         combined = self._build_combined(frontier_embeds, subgraph, graph_state)
         scores = self.frontier_pointer(combined, belief=self._belief.squeeze(0))
-        probs = F.softmax(scores / self.temperature, dim=0) if self.temperature != 1.0 \
-                else F.softmax(scores, dim=0)
+        probs = _stable_probs(scores, self.temperature) if self.temperature != 1.0 \
+                else _stable_probs(scores)
 
         if self.stochastic:
             idx = torch.distributions.Categorical(probs).sample().item()
