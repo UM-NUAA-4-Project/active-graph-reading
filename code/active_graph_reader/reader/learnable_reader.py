@@ -34,6 +34,7 @@ class LearnableReader(BaseReader, nn.Module):
     n_layers : int       FrontierEncoder 的 GNN 层数（默认 2）
     dropout : float      Dropout 概率（默认 0.1）
     stochastic : bool    是否从概率分布采样（默认 False=argmax）
+    node_feat_dim : int  原始节点特征维度（0=无节点特征）
     """
 
     def __init__(
@@ -44,6 +45,7 @@ class LearnableReader(BaseReader, nn.Module):
         dropout: float = 0.1,
         stochastic: bool = False,
         temperature: float = 1.0,
+        node_feat_dim: int = 0,
     ):
         super().__init__()
 
@@ -56,6 +58,7 @@ class LearnableReader(BaseReader, nn.Module):
             hidden_dim=hidden_dim,
             n_layers=n_layers,
             dropout=dropout,
+            node_feat_dim=node_feat_dim,
         )
         self.reader_mlp = ReaderMLP(input_dim=hidden_dim + 1 + 3, hidden_dim=hidden_dim, dropout=dropout)
 

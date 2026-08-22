@@ -124,7 +124,11 @@ class FrontierGraphBuilder:
             feat_revealed = state.node_feat[revealed]
             feat_frontier = torch.zeros(len(frontier), feat_dim, device=device)
             g.ndata['feat'] = torch.cat([feat_revealed, feat_frontier], dim=0)
-            g.ndata['has_orig_feat'] = torch.ones(n_revealed, dtype=torch.bool, device=device)
+            # 逐节点掩码：前 n_revealed 个为 revealed（有原图特征），其余 frontier 为 False
+            g.ndata['has_orig_feat'] = torch.cat([
+                torch.ones(n_revealed, dtype=torch.bool, device=device),
+                torch.zeros(len(frontier), dtype=torch.bool, device=device),
+            ])
 
         return FrontierSubgraph(g=g, n_revealed=n_revealed, frontier_original_ids=frontier)
 
