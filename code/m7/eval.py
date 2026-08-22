@@ -227,7 +227,7 @@ def main():
                         choices=['random', 'bfs', 'max-frontier-degree'],
                         help='固定策略名（reader.fixed.registry）')
     parser.add_argument('--classifier', required=True,
-                        help='上界 GIN checkpoint（相对仓库根目录，或绝对路径）')
+                        help='上界 GIN checkpoint（相对 code/ 目录，或绝对路径）')
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='评估图数限制（0=全部测试集）')
@@ -257,7 +257,7 @@ def main():
 
     clf_path = Path(args.classifier)
     if not clf_path.is_absolute():
-        clf_path = _project_root / args.classifier
+        clf_path = _repo_root / args.classifier
     cls_ckpt = torch.load(str(clf_path), map_location=device, weights_only=False)
     # 按 checkpoint 自身 config 构建分类器（train_classifier 保存了 config）；
     # 无 config 时回退到上界默认结构（hidden 300 / 5 层）。这样分类器结构
@@ -328,7 +328,7 @@ def main():
             'argmax': args.argmax,
         },
     }
-    out_dir = _project_root / args.output_dir
+    out_dir = _repo_root / args.output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f'eval_heldout_{split}_{args.strategy or "reader"}.json'
     with open(out_path, 'w', encoding='utf-8') as f:

@@ -119,7 +119,7 @@ def main():
         print(f"Epoch {epoch}/{args.epochs}: loss={loss:.4f}  val_acc={val_acc:.4f}")
         if val_acc > best_acc:
             best_acc = val_acc
-            out_dir = _repo_root.parent / args.output_dir
+            out_dir = _repo_root / args.output_dir
             out_dir.mkdir(parents=True, exist_ok=True)
             ckpt = {'model_state_dict': clf.state_dict(), 'val_acc': val_acc,
                     'config': {'dataset': spec.name, 'n_classes': spec.n_classes,

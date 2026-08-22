@@ -300,7 +300,7 @@ def main():
     parser.add_argument('--bootstrap', required=True,
                         help='迁移起点 checkpoint（相对 code/ 目录，如 m6/attention/bc/...）')
     parser.add_argument('--classifier', required=True,
-                        help='上界 GIN checkpoint（相对仓库根目录，或绝对路径）')
+                        help='上界 GIN checkpoint（相对 code/ 目录，或绝对路径）')
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=1e-4)
@@ -345,7 +345,7 @@ def main():
     # ---- classifier（冻结，reward 来源） ----
     clf_path = Path(args.classifier)
     if not clf_path.is_absolute():
-        clf_path = _project_root / args.classifier
+        clf_path = _repo_root / args.classifier
     cls_ckpt = torch.load(str(clf_path), map_location=device, weights_only=False)
     # 按 checkpoint 自身 config 构建分类器（train_classifier 保存了 config）；
     # 无 config 时回退到上界默认结构（hidden 300 / 5 层）。这样分类器结构
@@ -385,7 +385,7 @@ def main():
     trainable_params = sum(p.numel() for p in reader.parameters() if p.requires_grad)
     print(f"Reader params: {total_params:,} (trainable {trainable_params:,})")
 
-    output_dir = _project_root / args.output_dir
+    output_dir = _repo_root / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
     config = {
         'dataset': spec.name,
