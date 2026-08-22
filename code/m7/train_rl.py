@@ -173,6 +173,12 @@ def train_one_epoch_base(reader, classifier, builder, optimizer,
         optimizer.step()
         optimizer.zero_grad()
         total_loss += batch_loss.item() * len(batch_losses)
+        n = max(total_trajs, 1)
+        pbar.set_postfix({
+            'loss': f'{total_loss / n:.4f}',
+            'avg_R': f'{total_R / n:.3f}',
+            'acc': f'{total_correct / n:.3f}',
+        })
     n = max(total_trajs, 1)
     return {'loss': total_loss / n, 'avg_R': total_R / n, 'acc': total_correct / n}
 
@@ -294,6 +300,12 @@ def train_one_epoch_attention(reader, classifier, builder, optimizer,
             loss.backward()
             total_loss += loss.item() * len(batch_losses) * n_micro
         optimizer.step()
+        n = max(total_trajs, 1)
+        pbar.set_postfix({
+            'loss': f'{total_loss / n:.4f}',
+            'avg_R': f'{total_R / n:.3f}',
+            'acc': f'{total_correct / n:.3f}',
+        })
     n = max(total_trajs, 1)
     return {'loss': total_loss / n, 'avg_R': total_R / n, 'acc': total_correct / n}
 
