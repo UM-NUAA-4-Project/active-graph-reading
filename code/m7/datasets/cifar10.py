@@ -2,7 +2,7 @@
 
 节点特征 5 维（位置 2 + 颜色 3），边特征 1 维，10 类。
 DGL 仅提供 train/test 划分；valid 从 train 按类别分层切 10%。
-raw_dir 通过环境变量 M7_CIFAR10_RAW 配置（默认 D:\\CIFAR10-Superpixel）。
+raw_dir 通过环境变量 M7_CIFAR10_RAW 配置（默认 D:\\superpixels）。
 """
 
 import os
@@ -14,7 +14,7 @@ from dgl.data import CIFAR10SuperPixelDataset
 
 from .registry import DatasetSpec, Dataset, register, stratified_split, has_self_loops
 
-_RAW_DIR = os.environ.get('M7_CIFAR10_RAW', r'D:\CIFAR10-Superpixel')
+_RAW_DIR = os.environ.get('M7_CIFAR10_RAW', r'D:\superpixels')
 
 
 def _load_split(split: str) -> Tuple[List[dgl.DGLGraph], List[int]]:
