@@ -19,6 +19,8 @@ pyrightconfig.json
 # PyTorch model/trajectory files
 *.pt
 explore/
+# m7 训练产物（checkpoint / config / history）
+code/m7/checkpoint/
 # Superpowers specs and plans
 docs/superpowers/
 
