@@ -5,10 +5,11 @@ GINEEncoder 通过 node_feat_dim 支持节点特征（如 CIFAR10 的 5 维）�
 数据集不划分验证集（DGL 官方仅 train/test），checkpoint 每轮覆盖、
 最后一轮为最终产物，评估统一走 code/m7/eval.py 的 test 划分。
 
-每 epoch 统计全量训练集准确率；--eval-every N 每 N 轮在 test 集评估，
-保留该轮 checkpoint（eval_epoch{N}.pt）并按 test 准确率维护最佳
-checkpoint（best_<dataset>_classifier.pt）。输出目录同时写
-config.json（完整参数）与 history.json（每轮 loss/acc + 最佳记录）。
+训练准确率在训练循环内按 batch 即时统计（train 模式）；
+--eval-every N 每 N 轮在 test 集评估，保留该轮 checkpoint
+（eval_epoch{N}.pt）并按 test 准确率维护最佳 checkpoint
+（best_<dataset>_classifier.pt）。输出目录同时写 config.json
+（完整参数）与 history.json（每轮 loss/acc + 最佳记录）。
 
 用法:
     python code/m7/train_classifier.py --dataset cifar10 --root /mnt/data/superpixels 
@@ -48,6 +49,8 @@ def train_one_epoch(clf, optimizer, graphs, labels, batch_size, device):
     clf.train()
     total_loss = 0.0
     n_batches = 0
+    correct = 0
+    total = 0
     order = list(range(len(graphs)))
     random.shuffle(order)
     for start in tqdm(range(0, len(order), batch_size), desc="  Train"):
@@ -62,7 +65,11 @@ def train_one_epoch(clf, optimizer, graphs, labels, batch_size, device):
         optimizer.step()
         total_loss += loss.item()
         n_batches += 1
-    return total_loss / max(n_batches, 1)
+        correct += (logits.argmax(dim=-1) == y).sum().item()
+        total += len(idx)
+    # 训练准确率：train 模式下按 batch 即时统计（BN 用当前 batch 统计），
+    # 不用 eval 模式全量重算——eval 模式受 BN running stats 滞后影响
+    return total_loss / max(n_batches, 1), correct / max(total, 1)
 
 
 @torch.no_grad()
@@ -148,12 +155,11 @@ def main():
     history = {'dataset': spec.name, 'epochs': []}
     best_acc = -1.0
     best_epoch = None
-    # 无验证集：每轮统计全量训练集 acc 观察收敛，checkpoint 每轮覆盖
+    # 无验证集：训练内按 batch 统计 train acc 观察收敛，checkpoint 每轮覆盖
     # （最后一轮即最终 checkpoint）；--eval-every 在 test 集评估并保留该轮
     for epoch in range(1, args.epochs + 1):
-        loss = train_one_epoch(clf, optimizer, train_graphs, train_labels,
-                               args.batch_size, device)
-        train_acc = evaluate(clf, train_graphs, train_labels, args.batch_size, device)
+        loss, train_acc = train_one_epoch(clf, optimizer, train_graphs,
+                                          train_labels, args.batch_size, device)
         rec = {'epoch': epoch, 'loss': round(loss, 6),
                'train_acc': round(train_acc, 6), 'test_acc': None,
                'eval_checkpoint': None}
