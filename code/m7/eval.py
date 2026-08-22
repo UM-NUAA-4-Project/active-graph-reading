@@ -6,8 +6,10 @@
 输出 JSON 结构对齐 m6 eval_heldout：{split: {'learnable': {'s0': {...}, ..., 'mean': {...}}}}。
 
 用法:
-  python code/m7/eval.py --dataset cifar10 --strategy random --classifier m7/checkpoint/cifar10_classifier.pt
-  python code/m7/eval.py --dataset cifar10 --checkpoint m7/checkpoint/rl/finetune/checkpoint_epoch5.pt \
+  python code/m7/eval.py --dataset cifar10 --root D:\\superpixels --strategy random \
+      --classifier m7/checkpoint/cifar10_classifier.pt
+  python code/m7/eval.py --dataset cifar10 --root D:\\superpixels \
+      --checkpoint m7/checkpoint/rl/finetune/checkpoint_epoch5.pt \
       --classifier m7/checkpoint/cifar10_classifier.pt
 """
 
@@ -264,6 +266,8 @@ def _budget_stats(outcomes):
 def main():
     parser = argparse.ArgumentParser(description='M7 统一评估')
     parser.add_argument('--dataset', default='cifar10')
+    parser.add_argument('--root', required=True,
+                        help='数据集根目录，数据地址唯一来源（如 D:\\superpixels）')
     parser.add_argument('--checkpoint', default='',
                         help='reader checkpoint（相对仓库根目录）；与 --strategy 二选一')
     parser.add_argument('--strategy', default='',
@@ -295,7 +299,7 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
-    ds = get_dataset(args.dataset)
+    ds = get_dataset(args.dataset, root=args.root)
     spec = ds.spec
     budget_options = spec.budget_options
     ln_k = np.log(spec.n_classes)

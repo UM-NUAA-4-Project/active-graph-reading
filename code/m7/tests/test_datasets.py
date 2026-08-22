@@ -9,20 +9,8 @@ import dgl
 
 from m7.datasets.registry import (
     DatasetSpec, Dataset, register, get_dataset,
-    stratified_split, has_self_loops,
+    has_self_loops,
 )
-
-
-def test_stratified_split():
-    labels = [i % 10 for i in range(2000)]
-    train_idx, valid_idx = stratified_split(labels, test_size=0.1, seed=42)
-    assert len(train_idx) == 1800 and len(valid_idx) == 200
-    assert not set(train_idx) & set(valid_idx)
-    from collections import Counter
-    c_train = Counter(labels[i] for i in train_idx)
-    c_valid = Counter(labels[i] for i in valid_idx)
-    assert len(c_train) == 10 and len(c_valid) == 10
-    assert c_valid[0] == 20, c_valid  # 每类 200 个，10% → 20
 
 
 def test_has_self_loops():
@@ -72,7 +60,6 @@ def test_lazy_dataset_repr_eq_no_load():
 
 
 if __name__ == '__main__':
-    test_stratified_split()
     test_has_self_loops()
     test_registry_roundtrip()
     test_lazy_dataset_repr_eq_no_load()

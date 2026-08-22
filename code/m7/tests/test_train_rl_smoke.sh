@@ -3,10 +3,10 @@
 set -e
 cd /mnt/c/Users/qq283/Desktop/UM-NUAA
 PY=/mnt/d/anoconda/envs/gnn/python.exe
-$PY code/m7/train_classifier.py --dataset cifar10 --device cpu \
+$PY code/m7/train_classifier.py --dataset cifar10 --root D:\\superpixels --device cpu \
   --epochs 1 --batch-size 16 --hidden-dim 32 --n-layers 2 \
-  --max-graphs 100 --valid-graphs 20 --output-dir /tmp/m7_smoke_clf
-$PY code/m7/train_rl.py --dataset cifar10 --reader-kind attention \
+  --max-graphs 100 --output-dir /tmp/m7_smoke_clf
+$PY code/m7/train_rl.py --dataset cifar10 --root D:\\superpixels --reader-kind attention \
   --bootstrap m6/attention/bc/reader_belief_epoch1.pt \
   --classifier /tmp/m7_smoke_clf/cifar10_classifier.pt \
   --device cpu --epochs 1 --graphs-per-batch 4 --seeds-per-graph 1 \

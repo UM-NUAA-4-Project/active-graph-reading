@@ -4,12 +4,11 @@
 m7 所有脚本通过 --dataset 名称无缝切换。
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable, List, Optional, Tuple
 
 import torch
 import dgl
-from sklearn.model_selection import train_test_split
 
 
 @dataclass
@@ -20,6 +19,7 @@ class DatasetSpec:
     edge_feat_dim: int
     needs_self_loop: bool
     budget_options: Tuple[float, ...] = (0.05, 0.10, 0.15)
+    root: Optional[str] = None   # 数据根目录（--root 覆盖）；None = 用加载器默认/环境变量
     load: Optional[Callable] = None   # load(spec) -> Dataset
 
 
@@ -83,23 +83,18 @@ def register(spec: DatasetSpec) -> None:
     DATASETS[spec.name] = spec
 
 
-def get_dataset(name: str) -> Dataset:
+def get_dataset(name: str, root: Optional[str] = None) -> Dataset:
     if name not in DATASETS:
         raise ValueError(f"未知数据集 '{name}'，可用: {sorted(DATASETS)}")
-    if name not in _CACHE:
+    cache_key = (name, root)
+    if cache_key not in _CACHE:
         spec = DATASETS[name]
         if spec.load is None:
             raise ValueError(f"数据集 '{name}' 未实现 load 函数")
-        _CACHE[name] = _LazyDataset(spec)
-    return _CACHE[name]
-
-
-def stratified_split(labels: List[int], test_size: float = 0.1,
-                     seed: int = 42) -> Tuple[List[int], List[int]]:
-    idx = list(range(len(labels)))
-    train_idx, valid_idx = train_test_split(
-        idx, test_size=test_size, stratify=labels, random_state=seed)
-    return list(train_idx), list(valid_idx)
+        if root is not None:
+            spec = replace(spec, root=root)   # 副本，避免污染注册表
+        _CACHE[cache_key] = _LazyDataset(spec)
+    return _CACHE[cache_key]
 
 
 def has_self_loops(g: dgl.DGLGraph) -> bool:

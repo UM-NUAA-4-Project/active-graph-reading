@@ -5,11 +5,11 @@ Loss = mean_i(-R_i · Σ_t log π_t(a_t))，R_i 由目标数据集上界 GIN 分
 belief lockstep（复用 m6/training_utils）。
 
 用法:
-  python code/m7/train_rl.py --dataset cifar10 --reader-kind attention \
-      --bootstrap m6/attention/bc/reader_belief_epoch1.pt \
+  python code/m7/train_rl.py --dataset cifar10 --root D:\\superpixels \
+      --reader-kind attention --bootstrap m6/attention/bc/reader_belief_epoch1.pt \
       --classifier m7/checkpoint/cifar10_classifier.pt --device cuda:0
-  python code/m7/train_rl.py --dataset cifar10 --reader-kind base \
-      --bootstrap m5/base/checkpoint/best_reader.pt --device cuda:0
+  python code/m7/train_rl.py --dataset cifar10 --root D:\\superpixels \
+      --reader-kind base --bootstrap m5/base/checkpoint/best_reader.pt --device cuda:0
 """
 
 import argparse
@@ -297,6 +297,8 @@ def train_one_epoch_attention(reader, classifier, builder, optimizer,
 def main():
     parser = argparse.ArgumentParser(description='M7 RL 微调（迁移自 PPA 或从头）')
     parser.add_argument('--dataset', default='cifar10')
+    parser.add_argument('--root', required=True,
+                        help='数据集根目录，数据地址唯一来源（如 D:\\superpixels）')
     parser.add_argument('--reader-kind', choices=['base', 'attention'], default='attention')
     parser.add_argument('--bootstrap', required=True,
                         help='迁移起点 checkpoint（相对 code/ 目录，如 m6/attention/bc/...）')
@@ -335,7 +337,7 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
-    ds = get_dataset(args.dataset)
+    ds = get_dataset(args.dataset, root=args.root or None)
     spec = ds.spec
     BUDGET_OPTIONS = spec.budget_options
     ln_k = math.log(spec.n_classes)

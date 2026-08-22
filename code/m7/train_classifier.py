@@ -2,11 +2,13 @@
 
 移植 m3/train_full_graph.py，数据来自 m7 数据集注册表；
 GINEEncoder 通过 node_feat_dim 支持节点特征（如 CIFAR10 的 5 维）。
+数据集不划分验证集（DGL 官方仅 train/test），checkpoint 每轮覆盖、
+最后一轮为最终产物，评估统一走 code/m7/eval.py 的 test 划分。
 
 用法:
-  python code/m7/train_classifier.py --dataset cifar10 --device cuda:0
-  python code/m7/train_classifier.py --dataset cifar10 --device cpu --epochs 2 \
-      --max-graphs 200 --valid-graphs 50   # 冒烟
+  python code/m7/train_classifier.py --dataset cifar10 --root D:\\superpixels --device cuda:0
+  python code/m7/train_classifier.py --dataset cifar10 --root D:\\superpixels \
+      --device cpu --epochs 2 --max-graphs 200   # 冒烟
 """
 
 import argparse
@@ -72,6 +74,8 @@ def evaluate(clf, graphs, labels, batch_size, device):
 def main():
     parser = argparse.ArgumentParser(description='M7 全图 GIN 上界分类器训练')
     parser.add_argument('--dataset', default='cifar10')
+    parser.add_argument('--root', required=True,
+                        help='数据集根目录，数据地址唯一来源（如 D:\\superpixels）')
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--epochs', type=int, default=30)
     parser.add_argument('--lr', type=float, default=1e-3)
@@ -81,8 +85,6 @@ def main():
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='限制训练图数（0=全部）')
-    parser.add_argument('--valid-graphs', type=int, default=0,
-                        help='限制验证图数（0=全部）')
     parser.add_argument('--output-dir', default='m7/checkpoint')
     args = parser.parse_args()
 
@@ -97,8 +99,7 @@ def main():
     train_graphs = ds.train_graphs
     if args.max_graphs > 0:
         train_graphs = train_graphs[:args.max_graphs]
-    valid_graphs = ds.valid_graphs[:args.valid_graphs] if args.valid_graphs > 0 else ds.valid_graphs
-    print(f"Train graphs: {len(train_graphs)}, Valid graphs: {len(valid_graphs)}")
+    print(f"Train graphs: {len(train_graphs)} (数据集不划分验证集)")
 
     clf = GraphClassifier(
         edge_feat_dim=spec.edge_feat_dim,
@@ -111,28 +112,28 @@ def main():
     print(f"Params: {sum(p.numel() for p in clf.parameters()):,}")
 
     optimizer = optim.Adam(clf.parameters(), lr=args.lr)
-    best_acc = 0.0
+    out_dir = _repo_root / args.output_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f'{spec.name}_classifier.pt'
+    # 无验证集：每轮训练集前 500 图打印参考 acc 供观察收敛，checkpoint 每轮覆盖
+    # （最后一轮即最终 checkpoint）
+    ref_graphs = train_graphs[:500]
+    ref_labels = ds.train_labels[:len(ref_graphs)]
     for epoch in range(1, args.epochs + 1):
         loss = train_one_epoch(clf, optimizer, train_graphs,
                                ds.train_labels[:len(train_graphs)],
                                args.batch_size, device)
-        val_acc = evaluate(clf, valid_graphs, ds.valid_labels[:len(valid_graphs)],
-                           args.batch_size, device)
-        print(f"Epoch {epoch}/{args.epochs}: loss={loss:.4f}  val_acc={val_acc:.4f}")
-        if val_acc > best_acc:
-            best_acc = val_acc
-            out_dir = _repo_root / args.output_dir
-            out_dir.mkdir(parents=True, exist_ok=True)
-            ckpt = {'model_state_dict': clf.state_dict(), 'val_acc': val_acc,
-                    'config': {'dataset': spec.name, 'n_classes': spec.n_classes,
-                               'node_feat_dim': spec.node_feat_dim,
-                               'edge_feat_dim': spec.edge_feat_dim,
-                               'hidden_dim': args.hidden_dim, 'n_layers': args.n_layers,
-                               'dropout': args.dropout}}
-            path = out_dir / f'{spec.name}_classifier.pt'
-            torch.save(ckpt, str(path))
-            print(f"  Best val_acc={best_acc:.4f} saved → {path}")
-    print(f"Done. Best val_acc={best_acc:.4f}")
+        ref_acc = evaluate(clf, ref_graphs, ref_labels, args.batch_size, device)
+        ckpt = {'model_state_dict': clf.state_dict(),
+                'config': {'dataset': spec.name, 'n_classes': spec.n_classes,
+                           'node_feat_dim': spec.node_feat_dim,
+                           'edge_feat_dim': spec.edge_feat_dim,
+                           'hidden_dim': args.hidden_dim, 'n_layers': args.n_layers,
+                           'dropout': args.dropout}}
+        torch.save(ckpt, str(path))
+        print(f"Epoch {epoch}/{args.epochs}: loss={loss:.4f}  "
+              f"train_ref_acc={ref_acc:.4f}  saved → {path}")
+    print(f"Done. Final checkpoint: {path}")
 
 
 if __name__ == '__main__':
