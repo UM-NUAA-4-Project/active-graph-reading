@@ -183,6 +183,31 @@ def train_one_epoch_base(reader, classifier, builder, optimizer,
     return {'loss': total_loss / n, 'avg_R': total_R / n, 'acc': total_correct / n}
 
 
+def _diag_nan(reader, state, belief, batch_result, batch_start, step, state_idx):
+    """NaN 崩溃点诊断：打印各环节数值后终止，用于定位 NaN 来源。"""
+    scores, probs, frontier_nodes = batch_result
+    print('\n' + '=' * 60)
+    print(f'[NaN 诊断] batch={batch_start}, lockstep_step={step}, state_idx={state_idx}')
+    print(f'  graph: n_nodes={state.n_nodes_total}, revealed={len(state.V_revealed)}, '
+          f'frontier_nodes={len(state.get_frontier_nodes())}, '
+          f'frontier_edges={len(state.frontier_edges)}, budget={state._budget_limit}')
+    print(f'  scores: finite={torch.isfinite(scores).all().item()} '
+          f'max={scores.abs().max().item():.3e}')
+    print(f'  probs:  finite={torch.isfinite(probs).all().item()} '
+          f'sum={probs.sum().item():.3f} min={probs.min().item():.3e}')
+    print(f'  belief: finite={torch.isfinite(belief).all().item()} '
+          f'max={belief.abs().max().item():.3e} shape={tuple(belief.shape)}')
+    bad = [n for n, p in reader.named_parameters()
+           if not torch.isfinite(p).all()]
+    print(f'  weight NaN/Inf 层: {bad if bad else "无（权重有限 → 前向路径问题）"}')
+    for name, p in reader.named_parameters():
+        if 'edge_encoder' in name or 'node_feat_proj' in name:
+            print(f'  skipped 层 {name}: max={p.abs().max().item():.3e} '
+                  f'finite={torch.isfinite(p).all().item()}')
+    print('=' * 60)
+    raise RuntimeError('NaN 诊断：probs 非有限（见上方定位）')
+
+
 def train_one_epoch_attention(reader, classifier, builder, optimizer,
                               graphs, labels, batch_size, n_seeds,
                               device, reward_type, ln_k, budget_options):
@@ -242,6 +267,9 @@ def train_one_epoch_attention(reader, classifier, builder, optimizer,
                     if not frontier_nodes:
                         active[j] = False
                         continue
+                    if not torch.isfinite(probs).all():
+                        _diag_nan(reader, all_states[j], all_beliefs[j],
+                                  batch_results[k], batch_start, _step, j)
                     dist = torch.distributions.Categorical(probs)
                     action_idx = dist.sample()
                     per_state_log_probs[j].append(dist.log_prob(action_idx))
