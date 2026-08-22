@@ -10,6 +10,7 @@ from .fixed import create_fixed_reader
 
 from .reader_mlp import ReaderMLP
 from .gsae import compute_structural_features
+from .attention.attention_reader import AttentionReader
 
 # Backward-compat alias
 FixedStrategyReader = create_fixed_reader
@@ -18,6 +19,7 @@ __all__ = [
     'BaseReader',
     'FixedStrategyReader',
     'LearnableReader',
+    'AttentionReader',
     'SubgraphEncoder',
     'build_g_phi_from_fclass',
     'FrontierGraphBuilder',

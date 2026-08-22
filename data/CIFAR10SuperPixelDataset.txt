@@ -1,0 +1,14 @@
+根据 DGL 官方文档，CIFAR10SuperPixelDataset 类的参数及其影响如下：
+raw_dir (str, 可选): 指定存储下载的原始数据集的目录。默认值为 "~/.dgl/"。
+
+split (str, 可选): 指定加载数据集的哪个部分。可选值为 'train' 或 'test'。默认值为 'train'。
+
+use_feature (bool, 可选): 控制图（邻接矩阵）的构建方式。
+    True: 图的邻接矩阵由超像素的位置和特征共同定义。
+    False: 图的邻接矩阵仅由超像素的位置定义。默认值为 False。
+
+force_reload (bool, 可选): 是否强制重新加载数据集。如果设为 True，即使本地已存在，也会重新下载并处理数据。默认值为 False。
+
+verbose (bool, 可选): 是否打印进度信息。默认值为 False。
+
+transform (callable, 可选): 一个转换函数。它接受一个 DGLGraph 对象并返回其转换后的版本。该转换会在每次访问图之前被调用。
