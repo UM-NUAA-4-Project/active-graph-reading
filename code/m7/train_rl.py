@@ -281,6 +281,13 @@ def train_one_epoch_attention(reader, classifier, builder, optimizer,
                         [all_beliefs[j] for j in batch_local_idx], dim=0)
                     new_beliefs, new_subgraphs = reveal_and_update_beliefs_batch(
                         reader, batch_states, batch_nodes, batch_beliefs, device)
+                    if not torch.isfinite(new_beliefs).all():
+                        print('\n' + '=' * 60)
+                        print('[NaN 监测] belief 更新后 NaN')
+                        print(f'  输入 belief finite={torch.isfinite(batch_beliefs).all().item()}')
+                        print(f'  输出 belief finite={torch.isfinite(new_beliefs).all().item()}')
+                        print('=' * 60)
+                        raise RuntimeError('NaN 监测: belief 更新后 NaN')
                     for k, j in enumerate(batch_local_idx):
                         all_beliefs[j] = new_beliefs[k:k + 1]
                         all_subgraphs[j] = new_subgraphs[k]

@@ -260,6 +260,19 @@ class AttentionReader(BaseReader, nn.Module):
         pooled = self.new_info_encoder.forward_batch(
             batch_g, h, edge_feats, v_indices, frontier_masks,
         )  # (N, d)
+        if not torch.isfinite(pooled).all():
+            print('\n' + '=' * 60)
+            print('[NaN 监测] new_info_encoder 输出 NaN（首个 NaN 事件?）')
+            print(f'  edge_feats: shape={tuple(edge_feats.shape)} '
+                  f'finite={torch.isfinite(edge_feats).all().item()} '
+                  f'min={edge_feats.min().item():.3e} max={edge_feats.max().item():.3e}')
+            print(f'  h(type_emb): finite={torch.isfinite(h).all().item()} '
+                  f'max={h.abs().max().item():.3e}')
+            print(f'  frontier mask 计数: {[int(m.sum().item()) for m in frontier_masks]}')
+            print(f'  node_counts: {node_counts}')
+            print(f'  n_revealed: {[sg.n_revealed for sg in subgraphs]}')
+            print('=' * 60)
+            raise RuntimeError('NaN 监测: new_info_encoder 输出 NaN')
         return pooled.unsqueeze(1)  # (N, 1, d)
 
     # ------------------------------------------------------------------
