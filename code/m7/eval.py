@@ -45,12 +45,23 @@ from m6.training_utils import deterministic_seed, strip_classifier_keys
 
 @torch.no_grad()
 def rollout_strategy(agent, state):
-    """单图 rollout：agent.select 直到预算耗尽或 frontier 为空。"""
+    """单图 rollout：agent.select 直到预算耗尽或 frontier 为空。
+
+    有状态策略（如 BFS 的 FIFO 队列）依赖 reset/on_new_frontier 接线：
+    每个 rollout 独立，重置内部状态并以初始前沿播种，揭示后把新发现
+    的前沿边喂回 agent（对齐 code/m5/base/analysis/eval.py run_one_seed_collect）。
+    """
+    agent.reset()
+    initial_frontier = list(state._initial_frontier)
+    if initial_frontier:
+        agent.on_new_frontier(initial_frontier)
     while not state.is_frontier_empty and state.get_budget_used() < state._budget_limit:
         v = agent.select(state)
         if v is None:
             break
-        reveal_node(state, v)
+        new_frontier = reveal_node(state, v)
+        if new_frontier:
+            agent.on_new_frontier(new_frontier)
 
 
 def evaluate_reader(reader, classifier, builder, graphs, indices, labels,
@@ -319,7 +330,7 @@ def main():
     }
     out_dir = _project_root / args.output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f'eval_{split}_{args.strategy or "reader"}.json'
+    out_path = out_dir / f'eval_heldout_{split}_{args.strategy or "reader"}.json'
     with open(out_path, 'w', encoding='utf-8') as f:
         json.dump(json_out, f, indent=2, ensure_ascii=False)
     print(f"JSON saved to {out_path}")
