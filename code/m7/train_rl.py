@@ -226,6 +226,7 @@ def train_one_epoch_attention(reader, classifier, builder, optimizer,
         for mb_i in range(0, len(batch_indices), micro_batch_size):
             mb_indices = batch_indices[mb_i:mb_i + micro_batch_size]
             all_states, state_labels, per_state_log_probs = [], [], []
+            state_src = []  # state → (图 index, seed_i) 映射（诊断用）
             for local_i in mb_indices:
                 g_raw = graphs[local_i]
                 label = int(labels[local_i].item())
@@ -240,6 +241,7 @@ def train_one_epoch_attention(reader, classifier, builder, optimizer,
                     all_states.append(state)
                     state_labels.append(y)
                     per_state_log_probs.append([])
+                    state_src.append((local_i, seed_i))
 
             n_total = len(all_states)
             active = [True] * n_total
@@ -280,7 +282,8 @@ def train_one_epoch_attention(reader, classifier, builder, optimizer,
                     batch_beliefs = torch.cat(
                         [all_beliefs[j] for j in batch_local_idx], dim=0)
                     new_beliefs, new_subgraphs = reveal_and_update_beliefs_batch(
-                        reader, batch_states, batch_nodes, batch_beliefs, device)
+                        reader, batch_states, batch_nodes, batch_beliefs, device,
+                        state_src=[state_src[j] for j in batch_local_idx])
                     if not torch.isfinite(new_beliefs).all():
                         print('\n' + '=' * 60)
                         print('[NaN 监测] belief 更新后 NaN')

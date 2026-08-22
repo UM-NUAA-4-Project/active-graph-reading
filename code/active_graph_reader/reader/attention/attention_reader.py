@@ -213,7 +213,7 @@ class AttentionReader(BaseReader, nn.Module):
 
     def encode_new_info_batch(
         self, states: list, subgraphs: list, v_revealed_list: list,
-        device: torch.device,
+        device: torch.device, state_src: list = None,
     ) -> torch.Tensor:
         """Batch-encode multiple frontier subgraphs → (N, 1, d).
 
@@ -271,6 +271,18 @@ class AttentionReader(BaseReader, nn.Module):
             print(f'  frontier mask 计数: {[int(m.sum().item()) for m in frontier_masks]}')
             print(f'  node_counts: {node_counts}')
             print(f'  n_revealed: {[sg.n_revealed for sg in subgraphs]}')
+            for i, cnt in enumerate(frontier_masks):
+                if int(cnt.sum()) == 0:
+                    st = states[i]
+                    src = state_src[i] if state_src else ('?', '?')
+                    print(f'  [mask=0 state #{i}] 图index={src[0]} seed_i={src[1]} '
+                          f'seed_node={st.seed_node}, '
+                          f'n_nodes_total={st.n_nodes_total}, '
+                          f'n_revealed={len(st.V_revealed)}, '
+                          f'frontier_edges={len(st.frontier_edges)}, '
+                          f'get_frontier_nodes()={len(st.get_frontier_nodes())}, '
+                          f'budget={st._budget_limit}, used={st.get_budget_used()}, '
+                          f'reveal_history={st.reveal_history}')
             print('=' * 60)
             raise RuntimeError('NaN 监测: new_info_encoder 输出 NaN')
         return pooled.unsqueeze(1)  # (N, 1, d)

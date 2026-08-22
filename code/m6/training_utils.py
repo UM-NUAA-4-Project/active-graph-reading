@@ -46,6 +46,7 @@ def reveal_and_update_beliefs_batch(
     chosen_nodes: list,
     beliefs: torch.Tensor,
     device: torch.device,
+    state_src: list = None,
 ):
     """Batch version: reveal all, build all subgraphs, batch-encode, batch-update.
 
@@ -55,6 +56,7 @@ def reveal_and_update_beliefs_batch(
         chosen_nodes: List[int] (N_active,)
         beliefs:      torch.Tensor (N_active, m, d)  already stacked
         device:       torch.device
+        state_src:    Optional[(图 index, seed_i)] 列表，与 states 平行（诊断用）
 
     Returns:
         new_beliefs:   torch.Tensor (N_active, m, d)
@@ -66,7 +68,7 @@ def reveal_and_update_beliefs_batch(
     new_subgraphs = [reader.frontier_builder.build(s) for s in states]
 
     new_infos = reader.encode_new_info_batch(
-        states, new_subgraphs, chosen_nodes, device,
+        states, new_subgraphs, chosen_nodes, device, state_src=state_src,
     )  # (N_active, 1, d)
 
     new_beliefs = reader.belief_state.update_fn(beliefs, new_infos)
