@@ -12,11 +12,15 @@ GINEEncoder 通过 node_feat_dim 支持节点特征（如 CIFAR10 的 5 维）�
 （完整参数）与 history.json（每轮 loss/acc + 最佳记录）。
 
 用法:
-    python code/m7/train_classifier.py --dataset cifar10 --root /mnt/data/superpixels 
+    python code/m7/train_classifier.py --dataset cifar10 --root /mnt/data/superpixels
     --device cuda:0 --batch-size 128 --epochs 100 --lr 0.001 --hidden-dim 256
   python code/m7/train_classifier.py --dataset cifar10 --root D:\\superpixels --device cuda:0
   python code/m7/train_classifier.py --dataset cifar10 --root D:\\superpixels \
       --device cpu --epochs 2 --max-graphs 200   # 冒烟
+  # 微调：从已有 classifier checkpoint 加载权重继续训练（结构参数继承自
+  # checkpoint config，无需重传 --hidden-dim 等）
+  python code/m7/train_classifier.py --dataset cifar10 --root D:\\superpixels \
+      --init-checkpoint m7/checkpoint/best_cifar10_classifier.pt
 """
 
 import argparse
@@ -43,6 +47,12 @@ from tqdm import tqdm
 
 from active_graph_reader.gnn.classifier import GraphClassifier
 from m7.datasets.registry import get_dataset
+
+
+def resolve_path(p: str) -> Path:
+    """相对路径按 code/ 解析（与 output-dir 惯例一致），绝对路径原样使用。"""
+    path = Path(p)
+    return path if path.is_absolute() else _repo_root / path
 
 
 def train_one_epoch(clf, optimizer, graphs, labels, batch_size, device):
@@ -103,6 +113,9 @@ def main():
                         help='限制训练/评估图数（0=全部）')
     parser.add_argument('--eval-every', type=int, default=5,
                         help='每 N 轮在 test 集评估并保留该轮 checkpoint（0=不评估）')
+    parser.add_argument('--init-checkpoint', default=None,
+                        help='从已有 classifier checkpoint 加载权重开始微调'
+                             '（结构参数继承自 checkpoint config）')
     parser.add_argument('--output-dir', default='m7/checkpoint')
     args = parser.parse_args()
 
@@ -123,15 +136,34 @@ def main():
     test_labels = ds.test_labels[:len(test_graphs)]
     print(f"Train graphs: {len(train_graphs)} (数据集不划分验证集)")
 
+    # 微调：结构参数继承自 init checkpoint 的 config，保证权重可加载
+    init_ckpt = None
+    init_cfg = {}
+    if args.init_checkpoint:
+        init_path = resolve_path(args.init_checkpoint)
+        init_ckpt = torch.load(str(init_path), map_location=device, weights_only=False)
+        init_cfg = init_ckpt.get('config', {})
+        if init_cfg.get('dataset') and init_cfg['dataset'] != spec.name:
+            print(f"Warning: init checkpoint 训练于 '{init_cfg['dataset']}'，"
+                  f"当前数据集 '{spec.name}'——结构可能不匹配")
+    hidden_dim = init_cfg.get('hidden_dim', args.hidden_dim)
+    n_layers = init_cfg.get('n_layers', args.n_layers)
+    dropout = init_cfg.get('dropout', args.dropout)
+
     clf = GraphClassifier(
         edge_feat_dim=spec.edge_feat_dim,
         n_classes=spec.n_classes,
-        hidden_dim=args.hidden_dim,
-        n_layers=args.n_layers,
-        dropout=args.dropout,
+        hidden_dim=hidden_dim,
+        n_layers=n_layers,
+        dropout=dropout,
         node_feat_dim=spec.node_feat_dim,
     ).to(device)
     print(f"Params: {sum(p.numel() for p in clf.parameters()):,}")
+
+    if init_ckpt is not None:
+        clf.load_state_dict(init_ckpt['model_state_dict'], strict=True)
+        print(f"Loaded init weights from {init_path} (fine-tune start; "
+              f"hidden_dim={hidden_dim}, n_layers={n_layers}, dropout={dropout})")
 
     optimizer = optim.Adam(clf.parameters(), lr=args.lr)
     out_dir = _repo_root / args.output_dir
