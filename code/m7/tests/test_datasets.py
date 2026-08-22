@@ -47,8 +47,33 @@ def test_registry_roundtrip():
     assert get_dataset('cifar10').spec.edge_feat_dim == 1
 
 
+def test_lazy_dataset_repr_eq_no_load():
+    """repr/eq 防护：_LazyDataset 的 __repr__/__eq__ 不得触发数据懒加载。"""
+    calls = {'n': 0}
+
+    def load(spec):
+        calls['n'] += 1
+        return Dataset(spec=spec, train_graphs=[], train_labels=torch.tensor([]),
+                       valid_graphs=[], valid_labels=torch.tensor([]),
+                       test_graphs=[], test_labels=torch.tensor([]),
+                       train_indices=[], test_indices=[])
+
+    spec = DatasetSpec(name='lazy_no_load', n_classes=3, node_feat_dim=0,
+                       edge_feat_dim=1, needs_self_loop=False, load=load)
+    register(spec)
+    ds = get_dataset('lazy_no_load')
+    assert calls['n'] == 0
+    assert 'lazy_no_load' in repr(ds)
+    assert calls['n'] == 0
+    assert ds == ds                      # 身份相等
+    assert ds == get_dataset('lazy_no_load')  # 缓存同一对象
+    assert not (ds == object())
+    assert calls['n'] == 0
+
+
 if __name__ == '__main__':
     test_stratified_split()
     test_has_self_loops()
     test_registry_roundtrip()
+    test_lazy_dataset_repr_eq_no_load()
     print("OK: registry utilities")

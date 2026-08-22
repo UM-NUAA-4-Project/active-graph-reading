@@ -10,6 +10,7 @@ GINEEncoder 通过 node_feat_dim 支持节点特征（如 CIFAR10 的 5 维）�
 """
 
 import argparse
+import random
 import sys
 from pathlib import Path
 
@@ -37,6 +38,7 @@ def train_one_epoch(clf, optimizer, graphs, labels, batch_size, device):
     total_loss = 0.0
     n_batches = 0
     order = list(range(len(graphs)))
+    random.shuffle(order)
     for start in tqdm(range(0, len(order), batch_size), desc="  Train"):
         idx = order[start:start + batch_size]
         batch_g = dgl.batch([graphs[i] for i in idx]).to(device)

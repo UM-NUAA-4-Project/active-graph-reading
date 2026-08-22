@@ -19,10 +19,12 @@ def test_base_reader_transfer():
     target = LearnableReader(edge_feat_dim=1, hidden_dim=32, n_layers=2,
                              dropout=0.1, node_feat_dim=5)
 
-    n_transferred, skipped = transfer_weights(source.state_dict(), target)
+    n_transferred, n_padded, skipped = transfer_weights(
+        source.state_dict(), target)
 
     # 形状匹配的共享层复制成功
     assert n_transferred > 0
+    assert n_padded == 0
     # 维度不匹配/新层被跳过
     skipped_keys = set(skipped)
     assert any('edge_encoder' in k for k in skipped_keys), skipped
@@ -46,8 +48,10 @@ def test_attention_reader_transfer():
     target = AttentionReader(edge_feat_dim=1, hidden_dim=32, n_layers=2,
                              dropout=0.1, node_feat_dim=5, m=2, n_heads=2)
 
-    n_transferred, skipped = transfer_weights(source.state_dict(), target)
+    n_transferred, n_padded, skipped = transfer_weights(
+        source.state_dict(), target)
     assert n_transferred > 0
+    assert n_padded == 0
     skipped_keys = set(skipped)
     assert any('edge_encoder' in k for k in skipped_keys)
     assert any('node_feat_proj' in k for k in skipped_keys)
@@ -60,7 +64,37 @@ def test_attention_reader_transfer():
                        tgt_sd['belief_state.tokens'])
 
 
+def test_legacy_width_reader_mlp_zero_pad():
+    """legacy v0 base reader（reader_mlp.mlp.0.weight 输入宽度少 4 列）→
+    完整 CIFAR10 base reader：最后一维零填充复制，其余形状不匹配跳过。"""
+    full = LearnableReader(edge_feat_dim=1, hidden_dim=32, n_layers=2,
+                           dropout=0.1, node_feat_dim=5)
+    legacy = LearnableReader(edge_feat_dim=1, hidden_dim=32, n_layers=2,
+                             dropout=0.1, node_feat_dim=5)
+    # 模拟 v0 旧 checkpoint：reader_mlp.mlp.0.weight 输入宽度少 4 列
+    # （缺 budget/struct 特征列），且 mlp.0.bias 缺失（模拟"无同键"分支）
+    legacy_sd = legacy.state_dict()
+    k = 'reader_mlp.mlp.0.weight'
+    legacy_sd[k] = legacy_sd[k][:, :-4]
+    del legacy_sd['reader_mlp.mlp.0.bias']
+    full_sd = full.state_dict()
+
+    n_transferred, n_padded, skipped = transfer_weights(legacy_sd, full)
+
+    assert n_padded == 1, (n_padded, skipped)
+    assert 'reader_mlp.mlp.0.weight' not in skipped
+    out_w = full_sd['reader_mlp.mlp.0.weight']
+    assert tuple(out_w.shape) == (32, 32 + 4), out_w.shape
+    # 前 32 列与源一致，最后 4 列为零
+    assert torch.equal(out_w[:, :-4], legacy_sd[k])
+    assert torch.all(out_w[:, -4:] == 0)
+    # 目标最后一维比源更窄的键（如 edge_encoder (32,7)→(32,1)，
+    # 见 test_base_reader_transfer）与缺失键（bias）均走 skipped 分支
+    assert 'reader_mlp.mlp.0.bias' in skipped
+
+
 if __name__ == '__main__':
     test_base_reader_transfer()
     test_attention_reader_transfer()
+    test_legacy_width_reader_mlp_zero_pad()
     print("OK: transfer_weights 部分权重迁移")

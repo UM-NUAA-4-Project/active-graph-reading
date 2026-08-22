@@ -46,7 +46,25 @@ def test_attention_reader_node_feat():
     assert frontier and probs.shape == (len(frontier),)
 
 
+def test_base_reader_scores_depend_on_node_feat():
+    """值级断言：仅节点特征不同（边特征相同）→ base reader 的 frontier scores 必须不同。"""
+    reader = LearnableReader(edge_feat_dim=1, hidden_dim=32, n_layers=1,
+                             dropout=0.0, node_feat_dim=5)
+    reader.eval()
+    state1 = _make_state()
+    state2 = _make_state()
+    # 只改节点特征：边特征与图结构保持一致
+    state2.g.edata['feat'] = state1.g.edata['feat']
+    state2.g.ndata['feat'] = 2.0 * state1.g.ndata['feat']
+    with torch.no_grad():
+        scores1, _, frontier1 = reader.forward(state1)
+        scores2, _, frontier2 = reader.forward(state2)
+    assert frontier1 == frontier2, "相同图结构的前沿节点顺序应一致"
+    assert not torch.allclose(scores1, scores2), "节点特征变化应改变 frontier scores"
+
+
 if __name__ == '__main__':
     test_base_reader_node_feat()
     test_attention_reader_node_feat()
+    test_base_reader_scores_depend_on_node_feat()
     print("OK: readers support node_feat_dim=5")

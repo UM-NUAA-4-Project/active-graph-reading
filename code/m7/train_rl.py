@@ -18,6 +18,7 @@ import math
 import random
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 _script_dir = Path(__file__).resolve().parent       # code/m7
 _repo_root = _script_dir.parent                     # code/
@@ -366,14 +367,36 @@ def main():
     print(f"Classifier loaded (val_acc={cls_ckpt.get('val_acc', 'N/A')})")
 
     # ---- reader（迁移初始化） ----
-    reader = build_reader(args.reader_kind, spec, args, device)
     bootstrap_path = _repo_root / args.bootstrap
     src_ckpt = torch.load(str(bootstrap_path), map_location='cpu', weights_only=False)
+    # 源 checkpoint 携带训练超参（train_rl 保存 training_log=config dict；
+    # m6 类 checkpoint 的 training_log 是逐轮列表、超参在 config 键下）：
+    # CLI 未显式传入（== argparse 默认值）时沿用
+    _tl = src_ckpt.get('training_log')
+    src_cfg = _tl if isinstance(_tl, dict) else src_ckpt.get('config') or {}
+    if not isinstance(src_cfg, dict):
+        src_cfg = {}
+    reader_args = SimpleNamespace(**vars(args))
+    resolved = {}
+    _alt_keys = {'n_layers': 'n_layers_reader', 'dropout': 'dropout_reader'}
+    for name in ('hidden_dim', 'n_layers', 'm', 'n_heads'):
+        v = src_cfg.get(name)
+        if v is None:
+            v = src_cfg.get(_alt_keys.get(name))
+        if v is not None and getattr(args, name) == parser.get_default(name):
+            setattr(reader_args, name, v)
+            resolved[name] = v
+    reader = build_reader(args.reader_kind, spec, reader_args, device)
+    print(f"Reader config: hidden_dim={reader_args.hidden_dim}, "
+          f"n_layers={reader_args.n_layers}, m={reader_args.m}, "
+          f"n_heads={reader_args.n_heads}, dropout={reader_args.dropout}, "
+          f"temperature={reader_args.temperature} "
+          f"(from checkpoint config: {resolved or 'none'})")
     src_sd = src_ckpt.get('reader_state_dict', src_ckpt)
     src_sd = strip_classifier_keys(src_sd)
-    n_transferred, skipped = transfer_weights(src_sd, reader)
+    n_transferred, n_padded, skipped = transfer_weights(src_sd, reader)
     print(f"Bootstrap {args.bootstrap}: transferred={n_transferred}, "
-          f"skipped={len(skipped)} (新层/维度不匹配)")
+          f"padded={n_padded}, skipped={len(skipped)} (新层/维度不匹配)")
     if skipped:
         print(f"  skipped: {skipped[:6]}{'...' if len(skipped) > 6 else ''}")
 
@@ -393,6 +416,7 @@ def main():
         'bootstrap': args.bootstrap,
         'classifier': str(clf_path),
         'n_transferred': n_transferred,
+        'n_padded': n_padded,
         'n_skipped': len(skipped),
         'freeze': args.freeze,
         'reward': args.reward,

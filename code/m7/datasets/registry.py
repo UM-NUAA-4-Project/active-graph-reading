@@ -68,6 +68,16 @@ class _LazyDataset(Dataset):
             return getattr(self._ensure_loaded(), name)
         raise AttributeError(f"{type(self).__name__!r} 没有属性 {name!r}")
 
+    def __repr__(self) -> str:
+        # 覆写 dataclass 生成的 __repr__：不能访问数据字段
+        # （会触发 2.5GB 懒加载），只显示 spec 名与加载状态
+        return (f"_LazyDataset(spec={self.spec.name!r}, "
+                f"loaded={self._real is not None})")
+
+    def __eq__(self, other) -> bool:
+        # 覆写 dataclass 生成的 __eq__：按身份比较，绝不触碰数据字段
+        return self is other
+
 
 def register(spec: DatasetSpec) -> None:
     DATASETS[spec.name] = spec

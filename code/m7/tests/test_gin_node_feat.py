@@ -44,8 +44,28 @@ def test_classifier_node_feat():
     assert out.shape == (1, 10), out.shape
 
 
+def test_node_feat_values_consumed():
+    """值级断言：节点特征 A 与 2A 必须产生不同的池化输出（证明特征被消费）。"""
+    g = dgl.graph(([0, 1, 2], [1, 2, 0]))
+    g.edata['feat'] = torch.randn(3, 1)
+    enc = GINEEncoder(edge_feat_dim=1, node_feat_dim=5, hidden_dim=16,
+                      n_layers=2, dropout=0.0)
+    enc.eval()
+    feat_a = torch.randn(3, 5)
+    with torch.no_grad():
+        g1 = dgl.batch([g])
+        g1.ndata['feat'] = feat_a
+        out_a = enc(g1, torch.zeros(3, dtype=torch.long))
+        g2 = dgl.batch([g])
+        g2.ndata['feat'] = 2.0 * feat_a
+        out_b = enc(g2, torch.zeros(3, dtype=torch.long))
+    assert out_a.shape == (1, 16), out_a.shape
+    assert not torch.allclose(out_a, out_b), "节点特征变化应改变池化输出"
+
+
 if __name__ == '__main__':
     test_node_feat_path()
     test_no_node_feat_path()
     test_classifier_node_feat()
+    test_node_feat_values_consumed()
     print("OK: GINEEncoder/GraphClassifier node_feat_dim support")

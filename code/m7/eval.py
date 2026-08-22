@@ -15,6 +15,7 @@ import json
 import sys
 from collections import defaultdict
 from pathlib import Path
+from types import SimpleNamespace
 
 _script_dir = Path(__file__).resolve().parent       # code/m7
 _repo_root = _script_dir.parent                     # code/
@@ -300,11 +301,35 @@ def main():
                 ckpt_path = _repo_root / args.checkpoint
         ckpt = torch.load(str(ckpt_path), map_location='cpu', weights_only=False)
         sd = strip_classifier_keys(ckpt.get('reader_state_dict', ckpt))
-        reader = build_reader('attention' if any('belief_state' in k for k in sd)
-                              else 'base', spec, args, device)
-        n_transferred, skipped = transfer_weights(sd, reader)
+        # reader 超参：优先 checkpoint 训练配置（train_rl 保存 training_log=config dict；
+        # m6 类 checkpoint 的 training_log 是逐轮列表、超参在 config 键下，
+        # 键名 n_layers_reader/dropout_reader）；CLI 显式传入的参数
+        # （值 != argparse 默认值）覆盖 checkpoint 配置
+        _tl = ckpt.get('training_log')
+        ckpt_cfg = _tl if isinstance(_tl, dict) else ckpt.get('config') or {}
+        if not isinstance(ckpt_cfg, dict):
+            ckpt_cfg = {}
+        _alt_keys = {'n_layers': 'n_layers_reader', 'dropout': 'dropout_reader'}
+        reader_kind = ckpt_cfg.get('reader_kind') or \
+            ('attention' if any('belief_state' in k for k in sd) else 'base')
+        reader_args = SimpleNamespace(**vars(args))
+        resolved = {}
+        for name in ('hidden_dim', 'n_layers', 'dropout', 'temperature', 'm', 'n_heads'):
+            v = ckpt_cfg.get(name)
+            if v is None:
+                v = ckpt_cfg.get(_alt_keys.get(name))
+            if v is not None and getattr(args, name) == parser.get_default(name):
+                setattr(reader_args, name, v)
+                resolved[name] = v
+        reader = build_reader(reader_kind, spec, reader_args, device)
+        print(f"Reader config: kind={reader_kind}, "
+              f"hidden_dim={reader_args.hidden_dim}, n_layers={reader_args.n_layers}, "
+              f"dropout={reader_args.dropout}, temperature={reader_args.temperature}, "
+              f"m={reader_args.m}, n_heads={reader_args.n_heads} "
+              f"(from checkpoint config: {resolved or 'none'})")
+        n_transferred, n_padded, skipped = transfer_weights(sd, reader)
         print(f"Checkpoint {args.checkpoint}: transferred={n_transferred}, "
-              f"skipped={len(skipped)}")
+              f"padded={n_padded}, skipped={len(skipped)}")
         print(f"Evaluation (argmax={'on' if args.argmax else 'off'})")
         results = evaluate_reader(reader, classifier, builder,
                                   graphs, ds.test_indices[:len(graphs)], labels,
