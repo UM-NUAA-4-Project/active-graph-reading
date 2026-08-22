@@ -199,8 +199,8 @@ def main():
                 'config': {'dataset': spec.name, 'n_classes': spec.n_classes,
                            'node_feat_dim': spec.node_feat_dim,
                            'edge_feat_dim': spec.edge_feat_dim,
-                           'hidden_dim': args.hidden_dim, 'n_layers': args.n_layers,
-                           'dropout': args.dropout}}
+                           'hidden_dim': hidden_dim, 'n_layers': n_layers,
+                           'dropout': dropout}}
         torch.save(ckpt, str(path))
         line = f"Epoch {epoch}/{args.epochs}: loss={loss:.4f}  train_acc={train_acc:.4f}"
         if args.eval_every > 0 and epoch % args.eval_every == 0:

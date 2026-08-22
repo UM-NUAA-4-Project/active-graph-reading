@@ -5,6 +5,10 @@ Loss = mean_i(-R_i · Σ_t log π_t(a_t))，R_i 由目标数据集上界 GIN 分
 belief lockstep（复用 m6/training_utils）。
 
 用法:
+    python code/m7/train_rl.py --dataset cifar10 --root /mnt/data/superpixels --device cuda:0 
+    --reader-kind attention --bootstrap code/m6/attention/bc/reader_belief_epoch5.pt --reward asymmetric 
+    --graphs-per-batch 64 --seeds-per-graph 4 --output-dir m7/checkpoint/rl/attention-bc 
+    --classifier m7\checkpoint\finite\best_cifar10_classifier.pt
   python code/m7/train_rl.py --dataset cifar10 --root D:\\superpixels \
       --reader-kind attention --bootstrap m6/attention/bc/reader_belief_epoch1.pt \
       --classifier m7/checkpoint/cifar10_classifier.pt --device cuda:0
