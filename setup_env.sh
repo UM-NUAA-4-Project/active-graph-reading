@@ -92,7 +92,6 @@ log "conda 根目录: $CONDA_ROOT"
 info "配置 conda 清华源 ..."
 conda config --remove-key channels 2>/dev/null || true  # 先清空，重复执行不产生重复条目
 conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/
-conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/free/
 conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/
 conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/pytorch/
 conda config --set show_channel_urls yes
