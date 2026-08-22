@@ -43,8 +43,16 @@ from training_utils import (
 @torch.no_grad()
 def evaluate_heldout(reader, classifier, builder, graphs, ogb_indices,
                      labels_tensor, device, chunk_size=64,
-                     argmax=False, seed=42):
-    """Cross-graph lockstep held-out eval, per-budget accuracy."""
+                     argmax=False, seed=42, n_seeds=4):
+    """Cross-graph lockstep held-out eval, per-budget accuracy.
+
+    Returns:
+        (results, per_class_outcomes, per_seed_outcomes, per_seed_per_class)：
+        results              — 合并所有 seed 的 acc_*/outcomes；
+        per_class_outcomes   — 合并所有 seed 的逐类别 outcomes；
+        per_seed_outcomes    — {seed_i: {budget: [0/1...]}}；
+        per_seed_per_class   — {seed_i: {budget: {label: [0/1...]}}}。
+    """
     reader.eval()
 
     torch.manual_seed(seed)
@@ -54,15 +62,16 @@ def evaluate_heldout(reader, classifier, builder, graphs, ogb_indices,
     all_subgraphs = []
     all_labels = []
     all_budgets = []
+    all_seed_ids = []
 
     for chunk_start in tqdm(range(0, len(graphs), chunk_size), desc="  Revealing"):
         chunk_end = min(chunk_start + chunk_size, len(graphs))
         chunk_graphs = graphs[chunk_start:chunk_end]
         chunk_indices = ogb_indices[chunk_start:chunk_end]
 
-        # ---- Pass 1: create states (n_graphs × 3 budgets) ----
+        # ---- Pass 1: create states (n_graphs × n_budgets × n_seeds) ----
         all_states = []
-        state_info = []  # (label_tensor, label_int, budget_ratio)
+        state_info = []  # (label_tensor, label_int, budget_ratio, seed_i)
 
         for local_i in range(len(chunk_graphs)):
             g_raw = chunk_graphs[local_i]
@@ -73,11 +82,12 @@ def evaluate_heldout(reader, classifier, builder, graphs, ogb_indices,
 
             for budget_ratio in BUDGET_OPTIONS:
                 B = max(1, int(budget_ratio * n_nodes))
-                seed_node = deterministic_seed(graph_idx, 0, n_nodes)
-                state = GraphState(g_raw, seed_node=seed_node)
-                state._budget_limit = B
-                all_states.append(state)
-                state_info.append((y, label, budget_ratio))
+                for seed_i in range(n_seeds):
+                    seed_node = deterministic_seed(graph_idx, seed_i, n_nodes)
+                    state = GraphState(g_raw, seed_node=seed_node)
+                    state._budget_limit = B
+                    all_states.append(state)
+                    state_info.append((y, label, budget_ratio, seed_i))
 
         n_total = len(all_states)
         active = [True] * n_total
@@ -144,17 +154,22 @@ def evaluate_heldout(reader, classifier, builder, graphs, ogb_indices,
             all_subgraphs.append(sub_g)
             all_labels.append(state_info[j][:2])  # (y, label)
             all_budgets.append(state_info[j][2])   # budget_ratio
+            all_seed_ids.append(state_info[j][3])  # seed_i
 
     # ---- Batch classify ----
     per_budget_correct = defaultdict(int)
     per_budget_total = defaultdict(int)
     per_budget_outcomes = defaultdict(list)
     per_class_outcomes = defaultdict(lambda: defaultdict(list))
+    per_seed_outcomes = {i: defaultdict(list) for i in range(n_seeds)}
+    per_seed_per_class = {i: defaultdict(lambda: defaultdict(list))
+                          for i in range(n_seeds)}
 
     for i in tqdm(range(0, len(all_subgraphs), 512), desc="  Classifying"):
         chunk_sub = all_subgraphs[i:i + 512]
         chunk_labels = all_labels[i:i + 512]
         chunk_budgets = all_budgets[i:i + 512]
+        chunk_seed_ids = all_seed_ids[i:i + 512]
 
         batch_g = dgl.batch(chunk_sub).to(device)
         nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
@@ -162,13 +177,16 @@ def evaluate_heldout(reader, classifier, builder, graphs, ogb_indices,
 
         for j, (y, label) in enumerate(chunk_labels):
             budget = chunk_budgets[j]
+            seed_i = chunk_seed_ids[j]
             correct = 1.0 if logits[j].argmax(dim=-1).item() == label else 0.0
             per_budget_correct[budget] += correct
             per_budget_total[budget] += 1
             per_budget_outcomes[budget].append(correct)
             per_class_outcomes[budget][label].append(correct)
+            per_seed_outcomes[seed_i][budget].append(correct)
+            per_seed_per_class[seed_i][budget][label].append(correct)
 
-    del all_subgraphs, all_labels, all_budgets
+    del all_subgraphs, all_labels, all_budgets, all_seed_ids
 
     results = {}
     for budget in BUDGET_OPTIONS:
@@ -182,7 +200,12 @@ def evaluate_heldout(reader, classifier, builder, graphs, ogb_indices,
     results['n_trajectories'] = total_all
     results['outcomes'] = {b: list(per_budget_outcomes[b]) for b in BUDGET_OPTIONS}
 
-    return results, per_class_outcomes
+    return results, per_class_outcomes, per_seed_outcomes, per_seed_per_class
+
+
+# ---------------------------------------------------------------------------
+# 可视化（风格对齐 code/m5/base/analysis/eval.py，不绘制误差棒）
+# ---------------------------------------------------------------------------
 
 
 def main():
@@ -205,6 +228,8 @@ def main():
                         help='Select argmax node each step (default: sample from distribution)')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for node sampling reproducibility')
+    parser.add_argument('--n-seeds', type=int, default=4,
+                        help='Number of deterministic seeds per graph (default: 4)')
     parser.add_argument('--output-dir', default=str(Path(__file__).resolve().parent / 'eval_results'),
                         help='Directory for eval_heldout_{split}.json')
     args = parser.parse_args()
@@ -280,13 +305,15 @@ def main():
 
         # ---- 3b. run eval ----
         print(f"\n=== Held-out evaluation ({split}) ===")
-        print(f"  Selection: {'argmax' if args.argmax else 'sample'} (seed={args.seed})")
-        results, per_class_outcomes = evaluate_heldout(
-            reader, classifier, builder,
-            eval_graphs, all_indices, eval_labels['labels'],
-            device, chunk_size=args.chunk_size,
-            argmax=args.argmax, seed=args.seed,
-        )
+        print(f"  Selection: {'argmax' if args.argmax else 'sample'} "
+              f"(seed={args.seed}, n_seeds={args.n_seeds})")
+        results, per_class_outcomes, per_seed_outcomes, per_seed_per_class = \
+            evaluate_heldout(
+                reader, classifier, builder,
+                eval_graphs, all_indices, eval_labels['labels'],
+                device, chunk_size=args.chunk_size,
+                argmax=args.argmax, seed=args.seed, n_seeds=args.n_seeds,
+            )
 
         print(f"\n  Graphs evaluated: {results['n_graphs']}")
         print(f"  Trajectories:     {results['n_trajectories']}")
@@ -300,26 +327,48 @@ def main():
               f"({results['acc_overall'] * 100:.2f}%)")
 
         # ---- 3c. save JSON (aligned with m5/base/analysis/eval.py) ----
-        outcomes = results['outcomes']
-        best_stats = {f'{b:.2f}': _budget_stats(outcomes[b]) for b in BUDGET_OPTIONS}
-
+        # 每 seed 一个键 + 'mean'（合并所有 seed 的 outcomes 池）
         all_labels = sorted({lbl for b in BUDGET_OPTIONS for lbl in per_class_outcomes[b]})
-        per_class_best = {
+        per_seed_stats = {}
+        per_seed_class_stats = {}
+        pooled_outcomes = {b: [] for b in BUDGET_OPTIONS}
+        pooled_per_class = {b: defaultdict(list) for b in BUDGET_OPTIONS}
+        for seed_i in range(args.n_seeds):
+            seed_outcomes = per_seed_outcomes[seed_i]
+            per_seed_stats[f's{seed_i}'] = {
+                f'{b:.2f}': _budget_stats(seed_outcomes[b]) for b in BUDGET_OPTIONS
+            }
+            per_seed_class_stats[f's{seed_i}'] = {
+                str(lbl): {
+                    f'{b:.2f}': _budget_stats(
+                        per_seed_per_class[seed_i][b].get(lbl, []))
+                    for b in BUDGET_OPTIONS
+                }
+                for lbl in all_labels
+            }
+            for b in BUDGET_OPTIONS:
+                pooled_outcomes[b] += seed_outcomes[b]
+                for lbl in all_labels:
+                    pooled_per_class[b][lbl] += per_seed_per_class[seed_i][b].get(lbl, [])
+        per_seed_stats['mean'] = {
+            f'{b:.2f}': _budget_stats(pooled_outcomes[b]) for b in BUDGET_OPTIONS
+        }
+        per_seed_class_stats['mean'] = {
             str(lbl): {
-                f'{b:.2f}': _budget_stats(per_class_outcomes[b].get(lbl, []))
+                f'{b:.2f}': _budget_stats(pooled_per_class[b][lbl])
                 for b in BUDGET_OPTIONS
             }
             for lbl in all_labels
         }
 
         json_out = {
-            split: {'learnable': {'best': best_stats}},
-            f'per_class_{split}': {'learnable': {'best': per_class_best}},
+            split: {'learnable': per_seed_stats},
+            f'per_class_{split}': {'learnable': per_seed_class_stats},
             'config': {
                 'classifier': str(_repo_root / args.classifier),
                 'budgets': BUDGET_OPTIONS,
-                'seed_method': "single deterministic seed (seed_i=0, "
-                               "same formula as eval.py's s0/'best')",
+                'n_seeds': args.n_seeds,
+                'seed_method': "deterministic formula (PPA): (idx*31 + seed_i*17 + 7) % n_nodes",
                 'full_graph_ref': {'valid': ckpt.get('val_acc', None), 'test': None},
                 'checkpoint': str(checkpoint_path),
                 'hidden_dim': hidden_dim,

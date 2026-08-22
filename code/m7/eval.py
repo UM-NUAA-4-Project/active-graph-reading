@@ -1,8 +1,9 @@
 """M7 统一评估：reader checkpoint（零样本/微调后）或固定策略（random/bfs）。
 
-预算档位跟随 DatasetSpec.budget_options，seed_i=0 确定性 seed（PPA 协议），
-argmax 选择（默认）；分类器用目标数据集上界 GIN。
-输出 JSON 结构对齐 m6 eval_heldout：{split: {'learnable': {'best': {...}}}}。
+预算档位跟随 DatasetSpec.budget_options，每图 n_seeds 个确定性 seed（PPA 协议，
+--n-seeds 默认 4，输出各 seed 键 + 'mean' 合并），argmax 选择（默认）；
+分类器用目标数据集上界 GIN。
+输出 JSON 结构对齐 m6 eval_heldout：{split: {'learnable': {'s0': {...}, ..., 'mean': {...}}}}。
 
 用法:
   python code/m7/eval.py --dataset cifar10 --strategy random --classifier m7/checkpoint/cifar10_classifier.pt
@@ -66,11 +67,15 @@ def rollout_strategy(agent, state):
 
 
 def evaluate_reader(reader, classifier, builder, graphs, indices, labels,
-                    budget_options, device, argmax=True, chunk_size=32):
+                    budget_options, device, argmax=True, chunk_size=32,
+                    n_seeds=4):
     reader.eval()
     per_budget_correct = defaultdict(int)
     per_budget_total = defaultdict(int)
     per_budget_outcomes = defaultdict(list)
+    per_seed_outcomes = {i: defaultdict(list) for i in range(n_seeds)}
+    per_seed_per_class = {i: defaultdict(lambda: defaultdict(list))
+                          for i in range(n_seeds)}
     use_belief = hasattr(reader, 'init_beliefs')
 
     for chunk_start in tqdm(range(0, len(graphs), chunk_size), desc="  Revealing"):
@@ -83,11 +88,12 @@ def evaluate_reader(reader, classifier, builder, graphs, indices, labels,
             n_nodes = g_raw.num_nodes()
             for budget_ratio in budget_options:
                 B = max(1, int(budget_ratio * n_nodes))
-                seed_node = deterministic_seed(local_i, 0, n_nodes)
-                state = GraphState(g_raw, seed_node=seed_node)
-                state._budget_limit = B
-                all_states.append(state)
-                state_info.append((y, label, budget_ratio))
+                for seed_i in range(n_seeds):
+                    seed_node = deterministic_seed(local_i, seed_i, n_nodes)
+                    state = GraphState(g_raw, seed_node=seed_node)
+                    state._budget_limit = B
+                    all_states.append(state)
+                    state_info.append((y, label, budget_ratio, seed_i))
 
         n_total = len(all_states)
         active = [True] * n_total
@@ -141,12 +147,14 @@ def evaluate_reader(reader, classifier, builder, graphs, indices, labels,
                 if active[j] and all_states[j].get_budget_used() >= all_states[j]._budget_limit:
                     active[j] = False
 
-        all_subgraphs_out, all_labels_out, all_budgets_out = [], [], []
+        all_subgraphs_out, all_labels_out, all_budgets_out, all_seed_ids_out = \
+            [], [], [], []
         for j in range(n_total):
             sub_g, _ = builder.build(all_states[j])
             all_subgraphs_out.append(sub_g)
             all_labels_out.append(state_info[j][:2])
             all_budgets_out.append(state_info[j][2])
+            all_seed_ids_out.append(state_info[j][3])
 
         for i in range(0, len(all_subgraphs_out), 512):
             chunk_sub = all_subgraphs_out[i:i + 512]
@@ -155,10 +163,13 @@ def evaluate_reader(reader, classifier, builder, graphs, indices, labels,
             logits = classifier(batch_g, nids)
             for j, (y, label) in enumerate(all_labels_out[i:i + 512]):
                 budget = all_budgets_out[i + j]
+                seed_i = all_seed_ids_out[i + j]
                 correct = 1.0 if logits[j].argmax(dim=-1).item() == label else 0.0
                 per_budget_correct[budget] += correct
                 per_budget_total[budget] += 1
                 per_budget_outcomes[budget].append(correct)
+                per_seed_outcomes[seed_i][budget].append(correct)
+                per_seed_per_class[seed_i][budget][label].append(correct)
 
     results = {}
     for b in budget_options:
@@ -167,16 +178,28 @@ def evaluate_reader(reader, classifier, builder, graphs, indices, labels,
                               max(sum(per_budget_total.values()), 1))
     results['n_graphs'] = len(graphs)
     results['outcomes'] = {b: list(per_budget_outcomes[b]) for b in budget_options}
+    results['per_seed_outcomes'] = {
+        i: {b: list(per_seed_outcomes[i][b]) for b in budget_options}
+        for i in range(n_seeds)
+    }
+    results['per_seed_per_class'] = {
+        i: {b: {lbl: list(v) for lbl, v in per_seed_per_class[i][b].items()}
+            for b in budget_options}
+        for i in range(n_seeds)
+    }
     return results
 
 
 def evaluate_fixed(strategy_name, classifier, builder, graphs, indices, labels,
-                   budget_options, device, argmax=True):
+                   budget_options, device, argmax=True, n_seeds=4):
     agent = create_fixed_reader(strategy_name)
     per_budget_correct = defaultdict(int)
     per_budget_total = defaultdict(int)
     per_budget_outcomes = defaultdict(list)
-    all_subgraphs, all_labels, all_budgets = [], [], []
+    per_seed_outcomes = {i: defaultdict(list) for i in range(n_seeds)}
+    per_seed_per_class = {i: defaultdict(lambda: defaultdict(list))
+                          for i in range(n_seeds)}
+    all_subgraphs, all_labels, all_budgets, all_seed_ids = [], [], [], []
     for local_i in tqdm(range(len(graphs)), desc="  Rolling"):
         g_raw = graphs[local_i]
         label = int(labels[local_i].item())
@@ -184,24 +207,29 @@ def evaluate_fixed(strategy_name, classifier, builder, graphs, indices, labels,
         n_nodes = g_raw.num_nodes()
         for budget_ratio in budget_options:
             B = max(1, int(budget_ratio * n_nodes))
-            seed_node = deterministic_seed(local_i, 0, n_nodes)
-            state = GraphState(g_raw, seed_node=seed_node)
-            state._budget_limit = B
-            rollout_strategy(agent, state)
-            sub_g, _ = builder.build(state)
-            all_subgraphs.append(sub_g)
-            all_labels.append((y, label))
-            all_budgets.append(budget_ratio)
+            for seed_i in range(n_seeds):
+                seed_node = deterministic_seed(local_i, seed_i, n_nodes)
+                state = GraphState(g_raw, seed_node=seed_node)
+                state._budget_limit = B
+                rollout_strategy(agent, state)
+                sub_g, _ = builder.build(state)
+                all_subgraphs.append(sub_g)
+                all_labels.append((y, label))
+                all_budgets.append(budget_ratio)
+                all_seed_ids.append(seed_i)
     for i in range(0, len(all_subgraphs), 512):
         batch_g = dgl.batch(all_subgraphs[i:i + 512]).to(device)
         nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
         logits = classifier(batch_g, nids)
         for j, (y, label) in enumerate(all_labels[i:i + 512]):
             budget = all_budgets[i + j]
+            seed_i = all_seed_ids[i + j]
             correct = 1.0 if logits[j].argmax(dim=-1).item() == label else 0.0
             per_budget_correct[budget] += correct
             per_budget_total[budget] += 1
             per_budget_outcomes[budget].append(correct)
+            per_seed_outcomes[seed_i][budget].append(correct)
+            per_seed_per_class[seed_i][budget][label].append(correct)
     results = {}
     for b in budget_options:
         results[f'acc_{int(b * 100)}%'] = per_budget_correct[b] / max(per_budget_total[b], 1)
@@ -209,6 +237,15 @@ def evaluate_fixed(strategy_name, classifier, builder, graphs, indices, labels,
                               max(sum(per_budget_total.values()), 1))
     results['n_graphs'] = len(graphs)
     results['outcomes'] = {b: list(per_budget_outcomes[b]) for b in budget_options}
+    results['per_seed_outcomes'] = {
+        i: {b: list(per_seed_outcomes[i][b]) for b in budget_options}
+        for i in range(n_seeds)
+    }
+    results['per_seed_per_class'] = {
+        i: {b: {lbl: list(v) for lbl, v in per_seed_per_class[i][b].items()}
+            for b in budget_options}
+        for i in range(n_seeds)
+    }
     return results
 
 
@@ -219,13 +256,18 @@ def _budget_stats(outcomes):
             'n': len(arr)}
 
 
+# ---------------------------------------------------------------------------
+# 可视化（风格对齐 code/m5/base/analysis/eval.py，不绘制误差棒）
+# ---------------------------------------------------------------------------
+
+
 def main():
     parser = argparse.ArgumentParser(description='M7 统一评估')
     parser.add_argument('--dataset', default='cifar10')
     parser.add_argument('--checkpoint', default='',
                         help='reader checkpoint（相对仓库根目录）；与 --strategy 二选一')
     parser.add_argument('--strategy', default='',
-                        choices=['random', 'bfs', 'max-frontier-degree'],
+                        choices=['random', 'bfs'],
                         help='固定策略名（reader.fixed.registry）')
     parser.add_argument('--classifier', required=True,
                         help='上界 GIN checkpoint（相对 code/ 目录，或绝对路径）')
@@ -234,6 +276,8 @@ def main():
                         help='评估图数限制（0=全部测试集）')
     parser.add_argument('--argmax', action=argparse.BooleanOptionalAction, default=True,
                         help='argmax 选择（默认开启；--no-argmax 改为按分布采样）')
+    parser.add_argument('--n-seeds', type=int, default=4,
+                        help='每图确定性 seed 数（默认 4，取平均）')
     parser.add_argument('--edge-feat-dim', type=int, default=None)
     parser.add_argument('--node-feat-dim', type=int, default=None)
     parser.add_argument('--hidden-dim', type=int, default=128)
@@ -289,7 +333,7 @@ def main():
         print(f"Strategy: {args.strategy}")
         results = evaluate_fixed(args.strategy, classifier, builder,
                                  graphs, ds.test_indices[:len(graphs)], labels,
-                                 budget_options, device, args.argmax)
+                                 budget_options, device, args.argmax, args.n_seeds)
         key = args.strategy
     else:
         ckpt_path = Path(args.checkpoint)
@@ -333,7 +377,8 @@ def main():
         print(f"Evaluation (argmax={'on' if args.argmax else 'off'})")
         results = evaluate_reader(reader, classifier, builder,
                                   graphs, ds.test_indices[:len(graphs)], labels,
-                                  budget_options, device, args.argmax)
+                                  budget_options, device, args.argmax,
+                                  n_seeds=args.n_seeds)
         key = 'learnable'
 
     for b in budget_options:
@@ -341,15 +386,52 @@ def main():
     print(f"  Overall: {results['acc_overall']:.4f}")
 
     outcomes = results['outcomes']
+    per_seed_stats = {
+        f's{seed_i}': {f'{b:.2f}': _budget_stats(per_seed[b])
+                       for b in budget_options}
+        for seed_i, per_seed in results['per_seed_outcomes'].items()
+    }
+    pooled = {b: [] for b in budget_options}
+    for seed_i, per_seed in results['per_seed_outcomes'].items():
+        for b in budget_options:
+            pooled[b] += per_seed[b]
+    per_seed_stats['mean'] = {
+        f'{b:.2f}': _budget_stats(pooled[b]) for b in budget_options
+    }
+    # per-class：每 seed 一个 + 'mean'（合并池）
+    all_labels = sorted({lbl for i in results['per_seed_per_class']
+                         for b in budget_options
+                         for lbl in results['per_seed_per_class'][i][b]})
+    per_seed_class_stats = {
+        f's{seed_i}': {
+            str(lbl): {f'{b:.2f}': _budget_stats(
+                results['per_seed_per_class'][seed_i][b].get(lbl, []))
+                for b in budget_options}
+            for lbl in all_labels
+        }
+        for seed_i in range(args.n_seeds)
+    }
+    pooled_per_class = {b: defaultdict(list) for b in budget_options}
+    for seed_i in range(args.n_seeds):
+        for b in budget_options:
+            for lbl in all_labels:
+                pooled_per_class[b][lbl] += \
+                    results['per_seed_per_class'][seed_i][b].get(lbl, [])
+    per_seed_class_stats['mean'] = {
+        str(lbl): {f'{b:.2f}': _budget_stats(pooled_per_class[b][lbl])
+                   for b in budget_options}
+        for lbl in all_labels
+    }
     json_out = {
-        split: {key: {'best': {f'{b:.2f}': _budget_stats(outcomes[b])
-                               for b in budget_options}}},
+        split: {key: per_seed_stats},
+        f'per_class_{split}': {key: per_seed_class_stats},
         'config': {
             'dataset': spec.name,
             'strategy_or_checkpoint': args.strategy or args.checkpoint,
             'classifier': str(clf_path),
             'budgets': list(budget_options),
             'n_graphs': results['n_graphs'],
+            'n_seeds': args.n_seeds,
             'argmax': args.argmax,
         },
     }

@@ -177,10 +177,10 @@ def test_eval_learnable_batched():
     labels[10] = 0
     labels[20] = 1
 
-    results = {'best': defaultdict(list), 'worst': defaultdict(list)}
+    results = {'s0': defaultdict(list), 's1': defaultdict(list)}
     per_class = {
-        'best': defaultdict(lambda: defaultdict(list)),
-        'worst': defaultdict(lambda: defaultdict(list)),
+        's0': defaultdict(lambda: defaultdict(list)),
+        's1': defaultdict(lambda: defaultdict(list)),
     }
 
     reader = MockReader()
@@ -190,16 +190,17 @@ def test_eval_learnable_batched():
     agg, _ = _EVAL._evaluate_learnable_batched(
         reader, graphs, labels, indices, classifier, torch.device('cpu'),
         'smoke', budgets_rel_sorted, results, per_class, chunk_size=2,
+        n_seeds=2,
     )
 
     # (a) all budgets present for both seed types
-    for kind in ('best', 'worst'):
+    for kind in ('s0', 's1'):
         for b in budgets_rel_sorted:
             assert b in agg[kind] and len(agg[kind][b]) > 0, (
                 f"missing results: {kind}/{b}"
             )
     # 2 graphs × 2 seeds → each (kind,budget) has 2 entries
-    for kind in ('best', 'worst'):
+    for kind in ('s0', 's1'):
         for b in budgets_rel_sorted:
             assert len(agg[kind][b]) == 2, (
                 f"expected 2 entries for {kind}/{b}, got {len(agg[kind][b])}"

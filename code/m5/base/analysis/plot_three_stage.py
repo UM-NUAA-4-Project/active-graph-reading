@@ -1,8 +1,8 @@
 """Fixed (Random/BFS) vs BC vs RL 三阶段验证准确率对比图。
 
-读取三份 eval JSON，绘制 2x2 分组柱状图：
-  行 = seed 起点 (best / worst)，列 = 划分 (valid / test)
-  x 轴 = 预算比例 (5% / 10% / 15%)，每组 4 柱 = Random / BFS / BC / RL
+读取三份 eval JSON，绘制 1x2 分组柱状图（画跨 seed 平均 'mean'）：
+  列 = 划分 (valid / test)，x 轴 = 预算比例 (5% / 10% / 15%)，
+  每组 4 柱 = Random / BFS / BC / RL
 输出 SVG/PDF/PNG + 源数据 CSV 到 ./three_stage_compare/
 """
 import json
@@ -25,7 +25,7 @@ RL_JSON = HERE.parent / 'rl' / 'asymmetric' / 'ex2' / 'analysis' / 'eval_learnab
 BUDGETS = [0.05, 0.10, 0.15]
 BUDGET_LABELS = ['5%', '10%', '15%']
 SPLITS = ['valid', 'test']
-SEEDS = ['best', 'worst']
+SEEDS = ['mean']
 
 # 测试集全图上界（eval JSON 的 config 中未存，2026-08-15 补充）
 REF_TEST_DEFAULT = 0.6560
@@ -92,13 +92,12 @@ def build_figure(stats, ref_valid=None, ref_test=None):
     w = 0.8 / n_stages
     x = np.arange(len(BUDGETS))
 
-    fig, axes = plt.subplots(2, 2, figsize=(7.2, 4.6), sharey='all')
+    fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.0), sharey='all')
+    axes = np.atleast_2d(axes)
 
     panel_titles = {
-        (0, 0): 'Validation — best seed',
-        (0, 1): 'Test — best seed',
-        (1, 0): 'Validation — worst seed',
-        (1, 1): 'Test — worst seed',
+        (0, 0): 'Validation — mean of seeds',
+        (0, 1): 'Test — mean of seeds',
     }
 
     for ri, seed in enumerate(SEEDS):
@@ -107,11 +106,9 @@ def build_figure(stats, ref_valid=None, ref_test=None):
             for si, (name, _p, _s, color) in enumerate(STAGES):
                 cells = stats[name][split][seed]
                 means = [cells[b][0] for b in BUDGETS]
-                sems = [cells[b][1] for b in BUDGETS]
                 offset = (si - (n_stages - 1) / 2) * w
-                ax.bar(x + offset, means, w, yerr=sems,
-                       color=color, edgecolor='white', linewidth=0.4,
-                       error_kw={'elinewidth': 0.8, 'capthick': 0.8, 'capsize': 2})
+                ax.bar(x + offset, means, w,
+                       color=color, edgecolor='white', linewidth=0.4)
                 for bx, m in zip(x + offset, means):
                     ax.text(bx, m + 0.012, f'{m:.2f}', ha='center', va='bottom',
                             fontsize=5.2, color='#4D4D4D')
@@ -142,11 +139,11 @@ def build_figure(stats, ref_valid=None, ref_test=None):
 
             if ci == 0:
                 ax.set_ylabel('Accuracy')
-            if ri == 1:
+            if ri == len(SEEDS) - 1:
                 ax.set_xlabel('Budget ratio')
             ax.set_title(panel_titles[(ri, ci)], fontsize=7, pad=4)
 
-            letter = 'abcd'[ri * 2 + ci]
+            letter = 'ab'[ri * 2 + ci]
             ax.text(-0.09, 1.04, letter, transform=ax.transAxes,
                     fontsize=8, fontweight='bold', va='bottom', ha='left')
 
@@ -156,7 +153,7 @@ def build_figure(stats, ref_valid=None, ref_test=None):
                bbox_to_anchor=(0.5, 0.995), fontsize=7,
                handlelength=1.2, handleheight=1.0, columnspacing=1.2)
 
-    note = 'Error bars: s.e.m. across graphs (n = 45,100 validation / 34,800 test)'
+    note = 'Mean over deterministic seeds (n = 90,200 validation / 69,600 test)'
     if ref_valid is not None and ref_test is not None:
         note += (f'; dashed lines: full-graph accuracy '
                  f'({ref_valid:.3f} validation / {ref_test:.3f} test)')

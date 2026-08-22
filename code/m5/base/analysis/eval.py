@@ -49,7 +49,6 @@ from training_utils import patch_old_checkpoint
 BUDGETS_REL = [0.05, 0.10, 0.15]
 FIXED_STRATEGIES = ['random', 'bfs']
 ALL_STRATEGIES = FIXED_STRATEGIES + ['learnable']
-STRATEGY_COLORS = {'random': '#999999', 'bfs': '#55A868', 'learnable': '#4C72B0'}
 
 
 # ---------------------------------------------------------------------------
@@ -69,10 +68,8 @@ def compute_budget(n_nodes: int, ratio: float) -> int:
     return max(1, int(ratio * n_nodes))
 
 
-def pick_seeds_deterministic(graph_idx: int, n_nodes: int) -> Tuple[int, int]:
-    s0 = (graph_idx * 31 + 0 * 17 + 7) % n_nodes
-    s1 = (graph_idx * 31 + 1 * 17 + 7) % n_nodes
-    return s0, s1
+def pick_seed_deterministic(graph_idx: int, seed_i: int, n_nodes: int) -> int:
+    return (graph_idx * 31 + seed_i * 17 + 7) % n_nodes
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +129,7 @@ def _evaluate_learnable_batched(
     per_class: Dict,
     chunk_size: int = 32,
     argmax: bool = False,
+    n_seeds: int = 4,
 ):
     """Lockstep batched evaluation: Reader GNN + Classifier both batched.
 
@@ -155,9 +153,9 @@ def _evaluate_learnable_batched(
             n_nodes = g.num_nodes()
             budgets_abs = [compute_budget(n_nodes, r) for r in budgets_rel_sorted]
 
-            s0, s1 = pick_seeds_deterministic(ogb_idx, n_nodes)
-
-            for seed_type, seed_node in [('best', s0), ('worst', s1)]:
+            for seed_i in range(n_seeds):
+                seed_node = pick_seed_deterministic(ogb_idx, seed_i, n_nodes)
+                seed_type = f's{seed_i}'
                 state = GraphState(g, seed_node=seed_node)
                 state._budget_limit = max(budgets_abs)
                 state_infos.append({
@@ -243,12 +241,12 @@ def _evaluate_learnable_batched(
         pbar.set_postfix(postfix)
 
     aggregated = {
-        'best': dict(results['best']),
-        'worst': dict(results['worst']),
+        's0': dict(results['s0']),
+        's1': dict(results['s1']),
     }
     per_class_clean = {
-        'best': {cls: dict(budgets) for cls, budgets in per_class['best'].items()},
-        'worst': {cls: dict(budgets) for cls, budgets in per_class['worst'].items()},
+        's0': {cls: dict(budgets) for cls, budgets in per_class['s0'].items()},
+        's1': {cls: dict(budgets) for cls, budgets in per_class['s1'].items()},
     }
     return aggregated, per_class_clean
 
@@ -264,17 +262,17 @@ def evaluate_strategy_split(
     device: torch.device,
     desc: str = "Evaluating",
     argmax: bool = False,
+    n_seeds: int = 4,
 ):
     builder = SubgraphBuilder()
     budgets_rel_sorted = sorted(BUDGETS_REL)
 
     results: Dict[str, Dict[float, List[float]]] = {
-        'best': defaultdict(list),
-        'worst': defaultdict(list),
+        f's{seed_i}': defaultdict(list) for seed_i in range(n_seeds)
     }
     per_class: Dict[str, Dict[int, Dict[float, List[float]]]] = {
-        'best': defaultdict(lambda: defaultdict(list)),
-        'worst': defaultdict(lambda: defaultdict(list)),
+        f's{seed_i}': defaultdict(lambda: defaultdict(list))
+        for seed_i in range(n_seeds)
     }
 
     # --- learnable: full lockstep batching (Reader GNN + Classifier) ---
@@ -282,7 +280,7 @@ def evaluate_strategy_split(
         return _evaluate_learnable_batched(
             reader, graphs, labels_tensor, indices, classifier, device, desc,
             budgets_rel_sorted, results, per_class,
-            argmax=argmax,
+            argmax=argmax, n_seeds=n_seeds,
         )
 
     # --- fixed strategies (random / bfs): collect subgraphs, batch classify ---
@@ -294,9 +292,9 @@ def evaluate_strategy_split(
         n_nodes = g_raw.num_nodes()
         budgets_abs = [compute_budget(n_nodes, r) for r in budgets_rel_sorted]
 
-        s0, s1 = pick_seeds_deterministic(ogb_idx, n_nodes)
-
-        for seed_type, seed_node in [('best', s0), ('worst', s1)]:
+        for seed_i in range(n_seeds):
+            seed_node = pick_seed_deterministic(ogb_idx, seed_i, n_nodes)
+            seed_type = f's{seed_i}'
             collected = run_one_seed_collect(
                 reader, g_raw, seed_node, label, builder,
                 budgets_rel_sorted, budgets_abs,
@@ -330,12 +328,12 @@ def evaluate_strategy_split(
         pbar.set_postfix(postfix)
 
     aggregated = {
-        'best': dict(results['best']),
-        'worst': dict(results['worst']),
+        's0': dict(results['s0']),
+        's1': dict(results['s1']),
     }
     per_class_clean = {
-        'best': {cls: dict(budgets) for cls, budgets in per_class['best'].items()},
-        'worst': {cls: dict(budgets) for cls, budgets in per_class['worst'].items()},
+        's0': {cls: dict(budgets) for cls, budgets in per_class['s0'].items()},
+        's1': {cls: dict(budgets) for cls, budgets in per_class['s1'].items()},
     }
     return aggregated, per_class_clean
 
@@ -353,7 +351,8 @@ def compute_stats(
         if strategy not in split_results:
             continue
         stats[strategy] = {}
-        for kind in ('best', 'worst'):
+        seed_kinds = [k for k in split_results[strategy] if k.startswith('s')]
+        for kind in seed_kinds:
             stats[strategy][kind] = {}
             for rel_b in sorted(BUDGETS_REL):
                 accs = split_results[strategy].get(kind, {}).get(rel_b, [])
@@ -362,6 +361,17 @@ def compute_stats(
                     'std': float(np.std(accs)) if accs else 0.0,
                     'n': len(accs),
                 }
+        # 'mean'：合并所有 seed 的 outcomes 池（含 seed 间波动）
+        stats[strategy]['mean'] = {}
+        for rel_b in sorted(BUDGETS_REL):
+            accs = []
+            for kind in seed_kinds:
+                accs += split_results[strategy].get(kind, {}).get(rel_b, [])
+            stats[strategy]['mean'][f'{rel_b:.2f}'] = {
+                'mean': float(np.mean(accs)) if accs else 0.0,
+                'std': float(np.std(accs)) if accs else 0.0,
+                'n': len(accs),
+            }
     return stats
 
 
@@ -371,6 +381,7 @@ def compute_per_class_stats(
     stats = {}
     for strategy, seed_dict in per_class_results.items():
         stats[strategy] = {}
+        seed_kinds = [k for k in seed_dict if k.startswith('s')]
         for seed_type, class_dict in seed_dict.items():
             stats[strategy][seed_type] = {}
             for cls, budget_dict in class_dict.items():
@@ -383,147 +394,48 @@ def compute_per_class_stats(
                         'std': float(np.std(accs)) if accs else 0.0,
                         'n': len(accs),
                     }
+        # 'mean'：合并所有 seed 的逐类别 outcomes 池
+        stats[strategy]['mean'] = {}
+        all_cls = sorted({c for kind in seed_kinds
+                          for c in seed_dict.get(kind, {})}, key=int)
+        for cls in all_cls:
+            cls_str = str(cls)
+            stats[strategy]['mean'][cls_str] = {}
+            for rel_b in sorted(BUDGETS_REL):
+                accs = []
+                for kind in seed_kinds:
+                    accs += seed_dict.get(kind, {}).get(cls, {}).get(rel_b, [])
+                stats[strategy]['mean'][cls_str][f'{rel_b:.2f}'] = {
+                    'mean': float(np.mean(accs)) if accs else 0.0,
+                    'std': float(np.std(accs)) if accs else 0.0,
+                    'n': len(accs),
+                }
     return stats
 
 
-def plot_per_class(
-    per_class_stats: Dict[str, Dict[str, Dict[str, Dict[str, float]]]],
-    split_name: str,
-    output_dir: Path,
-):
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-
-    budgets = sorted(BUDGETS_REL)
-    budget_labels = [f'{b:.0%}' for b in budgets]
-
-    for strategy, seed_dict in per_class_stats.items():
-        for seed_type, class_dict in seed_dict.items():
-            if not class_dict:
-                continue
-            classes = sorted(class_dict.keys(), key=lambda x: int(x))
-            n_classes = len(classes)
-            fig, ax = plt.subplots(figsize=(max(14, n_classes * 0.35), 6))
-
-            x = np.arange(n_classes)
-            n_budgets = len(budgets)
-            width = 0.8 / n_budgets
-            offsets = np.linspace(-0.4 + width / 2, 0.4 - width / 2, n_budgets)
-            colors = ['#4C72B0', '#55A868', '#C44E52']
-
-            for bi, rel_b in enumerate(budgets):
-                b_key = f'{rel_b:.2f}'
-                means = [class_dict[cls][b_key]['mean'] for cls in classes]
-                stds = [class_dict[cls][b_key]['std'] for cls in classes]
-                ax.bar(
-                    x + offsets[bi], means, width, yerr=stds,
-                    label=f'budget={rel_b:.0%}', capsize=2,
-                    color=colors[bi % len(colors)],
-                )
-
-            ax.set_title(f'{split_name} — {strategy} / {seed_type} seed (per-class)')
-            ax.set_xlabel('Class')
-            ax.set_ylabel('Accuracy')
-            ax.set_xticks(x)
-            ax.set_xticklabels(classes, rotation=90, fontsize=5)
-            ax.legend(fontsize=7)
-            ax.grid(axis='y', alpha=0.3)
-
-            fig.tight_layout()
-            fname = f'per_class_{split_name}_{strategy}_{seed_type}.png'
-            fig.savefig(output_dir / fname, dpi=150)
-            plt.close(fig)
-            print(f"Per-class plot saved to {output_dir / fname}")
-
-
-def plot_results(
-    valid_stats: Dict[str, Dict[str, Dict[str, float]]],
-    test_stats: Dict[str, Dict[str, Dict[str, float]]],
-    output_path: str,
-    ref_valid: float = None,
-    ref_test: float = None,
-):
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-
-    # 聚合所有出现的策略
-    all_strats = set()
-    for s in (valid_stats, test_stats):
-        all_strats.update(s.keys())
-    strategies_to_plot = [s for s in ALL_STRATEGIES if s in all_strats]
-
-    budgets = sorted(BUDGETS_REL)
-    budget_labels = [f'{b:.0%}' for b in budgets]
-    x = np.arange(len(budgets))
-    n_strategies = len(strategies_to_plot)
-    width = 0.8 / n_strategies if n_strategies > 0 else 0.8
-    offsets = np.linspace(-0.4 + width / 2, 0.4 - width / 2, n_strategies) if n_strategies > 0 else [0]
-
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12), sharey='row')
-    seed_types = ['best', 'worst']
-    split_names = ['valid', 'test']
-
-    for row, seed_type in enumerate(seed_types):
-        for col, split_name in enumerate(split_names):
-            ax = axes[row][col]
-            stats = valid_stats if split_name == 'valid' else test_stats
-
-            for si, strategy in enumerate(strategies_to_plot):
-                if strategy not in stats:
-                    continue
-                seed_stats = stats[strategy].get(seed_type, {})
-                means = [seed_stats.get(f'{b:.2f}', {}).get('mean', 0.0) for b in budgets]
-                stds = [seed_stats.get(f'{b:.2f}', {}).get('std', 0.0) for b in budgets]
-                color = STRATEGY_COLORS.get(strategy, '#999999')
-                label = strategy if split_name == 'valid' else None
-
-                bars = ax.bar(
-                    x + offsets[si], means, width, yerr=stds,
-                    label=label, capsize=4, color=color,
-                )
-                for bar, mean in zip(bars, means):
-                    ax.text(
-                        bar.get_x() + bar.get_width() / 2,
-                        bar.get_height() + 0.005,
-                        f'{mean:.4f}', ha='center', va='bottom', fontsize=6,
-                    )
-
-            ax.set_title(f'{split_name.capitalize()} — {seed_type.capitalize()} Seed')
-            ax.set_xlabel('Budget Ratio')
-            ax.set_ylabel('Accuracy')
-            ax.set_xticks(x)
-            ax.set_xticklabels(budget_labels)
-            ax.legend(fontsize=8)
-            ax.grid(axis='y', alpha=0.3)
-
-            ref = ref_valid if split_name == 'valid' else ref_test
-            if ref is not None:
-                ref_frac = ref / 100 if ref > 1 else ref
-                ref_pct = ref if ref > 1 else ref * 100
-                ax.axhline(y=ref_frac, color='red', linestyle='--', linewidth=1.2,
-                           label=f'Full-graph ({ref_pct:.2f}%)')
-                ax.legend(fontsize=8)
-
-    plt.suptitle('LearnableReader vs Random / BFS (best/worst seed by degree)',
-                 fontsize=14)
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150)
-    plt.close()
-    print(f"Plot saved to {output_path}")
 
 
 # ---------------------------------------------------------------------------
 # load cached fixed-strategy results
 # ---------------------------------------------------------------------------
 
+_SEED_KEY_RENAME = {'best': 's0', 'worst': 's1'}
+
+
 def load_fixed_results(output_dir: Path) -> Optional[Dict]:
     """加载已有的 fixed 策略结果（如果存在）。"""
     fixed_path = output_dir / 'eval_fixed.json'
     if fixed_path.exists():
         with open(fixed_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+        # 旧缓存（best/worst 键）映射到 s0/s1（确定性公式种子）
+        for split_name in ('valid', 'test'):
+            if split_name in data:
+                data[split_name] = {
+                    s: {_SEED_KEY_RENAME.get(k, k): v for k, v in strat.items()}
+                    for s, strat in data[split_name].items()
+                }
+        return data
     return None
 
 
@@ -555,6 +467,8 @@ def main():
                         help='Random seed (fixed strategies and learnable sampling)')
     parser.add_argument('--argmax', action='store_true',
                         help='Select argmax node each step (default: sample from distribution)')
+    parser.add_argument('--n-seeds', type=int, default=4,
+                        help='Number of deterministic seeds per graph (default: 4)')
     parser.add_argument('--ref-valid', type=float, default=None,
                         help='Full-graph classifier valid accuracy '
                              '(auto-read from checkpoint if omitted)')
@@ -674,7 +588,7 @@ def main():
                 reader, strategy_name, graphs, label_dict['labels'], split_indices,
                 classifier, device,
                 desc=f"  {split_name.capitalize()} / {strategy_name}",
-                argmax=args.argmax,
+                argmax=args.argmax, n_seeds=args.n_seeds,
             )
             all_stats[split_name][strategy_name] = aggregated
             all_per_class[split_name][strategy_name] = per_class
@@ -719,7 +633,8 @@ def main():
     base_config = {
         'classifier': str(repo_root / args.classifier),
         'budgets': BUDGETS_REL,
-        'seed_method': 'max-degree (best) / min-degree (worst)',
+        'n_seeds': args.n_seeds,
+        'seed_method': 'deterministic formula (PPA): (idx*31 + seed_i*17 + 7) % n_nodes',
         'full_graph_ref': {
             'valid': ref_valid,
             'test': ref_test,
@@ -788,29 +703,6 @@ def main():
         with open(learnable_path, 'w', encoding='utf-8') as f:
             json.dump(learnable_json, f, indent=2, ensure_ascii=False)
         print(f"Learnable JSON saved to {learnable_path}")
-
-    # ---- 7. 可视化（合并 fixed + learnable） ----
-    plot_path = output_dir / 'eval_plot.png'
-    plot_results(
-        merged_final_stats.get('valid', {}),
-        merged_final_stats.get('test', {}),
-        str(plot_path),
-        ref_valid=ref_valid,
-        ref_test=ref_test,
-    )
-
-    # per-class plots（合并所有策略）
-    merged_per_class = {}
-    for split_name in ('valid', 'test'):
-        merged_per_class[split_name] = {}
-        for s in ALL_STRATEGIES:
-            split_data = final_per_class_stats.get(split_name, {})
-            if s in split_data:
-                merged_per_class[split_name][s] = split_data[s]
-
-    for split_name in ('valid', 'test'):
-        if merged_per_class.get(split_name):
-            plot_per_class(merged_per_class[split_name], split_name, output_dir)
 
 
 if __name__ == '__main__':

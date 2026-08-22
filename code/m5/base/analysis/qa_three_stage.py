@@ -89,7 +89,7 @@ def check_text_overlaps(fig, axes):
 
 def check_structure(fig, axes, ref_valid, ref_test):
     print('== structure check ==')
-    assert axes.shape == (2, 2)
+    assert axes.shape == (1, 2)
     for ax in axes.flat:
         n_bars = len(ax.patches)
         assert n_bars == len(STAGES) * len(BUDGETS), n_bars
@@ -104,7 +104,7 @@ def check_structure(fig, axes, ref_valid, ref_test):
             assert n_ref == expect, (split, seed, n_ref, expect)
     assert len(fig.legends) == 1
     assert len(fig.legends[0].get_texts()) == len(STAGES)
-    print(f'  2x2 grid, {len(STAGES)*len(BUDGETS)} bars/panel, shared ylim (0.10, 0.70). OK')
+    print(f'  1x2 grid, {len(STAGES)*len(BUDGETS)} bars/panel, shared ylim (0.10, 0.70). OK')
     print(f'  dashed full-graph ref in all panels (valid={ref_valid:.4f}, test={ref_test:.4f}). OK')
     print(f'  legend entries: {[t.get_text() for t in fig.legends[0].get_texts()]}')
 

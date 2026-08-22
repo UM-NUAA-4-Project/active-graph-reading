@@ -39,11 +39,10 @@ BUDGETS_REL = [0.05, 0.10, 0.15]
 CHUNK_SIZE = 32
 
 
-def pick_seeds_by_degree(g):
-    indeg = g.in_degrees().float()
-    outdeg = g.out_degrees().float()
-    total_deg = indeg + outdeg
-    return int(total_deg.argmax().item()), int(total_deg.argmin().item())
+def pick_seeds_deterministic(graph_idx: int, n_nodes: int):
+    s0 = (graph_idx * 31 + 0 * 17 + 7) % n_nodes
+    s1 = (graph_idx * 31 + 1 * 17 + 7) % n_nodes
+    return s0, s1
 
 
 def remove_self_loops(g):
@@ -71,12 +70,12 @@ def evaluate(reader, classifier, graphs, ogb_indices, labels, device):
     builder = SubgraphBuilder()
 
     results: Dict[str, Dict[float, List[float]]] = {
-        'best': defaultdict(list),
-        'worst': defaultdict(list),
+        's0': defaultdict(list),
+        's1': defaultdict(list),
     }
     per_class: Dict[str, Dict[int, Dict[float, List[float]]]] = {
-        'best': defaultdict(lambda: defaultdict(list)),
-        'worst': defaultdict(lambda: defaultdict(list)),
+        's0': defaultdict(lambda: defaultdict(list)),
+        's1': defaultdict(lambda: defaultdict(list)),
     }
     classify_queue: List[Tuple[dgl.DGLGraph, int, str, float]] = []
 
@@ -94,9 +93,9 @@ def evaluate(reader, classifier, graphs, ogb_indices, labels, device):
             n_nodes = g.num_nodes()
             budgets_abs = [compute_budget(n_nodes, r) for r in budgets_rel_sorted]
 
-            best_seed, worst_seed = pick_seeds_by_degree(g)
+            s0, s1 = pick_seeds_deterministic(ogb_idx, n_nodes)
 
-            for seed_type, seed_node in [('best', best_seed), ('worst', worst_seed)]:
+            for seed_type, seed_node in [('s0', s0), ('s1', s1)]:
                 state = GraphState(g, seed_node=seed_node)
                 state._budget_limit = max(budgets_abs)
                 state_infos.append({
@@ -171,7 +170,7 @@ def compute_stats(
 ) -> Dict[str, Dict[str, float]]:
     """将原始正确性列表汇总为 mean/std/n。"""
     stats: Dict[str, Dict[str, float]] = {}
-    for kind in ('best', 'worst'):
+    for kind in ('s0', 's1'):
         stats[kind] = {}
         for rel_b in sorted(BUDGETS_REL):
             accs = split_results.get(kind, {}).get(rel_b, [])
@@ -270,7 +269,7 @@ def main():
     print("\n=== Results (no self-loop) ===")
     total_correct = 0
     total_n = 0
-    for kind in ('best', 'worst'):
+    for kind in ('s0', 's1'):
         for b_key, s in stats[kind].items():
             print(f"  {kind:5s} budget={b_key}: "
                   f"mean={s['mean']:.4f}, std={s['std']:.4f} (n={s['n']})")
@@ -286,7 +285,7 @@ def main():
             'classifier': str(repo_root / args.classifier),
             'checkpoint': str(repo_root / args.checkpoint),
             'budgets': BUDGETS_REL,
-            'seed_method': 'max-degree (best) / min-degree (worst)',
+            'seed_method': 'deterministic formula (PPA): (idx*31 + seed_i*17 + 7) % n_nodes',
             'mode': 'no_self_loop',
             'seed': args.seed,
         },
