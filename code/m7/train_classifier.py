@@ -5,6 +5,11 @@ GINEEncoder 通过 node_feat_dim 支持节点特征（如 CIFAR10 的 5 维）�
 数据集不划分验证集（DGL 官方仅 train/test），checkpoint 每轮覆盖、
 最后一轮为最终产物，评估统一走 code/m7/eval.py 的 test 划分。
 
+每 epoch 统计全量训练集准确率；--eval-every N 每 N 轮在 test 集评估，
+保留该轮 checkpoint（eval_epoch{N}.pt）并按 test 准确率维护最佳
+checkpoint（best_<dataset>_classifier.pt）。输出目录同时写
+config.json（完整参数）与 history.json（每轮 loss/acc + 最佳记录）。
+
 用法:
     python code/m7/train_classifier.py --dataset cifar10 --root /mnt/data/superpixels 
     --device cuda:0 --batch-size 128 --epochs 100 --lr 0.001 --hidden-dim 256
@@ -14,6 +19,8 @@ GINEEncoder 通过 node_feat_dim 支持节点特征（如 CIFAR10 的 5 维）�
 """
 
 import argparse
+import datetime
+import json
 import random
 import sys
 from pathlib import Path
@@ -86,7 +93,9 @@ def main():
     parser.add_argument('--dropout', type=float, default=0.5)
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--max-graphs', type=int, default=0,
-                        help='限制训练图数（0=全部）')
+                        help='限制训练/评估图数（0=全部）')
+    parser.add_argument('--eval-every', type=int, default=5,
+                        help='每 N 轮在 test 集评估并保留该轮 checkpoint（0=不评估）')
     parser.add_argument('--output-dir', default='m7/checkpoint')
     args = parser.parse_args()
 
@@ -99,8 +108,12 @@ def main():
           f"node_feat_dim={spec.node_feat_dim}, edge_feat_dim={spec.edge_feat_dim}")
 
     train_graphs = ds.train_graphs
+    test_graphs = ds.test_graphs
     if args.max_graphs > 0:
         train_graphs = train_graphs[:args.max_graphs]
+        test_graphs = test_graphs[:args.max_graphs]
+    train_labels = ds.train_labels[:len(train_graphs)]
+    test_labels = ds.test_labels[:len(test_graphs)]
     print(f"Train graphs: {len(train_graphs)} (数据集不划分验证集)")
 
     clf = GraphClassifier(
@@ -116,16 +129,34 @@ def main():
     optimizer = optim.Adam(clf.parameters(), lr=args.lr)
     out_dir = _repo_root / args.output_dir
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f'{spec.name}_classifier.pt'
-    # 无验证集：每轮训练集前 500 图打印参考 acc 供观察收敛，checkpoint 每轮覆盖
-    # （最后一轮即最终 checkpoint）
-    ref_graphs = train_graphs[:500]
-    ref_labels = ds.train_labels[:len(ref_graphs)]
+    base_name = f'{spec.name}_classifier'
+    path = out_dir / f'{base_name}.pt'
+    best_path = out_dir / f'best_{base_name}.pt'
+
+    # config.json：完整训练参数快照，训练开始即写
+    config = {'args': vars(args),
+              'dataset_spec': {'name': spec.name, 'n_classes': spec.n_classes,
+                               'node_feat_dim': spec.node_feat_dim,
+                               'edge_feat_dim': spec.edge_feat_dim,
+                               'needs_self_loop': spec.needs_self_loop,
+                               'budget_options': spec.budget_options},
+              'device': str(device),
+              'started_at': datetime.datetime.now().isoformat(timespec='seconds')}
+    with open(out_dir / 'config.json', 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+
+    history = {'dataset': spec.name, 'epochs': []}
+    best_acc = -1.0
+    best_epoch = None
+    # 无验证集：每轮统计全量训练集 acc 观察收敛，checkpoint 每轮覆盖
+    # （最后一轮即最终 checkpoint）；--eval-every 在 test 集评估并保留该轮
     for epoch in range(1, args.epochs + 1):
-        loss = train_one_epoch(clf, optimizer, train_graphs,
-                               ds.train_labels[:len(train_graphs)],
+        loss = train_one_epoch(clf, optimizer, train_graphs, train_labels,
                                args.batch_size, device)
-        ref_acc = evaluate(clf, ref_graphs, ref_labels, args.batch_size, device)
+        train_acc = evaluate(clf, train_graphs, train_labels, args.batch_size, device)
+        rec = {'epoch': epoch, 'loss': round(loss, 6),
+               'train_acc': round(train_acc, 6), 'test_acc': None,
+               'eval_checkpoint': None}
         ckpt = {'model_state_dict': clf.state_dict(),
                 'config': {'dataset': spec.name, 'n_classes': spec.n_classes,
                            'node_feat_dim': spec.node_feat_dim,
@@ -133,9 +164,34 @@ def main():
                            'hidden_dim': args.hidden_dim, 'n_layers': args.n_layers,
                            'dropout': args.dropout}}
         torch.save(ckpt, str(path))
-        print(f"Epoch {epoch}/{args.epochs}: loss={loss:.4f}  "
-              f"train_ref_acc={ref_acc:.4f}  saved → {path}")
+        line = f"Epoch {epoch}/{args.epochs}: loss={loss:.4f}  train_acc={train_acc:.4f}"
+        if args.eval_every > 0 and epoch % args.eval_every == 0:
+            test_acc = evaluate(clf, test_graphs, test_labels,
+                                args.batch_size, device)
+            rec['test_acc'] = round(test_acc, 6)
+            eval_path = out_dir / f'eval_epoch{epoch}.pt'
+            ckpt['epoch'] = epoch
+            ckpt['train_acc'] = round(train_acc, 6)
+            ckpt['test_acc'] = round(test_acc, 6)
+            torch.save(ckpt, str(eval_path))
+            rec['eval_checkpoint'] = eval_path.name
+            if test_acc > best_acc:
+                best_acc = test_acc
+                best_epoch = epoch
+                torch.save(ckpt, str(best_path))
+            line += (f"  test_acc={test_acc:.4f}  "
+                     f"best={best_acc:.4f}(ep{best_epoch})")
+        history['epochs'].append(rec)
+        history['best'] = (None if best_epoch is None
+                           else {'epoch': best_epoch,
+                                 'test_acc': round(best_acc, 6),
+                                 'checkpoint': best_path.name})
+        with open(out_dir / 'history.json', 'w', encoding='utf-8') as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+        print(line + f"  saved → {path}")
     print(f"Done. Final checkpoint: {path}")
+    if best_epoch is not None:
+        print(f"Best: test_acc={best_acc:.4f} at epoch {best_epoch} → {best_path}")
 
 
 if __name__ == '__main__':
