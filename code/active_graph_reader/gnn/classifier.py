@@ -34,6 +34,10 @@ class GraphClassifier(nn.Module):
         Number of GIN conv layers (default 5).
     dropout : float
         Dropout probability (default 0.5).
+    node_feat_dim : int
+        Raw node feature dimension. 0 (default) keeps Embedding behavior
+        (PPA: no node features); >0 uses a Linear projection (e.g.
+        CIFAR10-SuperPixel: 5).
     """
 
     def __init__(
@@ -45,6 +49,7 @@ class GraphClassifier(nn.Module):
         dropout: float = 0.5,
         virtual_node: bool = False,
         residual: bool = False,
+        node_feat_dim: int = 0,
     ):
         super().__init__()
 
@@ -58,6 +63,7 @@ class GraphClassifier(nn.Module):
             dropout=dropout,
             virtual_node=virtual_node,
             residual=residual,
+            node_feat_dim=node_feat_dim,
         )
 
         self.head = nn.Linear(hidden_dim, n_classes)

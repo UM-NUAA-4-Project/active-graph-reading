@@ -79,6 +79,10 @@ class GINEEncoder(nn.Module):
         backward compatibility.
     residual : bool
         Enable residual connections between GIN layers. Default False.
+    node_feat_dim : int
+        Raw node feature dimension. 0 (default) uses Embedding(1, hidden_dim)
+        (PPA: no node features); >0 uses a Linear projection from node
+        features in ``g.ndata['feat']`` (e.g. CIFAR10-SuperPixel: 5).
     """
 
     def __init__(
@@ -89,6 +93,7 @@ class GINEEncoder(nn.Module):
         dropout: float = 0.5,
         virtual_node: bool = False,
         residual: bool = False,
+        node_feat_dim: int = 0,
     ):
         super().__init__()
 
@@ -98,7 +103,11 @@ class GINEEncoder(nn.Module):
         self.virtual_node = virtual_node
         self.residual = residual
 
-        self.node_emb = nn.Embedding(1, hidden_dim)
+        self.node_feat_dim = int(node_feat_dim)
+        if node_feat_dim > 0:
+            self.node_proj = nn.Linear(int(node_feat_dim), hidden_dim)
+        else:
+            self.node_emb = nn.Embedding(1, hidden_dim)
 
         self.convs = nn.ModuleList()
         self.bns = nn.ModuleList()
@@ -132,7 +141,10 @@ class GINEEncoder(nn.Module):
         g: dgl.DGLGraph,
         node_ids: torch.Tensor,
     ) -> torch.Tensor:
-        h = self.node_emb(node_ids)
+        if self.node_feat_dim > 0:
+            h = self.node_proj(g.ndata['feat'].to(node_ids.device))
+        else:
+            h = self.node_emb(node_ids)
 
         edge_feat = g.edata.get('feat', None)
         if edge_feat is None:
