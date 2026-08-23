@@ -1,7 +1,8 @@
-"""揭示动作模块：实现协议核心动作 reveal_node(v)。"""
+"""揭示动作模块：实现协议核心动作 reveal_node(v) 与跳转（teleport）。"""
 
 import logging
-from typing import List, Tuple
+import random
+from typing import List, Optional, Tuple
 
 from .graph_state import GraphState
 
@@ -81,3 +82,25 @@ def reveal_node(state: GraphState, v: int) -> List[Tuple[int, int]]:
     )
 
     return new_frontier
+
+
+def teleport_if_stuck(state: GraphState, rng: random.Random = None) -> Optional[int]:
+    """frontier 空但预算未耗尽时，伪随机跳转到未揭示节点继续。
+
+    场景：seed 落在孤立小分量（图不连通或分量与主图隔离），分量已全部揭示
+    → frontier 合法为空，但预算尚未花完。因预算比例 < 1，未揭示节点必然存在。
+    跳转节点作为一次 reveal（消耗 1 预算），其邻居成为新 frontier。
+    返回跳转的节点；无可跳转节点（全图已揭示或预算耗尽）时返回 None。
+
+    rng：可选 random.Random（保证可复现）；默认用全局 random。
+    """
+    if not state.is_frontier_empty:
+        return None
+    if state.get_budget_used() >= (state._budget_limit or state.n_nodes_total):
+        return None
+    unrevealed = [v for v in range(state.n_nodes_total) if v not in state.V_revealed]
+    if not unrevealed:
+        return None
+    v = (rng or random).choice(unrevealed)
+    reveal_node(state, v)
+    return v

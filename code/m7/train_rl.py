@@ -46,7 +46,7 @@ from active_graph_reader.reader.attention.attention_reader import AttentionReade
 from active_graph_reader.gnn.classifier import GraphClassifier
 from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
 from active_graph_reader.engine.graph_state import GraphState
-from active_graph_reader.engine.reveal_action import reveal_node
+from active_graph_reader.engine.reveal_action import reveal_node, teleport_if_stuck
 
 from m7.datasets.registry import get_dataset
 from m7.transfer import transfer_weights
@@ -116,6 +116,14 @@ def train_one_epoch_base(reader, classifier, builder, optimizer,
         active = [True] * n_total
         max_budget = max(s._budget_limit for s in all_states)
         for _step in range(max_budget):
+            # 预算未耗尽但 frontier 空（seed 落孤立小分量，分量已揭示完）：
+            # 跳转到未揭示节点继续（预算比例 < 1，未揭示节点必然存在）
+            for j in range(n_total):
+                if active[j] and all_states[j].is_frontier_empty:
+                    st = all_states[j]
+                    if (teleport_if_stuck(st) is not None
+                            and st.get_budget_used() >= st._budget_limit):
+                        active[j] = False
             active_idx = [j for j in range(n_total)
                           if active[j] and not all_states[j].is_frontier_empty]
             if not active_idx:
@@ -250,6 +258,15 @@ def train_one_epoch_attention(reader, classifier, builder, optimizer,
             all_subgraphs = [None] * n_total
 
             for _step in range(max_budget):
+                # 预算未耗尽但 frontier 空（seed 落孤立小分量，分量已揭示完）：
+                # 跳转到未揭示节点继续（预算比例 < 1，未揭示节点必然存在）
+                for j in range(n_total):
+                    if active[j] and all_states[j].is_frontier_empty:
+                        st = all_states[j]
+                        if teleport_if_stuck(st) is not None:
+                            all_subgraphs[j] = reader.frontier_builder.build(st)
+                            if st.get_budget_used() >= st._budget_limit:
+                                active[j] = False
                 active_idx = [j for j in range(n_total)
                               if active[j] and not all_states[j].is_frontier_empty]
                 if not active_idx:

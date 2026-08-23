@@ -83,10 +83,18 @@ class NewInfoEncoder(nn.Module):
         # Per-subgraph pooling
         results = []
         for i, (v_i, f_mask) in enumerate(zip(v_indices, frontier_masks)):
-            pool1_i = torch.cat([h1[v_i], h1[f_mask].mean(0)])  # (2d,)
+            # frontier 为空（seed 落在孤立小分量，分量已全部揭示）时
+            # mean 空张量 = NaN：用零占位（无新信息 → 均值 0）
+            f1 = h1[f_mask]
+            if len(f1) == 0:
+                f1 = torch.zeros(1, self.hidden_dim, device=h1.device)
+            pool1_i = torch.cat([h1[v_i], f1.mean(0)])  # (2d,)
             residual = self.res_proj(pool1_i)                     # (d,)
 
-            pool2_i = torch.cat([h2[v_i], h2[f_mask].mean(0)])  # (2d,)
+            f2 = h2[f_mask]
+            if len(f2) == 0:
+                f2 = torch.zeros(1, self.hidden_dim, device=h2.device)
+            pool2_i = torch.cat([h2[v_i], f2.mean(0)])  # (2d,)
             output = self.output_proj(pool2_i)                    # (d,)
 
             results.append(output + residual)
