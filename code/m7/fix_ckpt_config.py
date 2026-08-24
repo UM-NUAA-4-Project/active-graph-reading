@@ -2,7 +2,7 @@
 
 背景：train_classifier.py 微调继承 bug——config 保存了 args 默认值而非实际结构，
 导致下游（train_rl/eval）按错误 config 构建模型、加载失败。
-用法: python fix_ckpt_config.py <path1.pt> [path2.pt ...]
+用法: python code/m7/fix_ckpt_config.py code\m7\checkpoint\classifier\finetune\best_cifar10_classifier.pt
 """
 import re
 import sys

@@ -6,7 +6,7 @@ belief lockstep（复用 m6/training_utils）。
 
 用法:
     python code/m7/train_rl.py --dataset cifar10 --root /mnt/data/superpixels --device cuda:0 
-    --reader-kind attention --bootstrap code/m6/attention/bc/reader_belief_epoch5.pt --reward asymmetric 
+    --reader-kind attention --bootstrap m6/attention/bc/reader_belief_epoch5.pt --reward asymmetric 
     --graphs-per-batch 64 --seeds-per-graph 4 --output-dir m7/checkpoint/rl/attention-bc 
     --classifier m7\checkpoint\finite\best_cifar10_classifier.pt
   python code/m7/train_rl.py --dataset cifar10 --root D:\\superpixels \
@@ -165,6 +165,10 @@ def train_one_epoch_base(reader, classifier, builder, optimizer,
             if reward_type == 'tanh':
                 ce = F.cross_entropy(logits_i, traj_labels[i]).item()
                 R = math.tanh(1.0 - ce / ln_k)
+                # 负样本（CE 高于锚点）占 ~80% 且其 CE 多为分类器噪声：
+                # 降权 0.1，避免梯度被负样本噪声主导（见 specs/2026-08-24-tanh-reward-design.md）
+                if R < 0:
+                    R *= 0.1
             elif reward_type == 'asymmetric':
                 R = 1.0 if correct else -0.1
             else:
@@ -341,6 +345,10 @@ def train_one_epoch_attention(reader, classifier, builder, optimizer,
                 if reward_type == 'tanh':
                     ce = F.cross_entropy(logits_i, final_labels[k]).item()
                     R = math.tanh(1.0 - ce / ln_k)
+                    # 负样本（CE 高于锚点）占 ~80% 且其 CE 多为分类器噪声：
+                    # 降权 0.1，避免梯度被负样本噪声主导（见 specs/2026-08-24-tanh-reward-design.md）
+                    if R < 0:
+                        R *= 0.1
                 elif reward_type == 'asymmetric':
                     R = 1.0 if correct else -0.1
                 else:
@@ -443,8 +451,8 @@ def main():
     # ---- reader（迁移初始化） ----
     bootstrap_path = _repo_root / args.bootstrap
     src_ckpt = torch.load(str(bootstrap_path), map_location='cpu', weights_only=False)
-    # 源 checkpoint 携带训练超参（train_rl 保存 training_log=config dict；
-    # m6 类 checkpoint 的 training_log 是逐轮列表、超参在 config 键下）：
+    # 源 checkpoint 携带训练超参（training_log 是逐轮列表、超参在 config 键下；
+    # 旧版 train_rl 曾把 config dict 存进 training_log）：
     # CLI 未显式传入（== argparse 默认值）时沿用
     _tl = src_ckpt.get('training_log')
     src_cfg = _tl if isinstance(_tl, dict) else src_ckpt.get('config') or {}
@@ -513,6 +521,7 @@ def main():
 
     train_fn = (train_one_epoch_base if args.reader_kind == 'base'
                 else train_one_epoch_attention)
+    training_log = []
     for epoch in range(1, args.epochs + 1):
         print(f"\n--- Epoch {epoch}/{args.epochs} ---")
         metrics = train_fn(reader, classifier, builder, optimizer,
@@ -521,13 +530,22 @@ def main():
                            device, args.reward, ln_k, BUDGET_OPTIONS)
         print(f"  Train: loss={metrics['loss']:.4f}  avg_R={metrics['avg_R']:.3f}  "
               f"acc={metrics['acc']:.3f}")
+        training_log.append({'epoch': epoch,
+                             'train_loss': metrics['loss'],
+                             'train_avg_R': metrics['avg_R'],
+                             'train_acc': metrics['acc']})
         ckpt = {'epoch': epoch,
                 'reader_state_dict': reader.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'training_log': config}
+                'config': config,
+                'training_log': training_log}
         ckpt_path = output_dir / f'checkpoint_epoch{epoch}.pt'
         torch.save(ckpt, str(ckpt_path))
         print(f"  Saved: {ckpt_path}")
+
+        log_path = output_dir / 'training_log.json'
+        with open(log_path, 'w', encoding='utf-8') as f:
+            json.dump(training_log, f, indent=2, ensure_ascii=False)
 
     print(f"\nREINFORCE complete. Output: {output_dir}")
 

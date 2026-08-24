@@ -8,7 +8,7 @@
 用法:
   python code/m7/eval.py --dataset cifar10 --root D:\\superpixels --strategy random \
       --classifier m7/checkpoint/cifar10_classifier.pt
-  python code/m7/eval.py --dataset cifar10 --root D:\\superpixels \
+  python code/m7/eval.py --dataset cifar10 --root /mnt/data/superpixels \
       --checkpoint m7/checkpoint/rl/finetune/checkpoint_epoch5.pt \
       --classifier m7/checkpoint/cifar10_classifier.pt
 """
@@ -321,13 +321,13 @@ def main():
         clf_path = _repo_root / args.classifier
     cls_ckpt = torch.load(str(clf_path), map_location=device, weights_only=False)
     # 按 checkpoint 自身 config 构建分类器（train_classifier 保存了 config）；
-    # 无 config 时回退到上界默认结构（hidden 300 / 5 层）。这样分类器结构
+    # 无 config 时回退到上界默认结构（hidden 256 / 5 层）。这样分类器结构
     # 永远与训练时一致（冒烟用小维度分类器也能加载）。
     _cfg = cls_ckpt.get('config', {})
     classifier = GraphClassifier(
         edge_feat_dim=_cfg.get('edge_feat_dim', spec.edge_feat_dim),
         n_classes=_cfg.get('n_classes', spec.n_classes),
-        hidden_dim=_cfg.get('hidden_dim', 300),
+        hidden_dim=_cfg.get('hidden_dim', 256),
         n_layers=_cfg.get('n_layers', 5),
         dropout=_cfg.get('dropout', 0.5),
         node_feat_dim=_cfg.get('node_feat_dim', spec.node_feat_dim),

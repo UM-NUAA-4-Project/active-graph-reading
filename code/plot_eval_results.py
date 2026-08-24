@@ -27,7 +27,6 @@ _SPLIT_NAMES = ('train', 'valid', 'test')
 STRATEGY_COLORS = {
     'random': '#999999',
     'bfs': '#55A868',
-    'max-frontier-degree': '#55A868',
     'learnable': '#4C72B0',
     'bc': '#4C72B0',
     'rl': '#C44E52',
