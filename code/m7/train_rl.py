@@ -1,8 +1,9 @@
 """M7 RL 微调：以迁移后的 PPA checkpoint 为起点，在目标数据集上 REINFORCE 微调。
 
-Loss = mean_i(-R_i · Σ_t log π_t(a_t))，R_i 由目标数据集上界 GIN 分类器给出
-（binary/tanh/asymmetric）。base reader 无 belief；attention reader 用
-belief lockstep（复用 m6/training_utils）。
+Loss = mean_i(-A_i · Σ_t log π_t(a_t))，R_i 由目标数据集上界 GIN 分类器给出
+（binary/tanh/asymmetric）；A_i 为 batch 级优势归一化（A = (R-mean)/(std+eps)，
+负侧再乘 λ=--reward-neg-scale，默认 0.1）。base reader 无 belief；attention
+reader 用 belief lockstep（复用 m6/training_utils）。
 
 用法:
     python code/m7/train_rl.py --dataset cifar10 --root /mnt/data/superpixels --device cuda:0 
@@ -85,9 +86,26 @@ def freeze_shared_layers(reader, spec, args):
     print(f"  --freeze: {frozen} 层已冻结（仅特征投影层可训练）")
 
 
+def _normalize_advantages(rewards, neg_scale):
+    """Batch 级优势归一化 + 负侧降权。
+
+    A = (R - mean)/(std + eps)；A < 0 时 A *= neg_scale。
+    中心化自适应修正 tanh 锚点错误（均匀猜测作零点导致奖励几乎全负），
+    neg_scale 显式抑制负样本噪声（见 specs/2026-08-24-tanh-reward-design.md）。
+    """
+    if len(rewards) < 2:
+        return list(rewards)
+    rs = torch.tensor(rewards, dtype=torch.float)
+    mean = rs.mean()
+    std = rs.std()
+    A = (rs - mean) / (std + 1e-6)
+    A = torch.where(A >= 0, A, A * neg_scale)
+    return A.tolist()
+
+
 def train_one_epoch_base(reader, classifier, builder, optimizer,
                          graphs, labels, batch_size, n_seeds,
-                         device, reward_type, ln_k, budget_options):
+                         device, reward_type, ln_k, budget_options, neg_scale):
     reader.train()
     classifier.eval()
     total_R = total_trajs = total_correct = total_loss = 0.0
@@ -158,26 +176,30 @@ def train_one_epoch_base(reader, classifier, builder, optimizer,
         with torch.no_grad():
             all_logits = classifier(batch_g, nids)
 
-        batch_losses = []
+        raw_rewards = []
         for i, log_probs in enumerate(traj_log_probs):
             logits_i = all_logits[i:i + 1]
             correct = 1.0 if logits_i.argmax(dim=-1).item() == traj_labels[i].item() else 0.0
             if reward_type == 'tanh':
                 ce = F.cross_entropy(logits_i, traj_labels[i]).item()
                 R = math.tanh(1.0 - ce / ln_k)
-                # 负样本（CE 高于锚点）占 ~80% 且其 CE 多为分类器噪声：
-                # 降权 0.1，避免梯度被负样本噪声主导（见 specs/2026-08-24-tanh-reward-design.md）
-                if R < 0:
-                    R *= 0.1
             elif reward_type == 'asymmetric':
                 R = 1.0 if correct else -0.1
             else:
                 R = 1.0 if correct else 0.0
+            raw_rewards.append(R)
             total_R += R
             total_trajs += 1
             total_correct += correct
+
+        # batch 级优势归一化 + 负侧降权 λ（自适应中心化 + 显式抑制负样本噪声，
+        # 见 specs/2026-08-24-tanh-reward-design.md）
+        advs = _normalize_advantages(raw_rewards, neg_scale)
+
+        batch_losses = []
+        for i, log_probs in enumerate(traj_log_probs):
             sum_log_prob = torch.stack(log_probs).sum()
-            batch_losses.append(-R * sum_log_prob)
+            batch_losses.append(-advs[i] * sum_log_prob)
         if not batch_losses:
             continue
         batch_loss = torch.stack(batch_losses).mean()
@@ -222,7 +244,7 @@ def _diag_nan(reader, state, belief, batch_result, batch_start, step, state_idx)
 
 def train_one_epoch_attention(reader, classifier, builder, optimizer,
                               graphs, labels, batch_size, n_seeds,
-                              device, reward_type, ln_k, budget_options):
+                              device, reward_type, ln_k, budget_options, neg_scale):
     """belief lockstep 版（对齐 m6/attention/train_rl.py）。"""
     reader.train()
     classifier.eval()
@@ -338,26 +360,29 @@ def train_one_epoch_attention(reader, classifier, builder, optimizer,
                     all_logits.append(classifier(batch_g, nids))
             logits_all = torch.cat(all_logits, dim=0)
 
-            batch_losses = []
+            raw_rewards = []
             for k in range(len(final_states)):
                 logits_i = logits_all[k:k + 1]
                 correct = 1.0 if logits_i.argmax(dim=-1).item() == final_labels[k].item() else 0.0
                 if reward_type == 'tanh':
                     ce = F.cross_entropy(logits_i, final_labels[k]).item()
                     R = math.tanh(1.0 - ce / ln_k)
-                    # 负样本（CE 高于锚点）占 ~80% 且其 CE 多为分类器噪声：
-                    # 降权 0.1，避免梯度被负样本噪声主导（见 specs/2026-08-24-tanh-reward-design.md）
-                    if R < 0:
-                        R *= 0.1
                 elif reward_type == 'asymmetric':
                     R = 1.0 if correct else -0.1
                 else:
                     R = 1.0 if correct else 0.0
+                raw_rewards.append(R)
                 total_R += R
                 total_trajs += 1
                 total_correct += correct
+
+            # batch 级优势归一化 + 负侧降权 λ（见 specs/2026-08-24-tanh-reward-design.md）
+            advs = _normalize_advantages(raw_rewards, neg_scale)
+
+            batch_losses = []
+            for k in range(len(final_states)):
                 sum_log_prob = torch.stack(final_log_probs[k]).sum()
-                batch_losses.append(-R * sum_log_prob)
+                batch_losses.append(-advs[k] * sum_log_prob)
             rl_loss = torch.stack(batch_losses).mean()
             loss = rl_loss / n_micro
             loss.backward()
@@ -397,6 +422,9 @@ def main():
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='限制训练图数（0=全部，默认全部；冒烟测试传小值）')
     parser.add_argument('--reward', choices=['binary', 'tanh', 'asymmetric'], default='binary')
+    parser.add_argument('--reward-neg-scale', type=float, default=0.1,
+                        help='batch 优势归一化后负侧优势的降权系数 λ（默认 0.1；'
+                             'λ=1 即无不对称，仅归一化）')
     parser.add_argument('--freeze', action='store_true',
                         help='冻结共享层，仅训练特征投影层（冻结消融用）')
     parser.add_argument('--edge-feat-dim', type=int, default=None,
@@ -502,6 +530,7 @@ def main():
         'n_skipped': len(skipped),
         'freeze': args.freeze,
         'reward': args.reward,
+        'reward_neg_scale': args.reward_neg_scale,
         'temperature': args.temperature,
         'budget_options': list(BUDGET_OPTIONS),
         'lr': args.lr,
@@ -527,7 +556,8 @@ def main():
         metrics = train_fn(reader, classifier, builder, optimizer,
                            train_graphs, ds.train_labels[:len(train_graphs)],
                            args.graphs_per_batch, args.seeds_per_graph,
-                           device, args.reward, ln_k, BUDGET_OPTIONS)
+                           device, args.reward, ln_k, BUDGET_OPTIONS,
+                           args.reward_neg_scale)
         print(f"  Train: loss={metrics['loss']:.4f}  avg_R={metrics['avg_R']:.3f}  "
               f"acc={metrics['acc']:.3f}")
         training_log.append({'epoch': epoch,
