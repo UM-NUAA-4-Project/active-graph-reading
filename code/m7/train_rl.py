@@ -444,7 +444,7 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
-    ds = get_dataset(args.dataset, root=args.root or None)
+    ds = get_dataset(args.dataset, root=args.root or None, splits=['train'])
     spec = ds.spec
     BUDGET_OPTIONS = spec.budget_options
     ln_k = math.log(spec.n_classes)

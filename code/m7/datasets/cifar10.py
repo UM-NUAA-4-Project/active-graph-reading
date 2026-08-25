@@ -11,6 +11,7 @@ from typing import List, Tuple
 import torch
 import dgl
 from dgl.data import CIFAR10SuperPixelDataset
+from tqdm import tqdm
 
 from .registry import DatasetSpec, Dataset, register, has_self_loops
 
@@ -19,7 +20,7 @@ def _load_split(split: str, raw_dir: str) -> Tuple[List[dgl.DGLGraph], List[int]
     ds = CIFAR10SuperPixelDataset(split=split, use_feature=True, raw_dir=raw_dir)
     graphs = []
     labels = []
-    for g, y in ds:
+    for g, y in tqdm(ds, desc=f"Loading {split}"):
         graphs.append(g)
         labels.append(int(y))
     return graphs, labels
@@ -30,13 +31,24 @@ def load_cifar10(spec: DatasetSpec) -> Dataset:
         raise ValueError(
             f"数据集 '{spec.name}' 数据目录未指定：必须通过 --root 传入"
             "（如 --root D:\\superpixels）")
-    train_graphs, train_labels = _load_split('train', spec.root)
-    test_graphs, test_labels = _load_split('test', spec.root)
 
-    # 自环检查：数据集已含自环则不再添加
-    if spec.needs_self_loop and not has_self_loops(train_graphs[0]):
-        train_graphs = [dgl.add_self_loop(g) for g in train_graphs]
-        test_graphs = [dgl.add_self_loop(g) for g in test_graphs]
+    # 只加载 spec.splits 列出的 split，其余返回空列表（如 eval 只需 test、或
+    # train_bc/train_rl/generate_trajectories 只需 train，省去另一半加载时间）
+    train_graphs, train_labels = [], []
+    test_graphs, test_labels = [], []
+    if 'train' in spec.splits:
+        train_graphs, train_labels = _load_split('train', spec.root)
+    if 'test' in spec.splits:
+        test_graphs, test_labels = _load_split('test', spec.root)
+
+    # 自环检查：数据集已含自环则不再添加（按实际加载到的 split 处理）
+    if spec.needs_self_loop:
+        if 'train' in spec.splits and train_graphs and not has_self_loops(train_graphs[0]):
+            train_graphs = [dgl.add_self_loop(g)
+                            for g in tqdm(train_graphs, desc="Self-loop train")]
+        if 'test' in spec.splits and test_graphs and not has_self_loops(test_graphs[0]):
+            test_graphs = [dgl.add_self_loop(g)
+                           for g in tqdm(test_graphs, desc="Self-loop test")]
 
     return Dataset(
         spec=spec,

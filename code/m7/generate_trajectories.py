@@ -64,11 +64,12 @@ def build_classifier(cls_ckpt: dict, spec, device) -> GraphClassifier:
         hidden_dim=_cfg.get('hidden_dim', 300),
         n_layers=_cfg.get('n_layers', 5),
         dropout=_cfg.get('dropout', 0.5),
+        node_feat_dim=_cfg.get('node_feat_dim', spec.node_feat_dim),
     ).to(device)
     clf.load_state_dict(cls_ckpt['model_state_dict'], strict=True)
     clf.eval()
-    for p in clf.parameters():
-        p.requires_grad = False
+    # 不做 requires_grad=False：GradientTeacher 需要 autograd 图（backward + retain_grad）；
+    # "冻结"= 加载权重后不更新（无优化器），与 m4 原版一致
     return clf
 
 
@@ -97,7 +98,7 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
-    ds = get_dataset(args.dataset, root=args.root or None)
+    ds = get_dataset(args.dataset, root=args.root or None, splits=['train'])
     spec = ds.spec
     ratios = args.budget_ratios or list(spec.budget_options)
 

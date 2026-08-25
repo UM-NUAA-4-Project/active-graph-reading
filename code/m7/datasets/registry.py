@@ -20,6 +20,7 @@ class DatasetSpec:
     needs_self_loop: bool
     budget_options: Tuple[float, ...] = (0.05, 0.10, 0.15)
     root: Optional[str] = None   # 数据根目录（--root 覆盖）；None = 用加载器默认/环境变量
+    splits: Tuple[str, ...] = ('train', 'valid', 'test')  # 需加载的 split（get_dataset 按需覆盖）
     load: Optional[Callable] = None   # load(spec) -> Dataset
 
 
@@ -83,16 +84,22 @@ def register(spec: DatasetSpec) -> None:
     DATASETS[spec.name] = spec
 
 
-def get_dataset(name: str, root: Optional[str] = None) -> Dataset:
+def get_dataset(
+    name: str,
+    root: Optional[str] = None,
+    splits=('train', 'valid', 'test'),
+) -> Dataset:
     if name not in DATASETS:
         raise ValueError(f"未知数据集 '{name}'，可用: {sorted(DATASETS)}")
-    cache_key = (name, root)
+    splits = tuple(splits)
+    cache_key = (name, root, splits)
     if cache_key not in _CACHE:
         spec = DATASETS[name]
         if spec.load is None:
             raise ValueError(f"数据集 '{name}' 未实现 load 函数")
-        if root is not None:
-            spec = replace(spec, root=root)   # 副本，避免污染注册表
+        # 副本，避免污染注册表；splits 由加载器读取，未列出的 split 返回空列表
+        # （如 eval.py 只加载 test 时不再加载 50000 张 train 图）
+        spec = replace(spec, root=root, splits=splits)
         _CACHE[cache_key] = _LazyDataset(spec)
     return _CACHE[cache_key]
 

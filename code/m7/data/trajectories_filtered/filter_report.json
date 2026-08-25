@@ -1,0 +1,29 @@
+{
+  "0_050": {
+    "n_before": 83533,
+    "n_after_dedup": 33388,
+    "dedup_removed": 50145,
+    "n_after": 33329,
+    "n_graphs_after": 17347,
+    "diverse_graphs": 6894,
+    "single_teacher_graphs": 10453
+  },
+  "0_100": {
+    "n_before": 105835,
+    "n_after_dedup": 36272,
+    "dedup_removed": 69563,
+    "n_after": 36265,
+    "n_graphs_after": 23754,
+    "diverse_graphs": 5856,
+    "single_teacher_graphs": 17898
+  },
+  "0_150": {
+    "n_before": 117814,
+    "n_after_dedup": 36321,
+    "dedup_removed": 81493,
+    "n_after": 36321,
+    "n_graphs_after": 25237,
+    "diverse_graphs": 5809,
+    "single_teacher_graphs": 19428
+  }
+}

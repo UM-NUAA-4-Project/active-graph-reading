@@ -5,6 +5,7 @@
   - graph_idx 语义 = ds.train_graphs 本地位置（与 generate_trajectories.py / train_rl.py 一致）
   - 轨迹目录 = m7/data/trajectories（trajectories_r{ratio}.pt，generate_trajectories.py 输出）
   - 去掉 classifier 参考加载；reader 用 spec 的 edge_feat_dim / node_feat_dim
+  - 无验证集划分：全部轨迹用于 BC 训练；设备由 --device 指定
   - checkpoint config 兼容 m7 eval.py（reader_kind / n_layers_reader / dropout_reader 等键）
 
 用法:
@@ -15,7 +16,6 @@ import argparse
 import json
 import random
 import sys
-from collections import Counter
 from pathlib import Path
 
 _script_dir = Path(__file__).resolve().parent       # code/m7
@@ -28,7 +28,6 @@ sys.path = [p for p in sys.path
 
 import torch
 from tqdm import tqdm
-from sklearn.model_selection import train_test_split
 
 from active_graph_reader.reader.learnable_reader import LearnableReader
 from active_graph_reader.engine.graph_state import GraphState
@@ -61,34 +60,6 @@ def merge_trajectories(data_dir: Path, teachers: list, ratios: list) -> list:
         print(f"  {fname}: +{len(all_trajs) - n_before} trajectories")
     print(f"Total merged: {len(all_trajs)} trajectories")
     return all_trajs
-
-
-def split_trajectories(all_trajs, labels, val_ratio=0.2, random_seed=42):
-    """按图标签分层划分；稀有类（<2 图）强制进训练；同一图所有轨迹同集合（防泄漏）。"""
-    graph_ids = sorted({t.graph_idx for t in all_trajs})
-    graph_to_label = {gid: int(labels[gid]) for gid in graph_ids}
-    label_counts = Counter(graph_to_label.values())
-    rare = {lb for lb, cnt in label_counts.items() if cnt < 2}
-    forced_train = [gid for gid in graph_ids if graph_to_label[gid] in rare]
-    stratify_ids = [gid for gid in graph_ids if graph_to_label[gid] not in rare]
-    stratify_labels = [graph_to_label[gid] for gid in stratify_ids]
-    if len(stratify_ids) > 0:
-        train_ids, val_ids = train_test_split(
-            stratify_ids, test_size=val_ratio, stratify=stratify_labels,
-            random_state=random_seed,
-        )
-        train_ids = list(train_ids) + forced_train
-    else:
-        train_ids = forced_train
-        val_ids = []
-    train_set_ids = set(train_ids)
-    val_set_ids = set(val_ids)
-
-    train_trajs = [t for t in all_trajs if t.graph_idx in train_set_ids]
-    val_trajs = [t for t in all_trajs if t.graph_idx in val_set_ids]
-    print(f"Split: {len(train_trajs)} train / {len(val_trajs)} val trajectories "
-          f"(from {len(train_ids)} / {len(val_ids)} graphs)")
-    return train_trajs, val_trajs
 
 
 def train_one_epoch(reader, optimizer, graph_cache, train_trajs, batch_size, device):
@@ -177,68 +148,6 @@ def train_one_epoch(reader, optimizer, graph_cache, train_trajs, batch_size, dev
     return total_loss / max(total_steps, 1)
 
 
-@torch.no_grad()
-def val_one_epoch(reader, graph_cache, val_trajs, batch_size, device):
-    """单轮 BC 验证（跨图锁步批处理），返回平均 step loss。m5 移植。"""
-    reader.eval()
-    total_loss = 0.0
-    total_steps = 0
-
-    pbar = tqdm(range(0, len(val_trajs), batch_size), desc="  Validating")
-    for batch_start in pbar:
-        batch_end = min(batch_start + batch_size, len(val_trajs))
-        batch_trajs = val_trajs[batch_start:batch_end]
-
-        all_states = []
-        reveal_orders = []
-        step_counters = []
-
-        for traj in batch_trajs:
-            g, _label = graph_cache[traj.graph_idx]
-            state = GraphState(g, seed_node=traj.seed_node)
-            state._budget_limit = len(traj.reveal_order)
-            all_states.append(state)
-            reveal_orders.append(traj.reveal_order)
-            step_counters.append(0)
-
-        n_total = len(all_states)
-        active = [True] * n_total
-        max_budget = max(len(ro) for ro in reveal_orders)
-
-        for _step in range(max_budget):
-            active_idx = [j for j in range(n_total)
-                          if active[j] and not all_states[j].is_frontier_empty
-                          and step_counters[j] < len(reveal_orders[j])]
-            if not active_idx:
-                break
-
-            batch_results = reader.forward_states(
-                [all_states[j] for j in active_idx], temperature=1.0)
-
-            for k, j in enumerate(active_idx):
-                scores, probs, frontier_nodes = batch_results[k]
-                if not frontier_nodes:
-                    active[j] = False
-                    continue
-
-                teacher_node = reveal_orders[j][step_counters[j]]
-                try:
-                    target_idx = frontier_nodes.index(teacher_node)
-                except ValueError:
-                    active[j] = False
-                    continue
-
-                total_loss -= torch.log(probs[target_idx] + 1e-8).item()
-                total_steps += 1
-                reveal_node(all_states[j], teacher_node)
-                step_counters[j] += 1
-
-                if step_counters[j] >= len(reveal_orders[j]):
-                    active[j] = False
-
-    return total_loss / max(total_steps, 1)
-
-
 def main():
     parser = argparse.ArgumentParser(description='M7 BC 训练（m7 registry 数据集）')
     parser.add_argument('--dataset', default='cifar10')
@@ -254,7 +163,7 @@ def main():
     parser.add_argument('--hidden-dim', type=int, default=128)
     parser.add_argument('--n-layers-reader', type=int, default=2, dest='n_layers_reader')
     parser.add_argument('--dropout-reader', type=float, default=0.25, dest='dropout_reader')
-    parser.add_argument('--val-ratio', type=float, default=0.2)
+    parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--output-dir', default='m7/checkpoint/bc/base',
                         help='输出目录（相对 code/ 或绝对路径）')
     parser.add_argument('--seed', type=int, default=42)
@@ -263,27 +172,25 @@ def main():
     random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
-    ds = get_dataset(args.dataset, root=args.root or None)
+    ds = get_dataset(args.dataset, root=args.root or None, splits=['train'])
     spec = ds.spec
 
-    # ---- 1. 加载轨迹 & 图 ----
+    # ---- 1. 加载轨迹 & 图（无验证集：全部轨迹用于 BC 训练） ----
     data_dir = _repo_root / args.data_dir
     print("\n=== Merging trajectories ===")
     all_trajs = merge_trajectories(data_dir, args.teachers, spec.budget_options)
     if not all_trajs:
         raise SystemExit(
             f"无轨迹可用：{data_dir} 为空或未找到（先运行 m7/generate_trajectories.py）")
+    train_trajs = all_trajs
 
     print("\n=== Building graph cache ===")
     needed = {t.graph_idx for t in all_trajs}
     graph_cache = {i: (ds.train_graphs[i], int(ds.train_labels[i])) for i in needed}
     print(f"  {len(graph_cache)} graphs cached")
-
-    train_trajs, val_trajs = split_trajectories(
-        all_trajs, ds.train_labels, val_ratio=args.val_ratio, random_seed=args.seed)
 
     # ---- 2. 创建 reader（从零初始化） ----
     reader = LearnableReader(
@@ -306,11 +213,8 @@ def main():
         print(f"\n--- Epoch {epoch}/{args.epochs} ---")
         train_loss = train_one_epoch(reader, optimizer, graph_cache, train_trajs,
                                      args.batch_size, device)
-        val_loss = val_one_epoch(reader, graph_cache, val_trajs,
-                                 args.batch_size, device) if val_trajs else float('nan')
-        print(f"  Train loss: {train_loss:.4f} | Val loss: {val_loss:.4f}")
-        training_log.append({'epoch': epoch, 'train_loss': train_loss,
-                             'val_loss': val_loss})
+        print(f"  Train loss: {train_loss:.4f}")
+        training_log.append({'epoch': epoch, 'train_loss': train_loss})
 
         checkpoint = {
             'epoch': epoch - 1,
@@ -330,7 +234,6 @@ def main():
                 'epochs': args.epochs,
                 'total_params': total_params,
                 'n_train_trajs': len(train_trajs),
-                'n_val_trajs': len(val_trajs),
             },
         }
         ckpt_path = output_dir / f'reader_checkpoint_epoch{epoch}.pt'
