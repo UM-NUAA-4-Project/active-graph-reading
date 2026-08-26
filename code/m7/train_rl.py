@@ -9,10 +9,10 @@ reader 用 belief lockstep（复用 m6/training_utils）。
     python code/m7/train_rl.py --dataset cifar10 --root /mnt/data/superpixels --device cuda:0 
     --reader-kind attention --bootstrap m6/attention/bc/reader_belief_epoch5.pt --reward asymmetric 
     --graphs-per-batch 64 --seeds-per-graph 4 --output-dir m7/checkpoint/rl/attention-bc 
-    --classifier m7\checkpoint\finite\best_cifar10_classifier.pt
+    --classifier m7/checkpoint/classifier/finetune/best_cifar10_classifier.pt
   python code/m7/train_rl.py --dataset cifar10 --root D:\\superpixels \
       --reader-kind attention --bootstrap m6/attention/bc/reader_belief_epoch1.pt \
-      --classifier m7/checkpoint/cifar10_classifier.pt --device cuda:0
+      --classifier m7/checkpoint/classifier/finetune/best_cifar10_classifier.pt --device cuda:0
   python code/m7/train_rl.py --dataset cifar10 --root D:\\superpixels \
       --reader-kind base --bootstrap m5/base/checkpoint/best_reader.pt --device cuda:0
 """

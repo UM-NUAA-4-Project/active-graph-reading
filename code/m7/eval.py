@@ -10,7 +10,7 @@
       --classifier m7/checkpoint/cifar10_classifier.pt
   python code/m7/eval.py --dataset cifar10 --root /mnt/data/superpixels \
       --checkpoint m7/checkpoint/rl/finetune/checkpoint_epoch5.pt \
-      --classifier m7/checkpoint/cifar10_classifier.pt
+      --classifier m7/checkpoint/classifier/finetune/best_cifar10_classifier.pt
 """
 
 import argparse
