@@ -30,6 +30,7 @@ import torch
 from tqdm import tqdm
 
 from active_graph_reader.reader.learnable_reader import LearnableReader
+from active_graph_reader.reader.attention.attention_reader import AttentionReader
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
 from m7.datasets.registry import get_dataset
@@ -60,6 +61,20 @@ def merge_trajectories(data_dir: Path, teachers: list, ratios: list) -> list:
         print(f"  {fname}: +{len(all_trajs) - n_before} trajectories")
     print(f"Total merged: {len(all_trajs)} trajectories")
     return all_trajs
+
+
+def build_bc_reader(kind, spec, args):
+    """按 reader-kind 构造 BC reader（从零初始化；调用方自行 .to(device)）。"""
+    common = dict(
+        edge_feat_dim=spec.edge_feat_dim,
+        hidden_dim=args.hidden_dim,
+        n_layers=args.n_layers_reader,
+        dropout=args.dropout_reader,
+        node_feat_dim=spec.node_feat_dim,
+    )
+    if kind == 'attention':
+        return AttentionReader(m=args.m, n_heads=args.n_heads, **common)
+    return LearnableReader(**common)
 
 
 def train_one_epoch(reader, optimizer, graph_cache, train_trajs, batch_size, device):
