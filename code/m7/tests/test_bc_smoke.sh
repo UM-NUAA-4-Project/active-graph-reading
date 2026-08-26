@@ -21,4 +21,24 @@ assert cfg['reader_kind'] == 'base'
 print('BC CHECKPOINT OK', {k: cfg[k] for k in ('hidden_dim', 'n_layers_reader',
                                                'dropout_reader')})
 "
-echo "SMOKE OK: BC trained"
+
+# ---- attention reader 分支 ----
+$PY code/m7/train_bc.py --dataset cifar10 --root D:\\superpixels --device cpu \
+  --data-dir /tmp/m7_smoke_traj \
+  --teachers gradient structural-degree \
+  --reader-kind attention \
+  --epochs 2 --batch-size 8 --hidden-dim 32 --n-layers-reader 2 --dropout-reader 0.1 \
+  --output-dir /tmp/m7_smoke_bc_attention
+$PY -c "
+import sys, json; sys.path.insert(0, '.')
+import torch
+log = json.load(open('/tmp/m7_smoke_bc_attention/training_log.json'))
+assert len(log) == 2, log
+ckpt = torch.load('/tmp/m7_smoke_bc_attention/reader_checkpoint_epoch2.pt',
+                  map_location='cpu', weights_only=False)
+cfg = ckpt['config']
+assert cfg['reader_kind'] == 'attention', cfg
+assert cfg['m'] == 4 and cfg['n_heads'] == 4 and cfg['temperature'] == 1.0, cfg
+print('BC ATTENTION CHECKPOINT OK', {k: cfg[k] for k in ('reader_kind', 'm', 'n_heads')})
+"
+echo "SMOKE OK: BC trained (base + attention)"

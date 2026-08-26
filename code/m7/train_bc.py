@@ -11,6 +11,9 @@
 用法:
   python code/m7/train_bc.py --dataset cifar10 --root D:\\superpixels \\
       --data-dir m7/data/trajectories --device cuda:0 --epochs 10
+  python code/m7/train_bc.py --dataset cifar10 --root D:\\superpixels \\
+      --data-dir m7/data/trajectories --device cuda:0 --epochs 10 \\
+      --reader-kind attention --m 4 --n-heads 4
 """
 import argparse
 import json
@@ -34,6 +37,7 @@ from active_graph_reader.reader.attention.attention_reader import AttentionReade
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
 from m7.datasets.registry import get_dataset
+from m6.training_utils import reveal_and_update_beliefs_batch
 
 
 def ratio_key(r: float) -> str:
@@ -77,7 +81,7 @@ def build_bc_reader(kind, spec, args):
     return LearnableReader(**common)
 
 
-def train_one_epoch(reader, optimizer, graph_cache, train_trajs, batch_size, device):
+def train_one_epoch_base(reader, optimizer, graph_cache, train_trajs, batch_size, device):
     """单轮 BC 训练（跨图锁步批处理），返回平均 step loss。m5 移植。"""
     reader.train()
     total_loss = 0.0
@@ -163,6 +167,114 @@ def train_one_epoch(reader, optimizer, graph_cache, train_trajs, batch_size, dev
     return total_loss / max(total_steps, 1)
 
 
+def train_one_epoch_attention(reader, optimizer, graph_cache, train_trajs,
+                              batch_size, device, temperature=1.0):
+    """AttentionReader 单轮 BC 训练（belief lockstep，m6 移植）。"""
+    reader.train()
+    total_loss = 0.0
+    total_steps = 0
+
+    random.shuffle(train_trajs)
+    n_batches = (len(train_trajs) + batch_size - 1) // batch_size
+
+    pbar = tqdm(range(0, len(train_trajs), batch_size), desc="  Training")
+    for batch_idx, batch_start in enumerate(pbar):
+        batch_end = min(batch_start + batch_size, len(train_trajs))
+        batch_trajs = train_trajs[batch_start:batch_end]
+
+        # ---- Pass 1: create states + beliefs ----
+        all_states = []
+        reveal_orders = []
+        step_counters = []
+        for traj in batch_trajs:
+            g, _label = graph_cache[traj.graph_idx]
+            state = GraphState(g, seed_node=traj.seed_node)
+            state._budget_limit = len(traj.reveal_order)
+            all_states.append(state)
+            reveal_orders.append(traj.reveal_order)
+            step_counters.append(0)
+
+        n_total = len(all_states)
+        active = [True] * n_total
+        max_budget = max(len(ro) for ro in reveal_orders)
+        all_beliefs = [reader.init_beliefs(1).to(device) for _ in range(n_total)]
+        all_subgraphs = [None] * n_total
+        step_losses = []
+
+        # ---- Pass 2: cross-graph lockstep with belief update ----
+        for _step in range(max_budget):
+            active_idx = [j for j in range(n_total)
+                          if active[j] and not all_states[j].is_frontier_empty
+                          and step_counters[j] < len(reveal_orders[j])]
+            if not active_idx:
+                break
+
+            active_beliefs = torch.cat([all_beliefs[j] for j in active_idx], dim=0)
+            active_subgraphs = None
+            if all_subgraphs[active_idx[0]] is not None:
+                active_subgraphs = [all_subgraphs[j] for j in active_idx]
+
+            batch_results = reader.forward_states(
+                [all_states[j] for j in active_idx],
+                temperature=temperature,
+                beliefs=active_beliefs,
+                subgraphs=active_subgraphs,
+            )
+
+            batch_states, batch_nodes, batch_local_idx = [], [], []
+            for k, j in enumerate(active_idx):
+                _, probs, frontier_nodes = batch_results[k]
+                if not frontier_nodes:
+                    active[j] = False
+                    continue
+                teacher_node = reveal_orders[j][step_counters[j]]
+                try:
+                    target_idx = frontier_nodes.index(teacher_node)
+                except ValueError:
+                    active[j] = False
+                    continue
+                step_losses.append(-torch.log(probs[target_idx] + 1e-8))
+                step_counters[j] += 1
+                batch_states.append(all_states[j])
+                batch_nodes.append(teacher_node)
+                batch_local_idx.append(j)
+
+            if batch_states:
+                batch_beliefs = torch.cat(
+                    [all_beliefs[j] for j in batch_local_idx], dim=0)
+                new_beliefs, new_subgraphs = reveal_and_update_beliefs_batch(
+                    reader, batch_states, batch_nodes, batch_beliefs, device)
+                for k, j in enumerate(batch_local_idx):
+                    all_beliefs[j] = new_beliefs[k:k + 1]
+                    all_subgraphs[j] = new_subgraphs[k]
+
+            for j in active_idx:
+                if active[j] and step_counters[j] >= len(reveal_orders[j]):
+                    active[j] = False
+
+        if not step_losses:
+            continue
+
+        batch_loss = torch.stack(step_losses).mean()
+        batch_loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
+
+        n = len(step_losses)
+        total_loss += batch_loss.item() * n
+        total_steps += n
+
+        avg_step_loss = total_loss / max(total_steps, 1)
+        pbar.set_postfix({
+            'batch_loss': f'{batch_loss.item():.4f}',
+            'avg_step_loss': f'{avg_step_loss:.4f}',
+            'batch': f'{batch_idx + 1}/{n_batches}',
+            'lr': f'{optimizer.param_groups[0]["lr"]:.1e}',
+        })
+
+    return total_loss / max(total_steps, 1)
+
+
 def main():
     parser = argparse.ArgumentParser(description='M7 BC 训练（m7 registry 数据集）')
     parser.add_argument('--dataset', default='cifar10')
@@ -178,14 +290,26 @@ def main():
     parser.add_argument('--hidden-dim', type=int, default=128)
     parser.add_argument('--n-layers-reader', type=int, default=2, dest='n_layers_reader')
     parser.add_argument('--dropout-reader', type=float, default=0.25, dest='dropout_reader')
+    parser.add_argument('--reader-kind', choices=['base', 'attention'], default='base',
+                        help='reader 类型：base=MLP LearnableReader；'
+                             'attention=AttentionReader（belief lockstep BC）')
+    parser.add_argument('--m', type=int, default=4, help='belief token 数（仅 attention）')
+    parser.add_argument('--n-heads', type=int, default=4,
+                        help='attention 头数（仅 attention）')
+    parser.add_argument('--temperature', type=float, default=1.0,
+                        help='训练 softmax 温度（仅 attention，默认 1.0）')
     parser.add_argument('--device', default='cuda:0')
-    parser.add_argument('--output-dir', default='m7/checkpoint/bc/base',
-                        help='输出目录（相对 code/ 或绝对路径）')
+    parser.add_argument('--output-dir', default=None,
+                        help='输出目录（相对 code/ 或绝对路径；默认 '
+                             'm7/checkpoint/bc/{reader-kind}）')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
+
+    if args.output_dir is None:
+        args.output_dir = f'm7/checkpoint/bc/{args.reader_kind}'
 
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
@@ -208,17 +332,14 @@ def main():
     print(f"  {len(graph_cache)} graphs cached")
 
     # ---- 2. 创建 reader（从零初始化） ----
-    reader = LearnableReader(
-        edge_feat_dim=spec.edge_feat_dim,
-        hidden_dim=args.hidden_dim,
-        n_layers=args.n_layers_reader,
-        dropout=args.dropout_reader,
-        node_feat_dim=spec.node_feat_dim,
-    ).to(device)
+    reader = build_bc_reader(args.reader_kind, spec, args).to(device)
     optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
     total_params = sum(p.numel() for p in reader.parameters())
-    print(f"\nReader: base, params={total_params:,}, "
-          f"edge_feat_dim={spec.edge_feat_dim}, node_feat_dim={spec.node_feat_dim}")
+    kind_info = (f"\nReader: {args.reader_kind}, params={total_params:,}, "
+                 f"edge_feat_dim={spec.edge_feat_dim}, node_feat_dim={spec.node_feat_dim}")
+    if args.reader_kind == 'attention':
+        kind_info += f", m={args.m}, n_heads={args.n_heads}, temperature={args.temperature}"
+    print(kind_info)
 
     # ---- 3. 训练 ----
     output_dir = _repo_root / args.output_dir
@@ -226,8 +347,13 @@ def main():
     training_log = []
     for epoch in range(1, args.epochs + 1):
         print(f"\n--- Epoch {epoch}/{args.epochs} ---")
-        train_loss = train_one_epoch(reader, optimizer, graph_cache, train_trajs,
-                                     args.batch_size, device)
+        if args.reader_kind == 'base':
+            train_loss = train_one_epoch_base(
+                reader, optimizer, graph_cache, train_trajs, args.batch_size, device)
+        else:
+            train_loss = train_one_epoch_attention(
+                reader, optimizer, graph_cache, train_trajs, args.batch_size, device,
+                temperature=args.temperature)
         print(f"  Train loss: {train_loss:.4f}")
         training_log.append({'epoch': epoch, 'train_loss': train_loss})
 
@@ -237,11 +363,14 @@ def main():
             'optimizer_state_dict': optimizer.state_dict(),
             'training_log': training_log,
             'config': {
-                'reader_kind': 'base',
+                'reader_kind': args.reader_kind,
                 'dataset': args.dataset,
                 'hidden_dim': args.hidden_dim,
                 'n_layers_reader': args.n_layers_reader,
                 'dropout_reader': args.dropout_reader,
+                'm': args.m,
+                'n_heads': args.n_heads,
+                'temperature': args.temperature,
                 'edge_feat_dim': spec.edge_feat_dim,
                 'node_feat_dim': spec.node_feat_dim,
                 'lr': args.lr,
