@@ -344,6 +344,26 @@ def main():
     # ---- 3. 训练 ----
     output_dir = _repo_root / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    config = {
+        'reader_kind': args.reader_kind,
+        'dataset': args.dataset,
+        'hidden_dim': args.hidden_dim,
+        'n_layers_reader': args.n_layers_reader,
+        'dropout_reader': args.dropout_reader,
+        'm': args.m,
+        'n_heads': args.n_heads,
+        'temperature': args.temperature,
+        'edge_feat_dim': spec.edge_feat_dim,
+        'node_feat_dim': spec.node_feat_dim,
+        'lr': args.lr,
+        'batch_size': args.batch_size,
+        'epochs': args.epochs,
+        'total_params': total_params,
+        'n_train_trajs': len(train_trajs),
+    }
+    with open(output_dir / 'config.json', 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+    print(f"Config saved: {output_dir / 'config.json'}")
     training_log = []
     for epoch in range(1, args.epochs + 1):
         print(f"\n--- Epoch {epoch}/{args.epochs} ---")
@@ -362,23 +382,7 @@ def main():
             'reader_state_dict': reader.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'training_log': training_log,
-            'config': {
-                'reader_kind': args.reader_kind,
-                'dataset': args.dataset,
-                'hidden_dim': args.hidden_dim,
-                'n_layers_reader': args.n_layers_reader,
-                'dropout_reader': args.dropout_reader,
-                'm': args.m,
-                'n_heads': args.n_heads,
-                'temperature': args.temperature,
-                'edge_feat_dim': spec.edge_feat_dim,
-                'node_feat_dim': spec.node_feat_dim,
-                'lr': args.lr,
-                'batch_size': args.batch_size,
-                'epochs': args.epochs,
-                'total_params': total_params,
-                'n_train_trajs': len(train_trajs),
-            },
+            'config': config,
         }
         ckpt_path = output_dir / f'reader_checkpoint_epoch{epoch}.pt'
         torch.save(checkpoint, str(ckpt_path))

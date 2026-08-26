@@ -18,6 +18,8 @@ ckpt = torch.load('/tmp/m7_smoke_bc/reader_checkpoint_epoch2.pt',
 assert 'reader_state_dict' in ckpt and 'config' in ckpt
 cfg = ckpt['config']
 assert cfg['reader_kind'] == 'base'
+cfg_file = json.load(open('/tmp/m7_smoke_bc/config.json'))
+assert cfg_file == cfg, (cfg_file, cfg)
 print('BC CHECKPOINT OK', {k: cfg[k] for k in ('hidden_dim', 'n_layers_reader',
                                                'dropout_reader')})
 "
@@ -39,6 +41,8 @@ ckpt = torch.load('/tmp/m7_smoke_bc_attention/reader_checkpoint_epoch2.pt',
 cfg = ckpt['config']
 assert cfg['reader_kind'] == 'attention', cfg
 assert cfg['m'] == 4 and cfg['n_heads'] == 4 and cfg['temperature'] == 1.0, cfg
+cfg_file = json.load(open('/tmp/m7_smoke_bc_attention/config.json'))
+assert cfg_file == cfg, (cfg_file, cfg)
 print('BC ATTENTION CHECKPOINT OK', {k: cfg[k] for k in ('reader_kind', 'm', 'n_heads')})
 "
 echo "SMOKE OK: BC trained (base + attention)"
