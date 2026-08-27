@@ -45,4 +45,22 @@ cfg_file = json.load(open('/tmp/m7_smoke_bc_attention/config.json'))
 assert cfg_file == cfg, (cfg_file, cfg)
 print('BC ATTENTION CHECKPOINT OK', {k: cfg[k] for k in ('reader_kind', 'm', 'n_heads')})
 "
-echo "SMOKE OK: BC trained (base + attention)"
+# ---- resume 分支：从 epoch2 续训到 epoch3（结构/超参不传，取 checkpoint config） ----
+$PY code/m7/train_bc.py --dataset cifar10 --root D:\\superpixels --device cpu \
+  --data-dir /tmp/m7_smoke_traj \
+  --resume /tmp/m7_smoke_bc/reader_checkpoint_epoch2.pt \
+  --epochs 3 --batch-size 8 \
+  --output-dir /tmp/m7_smoke_bc
+$PY -c "
+import sys, json; sys.path.insert(0, '.')
+import torch
+log = json.load(open('/tmp/m7_smoke_bc/training_log.json'))
+assert len(log) == 3, log  # 2 旧 + 1 新
+ckpt = torch.load('/tmp/m7_smoke_bc/reader_checkpoint_epoch3.pt',
+                  map_location='cpu', weights_only=False)
+assert ckpt['epoch'] == 2, ckpt['epoch']  # 0-indexed 已完成轮数
+assert ckpt['config']['reader_kind'] == 'base'
+assert ckpt['config'] == json.load(open('/tmp/m7_smoke_bc/config.json'))
+print('BC RESUME OK', {k: log[-1][k] for k in ('epoch', 'train_loss')})
+"
+echo "SMOKE OK: BC trained (base + attention + resume)"

@@ -14,6 +14,12 @@
   python code/m7/train_bc.py --dataset cifar10 --root D:\\superpixels \\
       --data-dir m7/data/trajectories --device cuda:0 --epochs 10 \\
       --reader-kind attention --m 4 --n-heads 4
+
+断点续训:
+  python code/m7/train_bc.py --dataset cifar10 --root D:\\superpixels \\
+      --data-dir m7/data/trajectories --device cuda:0 \\
+      --resume m7/checkpoint/bc/base/reader_checkpoint_epoch5.pt --epochs 10
+  结构与超参取 checkpoint 自身 config；--epochs 为续训后的总轮数。
 """
 import argparse
 import json
@@ -302,6 +308,10 @@ def main():
     parser.add_argument('--output-dir', default=None,
                         help='输出目录（相对 code/ 或绝对路径；默认 '
                              'm7/checkpoint/bc/{reader-kind}）')
+    parser.add_argument('--resume', default='',
+                        help='BC checkpoint 续训（相对 code/ 或绝对路径）；'
+                             '结构与超参取 checkpoint 自身 config，'
+                             '--epochs 为续训后的总轮数')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 
@@ -331,9 +341,37 @@ def main():
     graph_cache = {i: (ds.train_graphs[i], int(ds.train_labels[i])) for i in needed}
     print(f"  {len(graph_cache)} graphs cached")
 
-    # ---- 2. 创建 reader（从零初始化） ----
-    reader = build_bc_reader(args.reader_kind, spec, args).to(device)
-    optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
+    # ---- 2. 创建 reader（从零初始化 / --resume 续训） ----
+    start_epoch = 0
+    training_log = []
+    if args.resume:
+        resume_path = Path(args.resume)
+        if not resume_path.is_absolute():
+            resume_path = _repo_root / resume_path
+        ckpt = torch.load(str(resume_path), map_location='cpu', weights_only=False)
+        ckpt_cfg = ckpt.get('config', {})
+        for key in ('reader_kind', 'hidden_dim', 'n_layers_reader',
+                    'dropout_reader', 'm', 'n_heads', 'lr'):
+            if key in ckpt_cfg:
+                setattr(args, key, ckpt_cfg[key])
+        reader = build_bc_reader(args.reader_kind, spec, args).to(device)
+        reader.load_state_dict(ckpt['reader_state_dict'], strict=True)
+        optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
+        try:
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            print(f"  Optimizer state loaded (lr={args.lr})")
+        except (KeyError, ValueError, RuntimeError) as e:
+            print(f"  WARNING: optimizer state unavailable ({e}), fresh optimizer")
+        start_epoch = int(ckpt.get('epoch', 0)) + 1  # 已完成轮数
+        if start_epoch >= args.epochs:
+            raise SystemExit(f"checkpoint 已完成 {start_epoch} 轮，"
+                             f"--epochs={args.epochs} 无需续训")
+        training_log = ckpt.get('training_log', [])
+        print(f"Resuming from {resume_path}"
+              f" (done={start_epoch}, target={args.epochs})")
+    else:
+        reader = build_bc_reader(args.reader_kind, spec, args).to(device)
+        optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
     total_params = sum(p.numel() for p in reader.parameters())
     kind_info = (f"\nReader: {args.reader_kind}, params={total_params:,}, "
                  f"edge_feat_dim={spec.edge_feat_dim}, node_feat_dim={spec.node_feat_dim}")
@@ -344,28 +382,30 @@ def main():
     # ---- 3. 训练 ----
     output_dir = _repo_root / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
-    config = {
-        'reader_kind': args.reader_kind,
-        'dataset': args.dataset,
-        'hidden_dim': args.hidden_dim,
-        'n_layers_reader': args.n_layers_reader,
-        'dropout_reader': args.dropout_reader,
-        'm': args.m,
-        'n_heads': args.n_heads,
-        'temperature': args.temperature,
-        'edge_feat_dim': spec.edge_feat_dim,
-        'node_feat_dim': spec.node_feat_dim,
-        'lr': args.lr,
-        'batch_size': args.batch_size,
-        'epochs': args.epochs,
-        'total_params': total_params,
-        'n_train_trajs': len(train_trajs),
-    }
+    if args.resume and ckpt.get('config'):
+        config = ckpt['config']  # 续训沿用原 config（config.json 与 checkpoint 一致）
+    else:
+        config = {
+            'reader_kind': args.reader_kind,
+            'dataset': args.dataset,
+            'hidden_dim': args.hidden_dim,
+            'n_layers_reader': args.n_layers_reader,
+            'dropout_reader': args.dropout_reader,
+            'm': args.m,
+            'n_heads': args.n_heads,
+            'temperature': args.temperature,
+            'edge_feat_dim': spec.edge_feat_dim,
+            'node_feat_dim': spec.node_feat_dim,
+            'lr': args.lr,
+            'batch_size': args.batch_size,
+            'epochs': args.epochs,
+            'total_params': total_params,
+            'n_train_trajs': len(train_trajs),
+        }
     with open(output_dir / 'config.json', 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
     print(f"Config saved: {output_dir / 'config.json'}")
-    training_log = []
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch + 1, args.epochs + 1):
         print(f"\n--- Epoch {epoch}/{args.epochs} ---")
         if args.reader_kind == 'base':
             train_loss = train_one_epoch_base(
