@@ -20,6 +20,8 @@
       --data-dir m7/data/trajectories --device cuda:0 \\
       --resume m7/checkpoint/bc/base/reader_checkpoint_epoch5.pt --epochs 10
   结构与超参取 checkpoint 自身 config；--epochs 为续训后的总轮数。
+  python code/m7/train_bc.py --dataset cifar10 --root /mnt/data/superpixels 
+  --data-dir m7/data/trajectories_filtered --device cuda:0 --resume m7/checkpoint/bc/attention/reader_checkpoint_epoch7.pt
 """
 import argparse
 import json
@@ -428,10 +430,10 @@ def main():
         torch.save(checkpoint, str(ckpt_path))
         print(f"  Saved: {ckpt_path}")
 
-    log_path = output_dir / 'training_log.json'
-    with open(log_path, 'w', encoding='utf-8') as f:
-        json.dump(training_log, f, indent=2, ensure_ascii=False)
-    print(f"Log saved: {log_path}")
+        log_path = output_dir / 'training_log.json'
+        with open(log_path, 'w', encoding='utf-8') as f:
+            json.dump(training_log, f, indent=2, ensure_ascii=False)
+        print(f"  Log saved: {log_path}")
 
 
 if __name__ == '__main__':
