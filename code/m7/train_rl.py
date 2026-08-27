@@ -15,6 +15,10 @@ reader 用 belief lockstep（复用 m6/training_utils）。
       --classifier m7/checkpoint/classifier/finetune/best_cifar10_classifier.pt --device cuda:0
   python code/m7/train_rl.py --dataset cifar10 --root D:\\superpixels \
       --reader-kind base --bootstrap m5/base/checkpoint/best_reader.pt --device cuda:0
+  python code/m7/train_rl.py --dataset cifar10 --root D:\\superpixels \
+      --reader-kind attention --bootstrap m6/attention/bc/reader_belief_epoch5.pt \
+      --device cuda:0 --resume m7/checkpoint/rl/attention-bc/checkpoint_epoch5.pt \
+      --epochs 20 (续训至总轮数 20)
 """
 
 import argparse
@@ -432,6 +436,10 @@ def main():
     parser.add_argument('--node-feat-dim', type=int, default=None,
                         help='覆盖数据集节点特征维度（默认跟随 DatasetSpec）')
     parser.add_argument('--output-dir', default='m7/checkpoint/rl/finetune')
+    parser.add_argument('--resume', default='',
+                        help='RL checkpoint 续训（相对 code/ 或绝对路径）；'
+                             '结构与超参取 checkpoint 自身 config，'
+                             '--epochs 为续训后的总轮数')
     parser.add_argument('--seed', type=int, default=42)
     args = parser.parse_args()
 
@@ -476,43 +484,94 @@ def main():
         p.requires_grad = False
     print(f"Classifier loaded (val_acc={cls_ckpt.get('val_acc', 'N/A')})")
 
-    # ---- reader（迁移初始化） ----
-    bootstrap_path = _repo_root / args.bootstrap
-    src_ckpt = torch.load(str(bootstrap_path), map_location='cpu', weights_only=False)
-    # 源 checkpoint 携带训练超参（training_log 是逐轮列表、超参在 config 键下；
-    # 旧版 train_rl 曾把 config dict 存进 training_log）：
-    # CLI 未显式传入（== argparse 默认值）时沿用
-    _tl = src_ckpt.get('training_log')
-    src_cfg = _tl if isinstance(_tl, dict) else src_ckpt.get('config') or {}
-    if not isinstance(src_cfg, dict):
-        src_cfg = {}
-    reader_args = SimpleNamespace(**vars(args))
-    resolved = {}
-    _alt_keys = {'n_layers': 'n_layers_reader', 'dropout': 'dropout_reader'}
-    for name in ('hidden_dim', 'n_layers', 'm', 'n_heads'):
-        v = src_cfg.get(name)
-        if v is None:
-            v = src_cfg.get(_alt_keys.get(name))
-        if v is not None and getattr(args, name) == parser.get_default(name):
-            setattr(reader_args, name, v)
-            resolved[name] = v
-    reader = build_reader(args.reader_kind, spec, reader_args, device)
-    print(f"Reader config: hidden_dim={reader_args.hidden_dim}, "
-          f"n_layers={reader_args.n_layers}, m={reader_args.m}, "
-          f"n_heads={reader_args.n_heads}, dropout={reader_args.dropout}, "
-          f"temperature={reader_args.temperature} "
-          f"(from checkpoint config: {resolved or 'none'})")
-    src_sd = src_ckpt.get('reader_state_dict', src_ckpt)
-    src_sd = strip_classifier_keys(src_sd)
-    n_transferred, n_padded, skipped = transfer_weights(src_sd, reader)
-    print(f"Bootstrap {args.bootstrap}: transferred={n_transferred}, "
-          f"padded={n_padded}, skipped={len(skipped)} (新层/维度不匹配)")
-    if skipped:
-        print(f"  skipped: {skipped[:6]}{'...' if len(skipped) > 6 else ''}")
+    # ---- --resume 续训：加载 checkpoint 的结构/超参（显式 CLI 传参优先） ----
+    start_epoch = 0
+    training_log = []
+    resume_ckpt = None
+    resume_path = None
+    if args.resume:
+        resume_path = Path(args.resume)
+        if not resume_path.is_absolute():
+            resume_path = _repo_root / args.resume
+        resume_ckpt = torch.load(str(resume_path), map_location='cpu',
+                                 weights_only=False)
+        resume_cfg = resume_ckpt.get('config', {})
+        for name in ('reader_kind', 'hidden_dim', 'n_layers', 'dropout', 'm',
+                     'n_heads', 'temperature', 'lr', 'reward',
+                     'reward_neg_scale', 'freeze', 'seed'):
+            v = resume_cfg.get(name)
+            if v is not None and getattr(args, name) == parser.get_default(name):
+                setattr(args, name, v)
 
-    freeze_shared_layers(reader, spec, args)
-    optimizer = torch.optim.Adam(
-        [p for p in reader.parameters() if p.requires_grad], lr=args.lr)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
+
+    # ---- reader（迁移初始化 / --resume 直接加载） ----
+    if args.resume:
+        reader_args = SimpleNamespace(**vars(args))
+        reader = build_reader(args.reader_kind, spec, reader_args, device)
+        resume_sd = resume_ckpt.get('reader_state_dict', resume_ckpt)
+        resume_sd = strip_classifier_keys(resume_sd)
+        reader.load_state_dict(resume_sd, strict=True)
+        print(f"Reader config: kind={args.reader_kind}, "
+              f"hidden_dim={args.hidden_dim}, n_layers={args.n_layers}, "
+              f"m={args.m}, n_heads={args.n_heads}, "
+              f"dropout={args.dropout}, temperature={args.temperature} "
+              f"(from resume checkpoint config)")
+        optimizer = torch.optim.Adam(reader.parameters(), lr=args.lr)
+        try:
+            optimizer.load_state_dict(resume_ckpt['optimizer_state_dict'])
+            print(f"  Optimizer state loaded (lr={args.lr})")
+        except (KeyError, ValueError, RuntimeError) as e:
+            print(f"  WARNING: optimizer state unavailable ({e}), fresh optimizer")
+        start_epoch = int(resume_ckpt.get('epoch', 0))  # 已完成轮数
+        if start_epoch >= args.epochs:
+            raise SystemExit(f"checkpoint 已完成 {start_epoch} 轮，"
+                             f"--epochs={args.epochs} 无需续训")
+        training_log = resume_ckpt.get('training_log', [])
+        print(f"Resuming from {resume_path} "
+              f"(done={start_epoch}, target={args.epochs})")
+    else:
+        bootstrap_path = _repo_root / args.bootstrap
+        src_ckpt = torch.load(str(bootstrap_path), map_location='cpu',
+                              weights_only=False)
+        # 源 checkpoint 携带训练超参（training_log 是逐轮列表、超参在 config 键下；
+        # 旧版 train_rl 曾把 config dict 存进 training_log）：
+        # CLI 未显式传入（== argparse 默认值）时沿用
+        _tl = src_ckpt.get('training_log')
+        src_cfg = _tl if isinstance(_tl, dict) else src_ckpt.get('config') or {}
+        if not isinstance(src_cfg, dict):
+            src_cfg = {}
+        reader_args = SimpleNamespace(**vars(args))
+        resolved = {}
+        _alt_keys = {'n_layers': 'n_layers_reader', 'dropout': 'dropout_reader'}
+        for name in ('hidden_dim', 'n_layers', 'm', 'n_heads'):
+            v = src_cfg.get(name)
+            if v is None:
+                v = src_cfg.get(_alt_keys.get(name))
+            if v is not None and getattr(args, name) == parser.get_default(name):
+                setattr(reader_args, name, v)
+                resolved[name] = v
+        reader = build_reader(args.reader_kind, spec, reader_args, device)
+        print(f"Reader config: hidden_dim={reader_args.hidden_dim}, "
+              f"n_layers={reader_args.n_layers}, m={reader_args.m}, "
+              f"n_heads={reader_args.n_heads}, dropout={reader_args.dropout}, "
+              f"temperature={reader_args.temperature} "
+              f"(from checkpoint config: {resolved or 'none'})")
+        src_sd = src_ckpt.get('reader_state_dict', src_ckpt)
+        src_sd = strip_classifier_keys(src_sd)
+        n_transferred, n_padded, skipped = transfer_weights(src_sd, reader)
+        print(f"Bootstrap {args.bootstrap}: transferred={n_transferred}, "
+              f"padded={n_padded}, skipped={len(skipped)} (新层/维度不匹配)")
+        if skipped:
+            print(f"  skipped: {skipped[:6]}{'...' if len(skipped) > 6 else ''}")
+
+        freeze_shared_layers(reader, spec, args)
+        optimizer = torch.optim.Adam(
+            [p for p in reader.parameters() if p.requires_grad], lr=args.lr)
     builder = SubgraphBuilder()
     total_params = sum(p.numel() for p in reader.parameters())
     trainable_params = sum(p.numel() for p in reader.parameters() if p.requires_grad)
@@ -520,38 +579,41 @@ def main():
 
     output_dir = _repo_root / args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
-    config = {
-        'dataset': spec.name,
-        'reader_kind': args.reader_kind,
-        'bootstrap': args.bootstrap,
-        'classifier': str(clf_path),
-        'n_transferred': n_transferred,
-        'n_padded': n_padded,
-        'n_skipped': len(skipped),
-        'freeze': args.freeze,
-        'reward': args.reward,
-        'reward_neg_scale': args.reward_neg_scale,
-        'temperature': args.temperature,
-        'budget_options': list(BUDGET_OPTIONS),
-        'lr': args.lr,
-        'epochs': args.epochs,
-        'hidden_dim': args.hidden_dim,
-        'n_layers': args.n_layers,
-        'm': args.m,
-        'n_heads': args.n_heads,
-        'max_graphs': args.max_graphs,
-        'total_params': total_params,
-        'trainable_params': trainable_params,
-        'seed': args.seed,
-    }
+    if args.resume and resume_ckpt.get('config'):
+        config = resume_ckpt['config']  # 续训沿用原 config（config.json 与 checkpoint 一致）
+        config['epochs'] = args.epochs  # 仅更新续训后的总轮数
+    else:
+        config = {
+                'dataset': spec.name,
+            'reader_kind': args.reader_kind,
+            'bootstrap': args.bootstrap,
+            'classifier': str(clf_path),
+            'n_transferred': n_transferred,
+            'n_padded': n_padded,
+            'n_skipped': len(skipped),
+            'freeze': args.freeze,
+            'reward': args.reward,
+            'reward_neg_scale': args.reward_neg_scale,
+            'temperature': args.temperature,
+            'budget_options': list(BUDGET_OPTIONS),
+            'lr': args.lr,
+            'epochs': args.epochs,
+            'hidden_dim': args.hidden_dim,
+            'n_layers': args.n_layers,
+            'm': args.m,
+            'n_heads': args.n_heads,
+            'max_graphs': args.max_graphs,
+            'total_params': total_params,
+            'trainable_params': trainable_params,
+            'seed': args.seed,
+        }
     with open(output_dir / 'config.json', 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
     print(f"Config saved: {output_dir / 'config.json'}")
 
     train_fn = (train_one_epoch_base if args.reader_kind == 'base'
                 else train_one_epoch_attention)
-    training_log = []
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch + 1, args.epochs + 1):
         print(f"\n--- Epoch {epoch}/{args.epochs} ---")
         metrics = train_fn(reader, classifier, builder, optimizer,
                            train_graphs, ds.train_labels[:len(train_graphs)],
