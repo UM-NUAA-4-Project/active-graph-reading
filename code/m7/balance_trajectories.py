@@ -11,7 +11,8 @@
   2. 生成补充：对过滤统计后不足的类，用 BC base reader（--reader）在同类训练图上
      从随机节点出发生成新轨迹（argmax 贪婪，随机种子），用上界分类器验证
      （argmax == label），只保留判对的并入池。迭代直到每档每类满足候选量
-     （>= --per-class-target），或达到 --max-rounds。
+     （>= --per-class-target），或达到 --max-rounds。--deficit-only 时仅对
+     缺额的预算档生成（缺额集中于少数档可省约一半时间），默认全部档生成。
   3. 过滤 + 平衡：对每档的池执行「同图 sim 去重（--sim-threshold）→ 同图 ce 升序
      取 top-k（--top-k）」，随后按类平衡：类内轨迹按 ce 升序取前
      --per-class-target 条（不足则后续轮补足）。
@@ -58,6 +59,56 @@ from m7.augment_trajectories import (
 )
 
 
+def build_edge_key_map(g):
+    """每图一次的 canonical edge key→edge id 映射（GraphState M4 优化接口）。
+
+    GraphState 不传该 dict 时会在每个 state 内部重建（cifar10 实测约
+    150KB/state），一轮数万个 state 会把 32GB 内存打满导致 swap 抖动，
+    因此每图构建一次、同图全部 state 共享。
+    """
+    if 'feat' not in g.edata:
+        return None
+    src, dst = g.edges()
+    m = {}
+    for eid in range(g.num_edges()):
+        u, v = int(src[eid]), int(dst[eid])
+        key = (min(u, v), max(u, v))
+        if key not in m:
+            m[key] = eid
+    return m
+
+
+def validate_candidates(cands, builder, classifier, device, train_labels,
+                        batch_size):
+    """用上界分类器批量验证候选（argmax == label，同时算 ce）。
+
+    cands: [(graph_idx, ratio, traj, fin_state)]；返回验证通过的
+    [(graph_idx, ratio, traj)]，验证后 state 随函数返回立即释放。
+    """
+    accepted = []
+    for c_start in range(0, len(cands), batch_size):
+        chunk = cands[c_start:c_start + batch_size]
+        sub_graphs = []
+        for _gi, _ratio, _traj, state in chunk:
+            sub_g, _ = builder.build(state)
+            sub_graphs.append(sub_g)
+        batch_g = dgl.batch(sub_graphs).to(device)
+        nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
+        with torch.no_grad():
+            logits = classifier(batch_g, nids)
+        for k, (gi, ratio, traj, state) in enumerate(chunk):
+            logits_i = logits[k:k + 1]
+            pred = int(logits_i.argmax(dim=-1).item())
+            ce = float(torch.nn.functional.cross_entropy(
+                logits_i, torch.tensor([int(train_labels[gi])],
+                                       device=device)).item())
+            traj.ce = ce
+            if pred == int(train_labels[gi]):
+                traj.final_pred = pred
+                accepted.append((gi, ratio, traj))
+    return accepted
+
+
 def count_after_filter(pool, train_labels, sim_threshold, top_k):
     """模拟「同图 dedup(0.8) → 每图 top-k」后的 per-class 计数（达标判定用）。
 
@@ -90,7 +141,7 @@ def main():
                         help='预算档位列表（默认 spec.budget_options；冒烟测试可传单档）')
     parser.add_argument('--input-dir', default='m7/data/trajectories_filtered',
                         help='既有过滤轨迹目录（相对 code/ 或绝对路径）')
-    parser.add_argument('--output-dir', default='m7/data/rich&balanced_trajectories_filtered',
+    parser.add_argument('--output-dir', default='m7/data/rich_balanced_trajectories_filtered',
                         help='输出目录（相对 code/ 或绝对路径）')
     parser.add_argument('--per-class-target', type=int, default=2000,
                         help='每类每档目标轨迹数（默认 2000）')
@@ -110,6 +161,10 @@ def main():
                         help='每张图每档位尝试的随机种子数（k）')
     parser.add_argument('--graphs-per-round', type=int, default=1000,
                         help='每轮每类采样的训练图数')
+    parser.add_argument('--deficit-only', action='store_true',
+                        help='仅对缺额的预算档生成轨迹（默认对全部档生成，'
+                             '已达标档也吸收新候选以丰富低 CE 池；'
+                             '缺额集中于少数档时可省约一半生成时间）')
     parser.add_argument('--max-rounds', type=int, default=10,
                         help='轮数上限（防止永不收敛）')
     parser.add_argument('--batch-size', type=int, default=64)
@@ -225,29 +280,45 @@ def main():
 
         # 生成：对缺额类采样新图，每图 attempts 个随机种子 × 全部预算档
         # （某类只要任一档未达标则继续生成；达标档也会因每图 top-k 裁剪而吸收）
-        all_candidates = []  # (graph_idx, ratio, traj, state)
+        # 注意：逐图生成后立即验证、state 用完即释放。若非如此，全部候选 state
+        # 留到轮末才验证，本轮 5 类 × 1000 图 × 60 state ≈ 30 万个，每个 state
+        # 自带约 150KB 的 edge_key_to_id 字典 → ~45GB，32GB 机器直接 swap 抖动。
+        n_cand = n_valid = 0
         for lab in targets:
             ok_everywhere = all(
                 cur_counts[ratio_key(r)].get(lab, 0) >= args.per_class_target
                 for r in budgets)
             if ok_everywhere:
                 continue
+            # --deficit-only：只对仍缺额的档生成；默认全部档，富余档也
+            # 吸收新生成的候选（最终 per-class 截断取 CE 最优 2000，多算无害）
+            gen_ratios = ([r for r in budgets
+                           if cur_counts[ratio_key(r)].get(lab, 0)
+                           < args.per_class_target]
+                          if args.deficit_only else budgets)
             pool_g = by_label[lab]
             n_sample = min(args.graphs_per_round, len(pool_g))
             sampled = rng.sample(pool_g, n_sample)
-            for gi in tqdm(sampled, desc=f"  gen label {lab}",
+            desc = f"  gen label {lab}"
+            if args.deficit_only:
+                desc += " [" + ",".join(ratio_key(r) for r in gen_ratios) + "]"
+            for gi in tqdm(sampled, desc=desc,
                            unit='graphs', leave=False):
                 g = train_graphs[gi]
                 n_nodes = g.num_nodes()
+                # 每图只构建一次映射，供该图全部 state 共享（省内存+省 CPU）
+                edge_map = build_edge_key_map(g)
                 g_states = []  # (ratio, state)
                 for _try in range(args.attempts):
                     seed_node = rng.randint(0, n_nodes - 1)
-                    for ratio in budgets:
+                    for ratio in gen_ratios:
                         B = max(1, int(ratio * n_nodes))
-                        state = GraphState(g, seed_node=seed_node)
+                        state = GraphState(g, seed_node=seed_node,
+                                           edge_key_to_id=edge_map)
                         state._budget_limit = B
                         g_states.append((ratio, state))
                 results = rollout_batch(reader, [s for _r, s in g_states], rng)
+                cands = []  # (graph_idx, ratio, traj, state)
                 for (ratio, state), (reveal_order, fin_state) in zip(
                         g_states, results):
                     if not reveal_order:
@@ -261,33 +332,16 @@ def main():
                         is_correct=True,
                         teacher_type='gradient',
                     )
-                    all_candidates.append((gi, ratio, traj, fin_state))
-
-        # 验证（上界分类器 argmax == label），同时计算 ce
-        n_valid = 0
-        for c_start in range(0, len(all_candidates), args.batch_size):
-            chunk = all_candidates[c_start:c_start + args.batch_size]
-            sub_graphs = []
-            for _gi, _ratio, _traj, state in chunk:
-                sub_g, _ = builder.build(state)
-                sub_graphs.append(sub_g)
-            batch_g = dgl.batch(sub_graphs).to(device)
-            nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
-            with torch.no_grad():
-                logits = classifier(batch_g, nids)
-            for k, (gi, ratio, traj, state) in enumerate(chunk):
-                logits_i = logits[k:k + 1]
-                pred = int(logits_i.argmax(dim=-1).item())
-                ce = float(torch.nn.functional.cross_entropy(
-                    logits_i, torch.tensor([int(train_labels[gi])],
-                                           device=device)).item())
-                traj.ce = ce
-                if pred == int(train_labels[gi]):
-                    traj.final_pred = pred
-                    pools[ratio_key(ratio)].append(traj)
-                    state_gen.setdefault(ratio_key(ratio), []).append(traj)
+                    cands.append((gi, ratio, traj, fin_state))
+                n_cand += len(cands)
+                # 逐图即时验证（上界分类器 argmax == label），state 随即释放
+                for gi2, ratio2, traj2 in validate_candidates(
+                        cands, builder, classifier, device, train_labels,
+                        args.batch_size):
+                    pools[ratio_key(ratio2)].append(traj2)
+                    state_gen.setdefault(ratio_key(ratio2), []).append(traj2)
                     n_valid += 1
-        print(f"  generated {len(all_candidates)}, validated {n_valid}")
+        print(f"  generated {n_cand}, validated {n_valid}")
         # 每次迭代结束即持久化进度（中断不丢本轮已验证轨迹，续跑自动加载）
         torch.save({'generated': state_gen,
                     'config': {'target_labels': targets,
