@@ -13,6 +13,8 @@
      （argmax == label），只保留判对的并入池。迭代直到每档每类满足候选量
      （>= --per-class-target），或达到 --max-rounds。--deficit-only 时仅对
      缺额的预算档生成（缺额集中于少数档可省约一半时间），默认全部档生成。
+     --no-generate 时跳过本步骤，仅对现有池做第 3 步的过滤与截断（不足
+     target 的类原样保留，不添加任何新轨迹）。
   3. 过滤 + 平衡：对每档的池执行「同图 sim 去重（--sim-threshold）→ 同图 ce 升序
      取 top-k（--top-k）」，随后按类平衡：类内轨迹按 ce 升序取前
      --per-class-target 条（不足则后续轮补足）。
@@ -167,6 +169,10 @@ def main():
                              '缺额集中于少数档时可省约一半生成时间）')
     parser.add_argument('--max-rounds', type=int, default=10,
                         help='轮数上限（防止永不收敛）')
+    parser.add_argument('--no-generate', action='store_true',
+                        help='跳过补充生成（不添加任何新轨迹），仅对现有池执行'
+                             '「同图去重 → 每图 top-k → 每类 CE 截断到 target」，'
+                             '不足 target 的类原样保留')
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--seed', type=int, default=42)
@@ -276,6 +282,11 @@ def main():
             key: dict(cur_counts[key]) for key in cur_counts}
         if _all_done:
             print("=== all target labels reach target ===")
+            break
+
+        # --no-generate：纯截断模式，不生成任何新轨迹，直接进入最终平衡
+        if args.no_generate:
+            print("=== --no-generate: 不生成新轨迹，直接进入最终平衡（截断） ===")
             break
 
         # 生成：对缺额类采样新图，每图 attempts 个随机种子 × 全部预算档

@@ -954,7 +954,7 @@
   },
   "config": {
     "dataset": "cifar10",
-    "strategy_or_checkpoint": "m7/checkpoint/rl/attention/checkpoint_epoch4.pt",
+    "strategy_or_checkpoint": "m7/checkpoint/rl/attention/1-teacher/checkpoint_epoch4.pt",
     "classifier": "/mnt/active-graph-reading/code/m7/checkpoint/classifier/finetune/best_cifar10_classifier.pt",
     "budgets": [
       0.05,

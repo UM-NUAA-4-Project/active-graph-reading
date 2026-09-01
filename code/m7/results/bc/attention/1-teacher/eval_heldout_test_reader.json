@@ -954,7 +954,7 @@
   },
   "config": {
     "dataset": "cifar10",
-    "strategy_or_checkpoint": "m7\\checkpoint\\bc\\attention\\reader_checkpoint_epoch10.pt",
+    "strategy_or_checkpoint": "m7\\checkpoint\\bc\\attention\\1-teacher\\reader_checkpoint_epoch10.pt",
     "classifier": "C:\\Users\\qq283\\Desktop\\UM-NUAA\\code\\m7\\checkpoint\\classifier\\finetune\\best_cifar10_classifier.pt",
     "budgets": [
       0.05,
