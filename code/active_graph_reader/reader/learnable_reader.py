@@ -1,40 +1,34 @@
-"""LearnableReader: 可学习的图阅读器。
+"""LearnableReader: 可学习的图阅读器（base）。
 
 G_t → FrontierGraphBuilder → FrontierSubgraph → FrontierNodesEncoder → frontier_embeds
      → ReaderMLP → scores → softmax → (argmax | sample) → action
 
 stochastic=False（默认）：argmax 确定性选择
 stochastic=True：从概率分布采样，探索用
+
+两种构造方式：
+- 旧式标量：LearnableReader(edge_feat_dim, hidden_dim, n_layers, dropout, ...)
+- 新式配置：LearnableReader(config=ReaderConfig(...))（config 优先，支持逐层结构）
 """
 
 from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from .reader_mlp import ReaderMLP
 from .gsae import compute_structural_features
+from .common import stable_probs as _stable_probs
 
 from ..core.base_reader import BaseReader
+from ..config import ReaderConfig
 from ..gnn.frontier.graph_builder import FrontierGraphBuilder
 from ..gnn.frontier.encoder import FrontierNodesEncoder
 from ..engine.graph_state import GraphState
 
 
-def _stable_probs(scores: torch.Tensor, temperature: float = 1.0,
-                  min_prob: float = 1e-3) -> torch.Tensor:
-    """softmax 后托底：防极端尖锐分布下概率精确下溢为 0（log(0)=-inf → loss NaN）。
-
-    正常训练时概率均 > min_prob，clamp 完全不生效；仅在下溢边缘托底。
-    """
-    probs = F.softmax(scores / temperature, dim=0)
-    probs = probs.clamp(min=min_prob)
-    return probs / probs.sum()
-
-
 class LearnableReader(BaseReader, nn.Module):
-    """可学习的图阅读器。
+    """可学习的图阅读器（base：MLP scorer）。
 
     Parameters
     ----------
@@ -44,32 +38,45 @@ class LearnableReader(BaseReader, nn.Module):
     dropout : float      Dropout 概率（默认 0.1）
     stochastic : bool    是否从概率分布采样（默认 False=argmax）
     node_feat_dim : int  原始节点特征维度（0=无节点特征）
+    config : ReaderConfig  新式逐层配置（提供时优先）
     """
 
     def __init__(
         self,
-        edge_feat_dim: int,
+        edge_feat_dim: int = 7,
         hidden_dim: int = 128,
         n_layers: int = 2,
         dropout: float = 0.1,
         stochastic: bool = False,
         temperature: float = 1.0,
         node_feat_dim: int = 0,
+        config: Optional[ReaderConfig] = None,
     ):
         super().__init__()
 
-        self.stochastic = stochastic
-        self.temperature = temperature
+        if config is None:
+            config = ReaderConfig.from_legacy(
+                kind='base', edge_feat_dim=edge_feat_dim,
+                node_feat_dim=node_feat_dim, hidden_dim=hidden_dim,
+                n_layers=n_layers, dropout=dropout, stochastic=stochastic,
+                temperature=temperature)
+        config.validate()
+        self.config = config
+        self.stochastic = config.stochastic
+        self.temperature = config.temperature
 
         self.frontier_builder = FrontierGraphBuilder()
         self.frontier_encoder = FrontierNodesEncoder(
-            edge_feat_dim=edge_feat_dim,
-            hidden_dim=hidden_dim,
-            n_layers=n_layers,
-            dropout=dropout,
-            node_feat_dim=node_feat_dim,
+            edge_feat_dim=config.edge_feat_dim,
+            hidden_dims=config.encoder_hidden_dims,
+            dropouts=config.encoder_dropouts,
+            node_feat_dim=config.node_feat_dim,
         )
-        self.reader_mlp = ReaderMLP(input_dim=hidden_dim + 1 + 3, hidden_dim=hidden_dim, dropout=dropout)
+        self.reader_mlp = ReaderMLP(
+            input_dim=config.hidden_dim + 1 + 3,
+            hidden_dims=config.scorer_hidden_dims,
+            dropouts=config.scorer_dropouts,
+        )
 
     def forward(
         self, graph_state: GraphState, sample: bool = False

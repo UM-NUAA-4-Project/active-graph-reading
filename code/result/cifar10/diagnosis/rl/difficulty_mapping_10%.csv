@@ -1,0 +1,7 @@
+ogb_idx,label,n_nodes,success_rate,level,mean_ce
+5,1,120,0.0,hard,5.5244
+6,2,118,0.0,hard,15.6047
+3,4,121,1.0,easy,0.1338
+0,6,123,0.0,hard,6.5661
+7,7,117,0.6667,middle,0.5533
+1,9,120,0.0,hard,1.5263

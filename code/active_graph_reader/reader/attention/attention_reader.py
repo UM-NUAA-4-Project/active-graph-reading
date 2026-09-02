@@ -16,27 +16,17 @@ from typing import List, Optional, Tuple
 import dgl
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from active_graph_reader.core.base_reader import BaseReader
+from active_graph_reader.config import ReaderConfig
 from active_graph_reader.gnn.frontier.graph_builder import FrontierGraphBuilder
 from active_graph_reader.gnn.frontier.encoder import FrontierNodesEncoder
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.reader.gsae import compute_structural_features
+from active_graph_reader.reader.common import stable_probs as _stable_probs
 from .frontier_pointer import FrontierPointer
 from .belief_state import BeliefState
 from .new_info_encoder import NewInfoEncoder
-
-
-def _stable_probs(scores: torch.Tensor, temperature: float = 1.0,
-                  min_prob: float = 1e-3) -> torch.Tensor:
-    """softmax 后托底：防极端尖锐分布下概率精确下溢为 0（log(0)=-inf → loss NaN）。
-
-    正常训练时概率均 > min_prob，clamp 完全不生效；仅在下溢边缘托底。
-    """
-    probs = F.softmax(scores / temperature, dim=0)
-    probs = probs.clamp(min=min_prob)
-    return probs / probs.sum()
 
 
 class AttentionReader(BaseReader, nn.Module):
@@ -55,7 +45,7 @@ class AttentionReader(BaseReader, nn.Module):
 
     def __init__(
         self,
-        edge_feat_dim: int,
+        edge_feat_dim: int = 7,
         hidden_dim: int = 128,
         n_layers: int = 2,
         dropout: float = 0.1,
@@ -64,36 +54,47 @@ class AttentionReader(BaseReader, nn.Module):
         m: int = 4,
         n_heads: int = 4,
         node_feat_dim: int = 0,
+        config: Optional[ReaderConfig] = None,
     ):
         super().__init__()
 
-        self.stochastic = stochastic
-        self.temperature = temperature
-        self.hidden_dim = hidden_dim
+        if config is None:
+            config = ReaderConfig.from_legacy(
+                kind='attention', edge_feat_dim=edge_feat_dim,
+                node_feat_dim=node_feat_dim, hidden_dim=hidden_dim,
+                n_layers=n_layers, dropout=dropout, m=m, n_heads=n_heads,
+                stochastic=stochastic, temperature=temperature)
+        config.validate()
+        self.config = config
+        self.stochastic = config.stochastic
+        self.temperature = config.temperature
+        self.hidden_dim = config.hidden_dim   # = d_model（encoder 须同宽，validate 已保证）
 
         self.frontier_builder = FrontierGraphBuilder()
         self.frontier_encoder = FrontierNodesEncoder(
-            edge_feat_dim=edge_feat_dim,
-            hidden_dim=hidden_dim,
-            n_layers=n_layers,
-            dropout=dropout,
-            node_feat_dim=node_feat_dim,
+            edge_feat_dim=config.edge_feat_dim,
+            hidden_dims=config.encoder_hidden_dims,
+            dropouts=config.encoder_dropouts,
+            node_feat_dim=config.node_feat_dim,
         )
-        d_in = hidden_dim + 1 + 3  # GNN embeds + budget_ratio + structural
+        d_in = self.hidden_dim + 1 + 3  # GNN embeds + budget_ratio + structural
         self.frontier_pointer = FrontierPointer(
-            d_in=d_in, d_model=hidden_dim, n_heads=n_heads, dropout=dropout,
+            d_in=d_in, d_model=self.hidden_dim, n_heads=config.n_heads,
+            dropout=config.dropout,
         )
 
         # Phase 2: belief state
         self.belief_state = BeliefState(
-            d_model=hidden_dim, m=m,
-            n_heads=n_heads, dropout=dropout,
+            d_model=self.hidden_dim, m=config.m,
+            n_heads=config.n_heads, dropout=config.dropout,
         )
 
         # Full frontier subgraph GNN for encoding new reveal info (local + global)
-        self.new_info_encoder = NewInfoEncoder(edge_feat_dim, hidden_dim, dropout)
+        self.new_info_encoder = NewInfoEncoder(
+            config.edge_feat_dim, self.hidden_dim, config.dropout)
         self.node_feat_proj = (
-            nn.Linear(node_feat_dim, hidden_dim) if node_feat_dim > 0 else None
+            nn.Linear(config.node_feat_dim, self.hidden_dim)
+            if config.node_feat_dim > 0 else None
         )
 
         # Stateful belief for select() eval path

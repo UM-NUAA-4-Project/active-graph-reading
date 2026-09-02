@@ -5,17 +5,20 @@
 边特征使用原图边特征（这是区分前沿节点的关键特征）。
 
 图构建逻辑已抽取至 frontier_graph_builder.py 的 FrontierGraphBuilder。
+
+支持逐层 hidden_dims/dropouts（旧标量自动展开，state_dict 键名不变）。
+注意：node_type_emb 维度 = hidden_dims[0]；空前沿返回宽度 = hidden_dims[-1]。
 """
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import dgl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from classifier.layers.gin import GINELayer
 from .graph_builder import FrontierSubgraph
-from ..gin_encoder import GINELayer
 
 
 class FrontierNodesEncoder(nn.Module):
@@ -24,10 +27,11 @@ class FrontierNodesEncoder(nn.Module):
     Parameters
     ----------
     edge_feat_dim : int  边特征维度（PPA: 7）
-    hidden_dim : int     隐层维度（默认 128）
+    hidden_dim : int     隐层维度（默认 128，uniform 形式）
     n_layers : int       GNN 层数（默认 2）
     dropout : float      Dropout 概率（默认 0.1）
     node_feat_dim : int  原始节点特征维度（0=无节点特征，用 type embedding）
+    hidden_dims/dropouts : 逐层列表（提供时覆盖标量形式）
     """
 
     def __init__(
@@ -37,22 +41,33 @@ class FrontierNodesEncoder(nn.Module):
         n_layers: int = 2,
         dropout: float = 0.1,
         node_feat_dim: int = 0,
+        hidden_dims: Optional[List[int]] = None,
+        dropouts: Optional[List[float]] = None,
     ):
         super().__init__()
-        self.hidden_dim = hidden_dim
-        self.n_layers = n_layers
-        self.dropout = dropout
+        if hidden_dims is None:
+            hidden_dims = [int(hidden_dim)] * int(n_layers)
+        if dropouts is None:
+            dropouts = [float(dropout)] * len(hidden_dims)
+        if len(dropouts) != len(hidden_dims):
+            raise ValueError("dropouts 与 hidden_dims 长度不一致")
 
-        self.node_type_emb = nn.Embedding(2, hidden_dim)
+        self.hidden_dims = [int(d) for d in hidden_dims]
+        self.dropouts = [float(p) for p in dropouts]
+        self.n_layers = len(self.hidden_dims)
+        self.hidden_dim = self.hidden_dims[-1]   # 输出宽度（兼容旧属性）
+        self.dropout = self.dropouts[0]
+
+        self.node_type_emb = nn.Embedding(2, self.hidden_dims[0])
         self.node_feat_proj = (
-            nn.Linear(node_feat_dim, hidden_dim) if node_feat_dim > 0 else None
+            nn.Linear(node_feat_dim, self.hidden_dims[0]) if node_feat_dim > 0 else None
         )
 
         self.convs = nn.ModuleList()
         self.bns = nn.ModuleList()
-        for _ in range(n_layers):
-            self.convs.append(GINELayer(hidden_dim, edge_feat_dim))
-            self.bns.append(nn.BatchNorm1d(hidden_dim))
+        for i in range(self.n_layers):
+            self.convs.append(GINELayer(self.hidden_dims[i], edge_feat_dim))
+            self.bns.append(nn.BatchNorm1d(self.hidden_dims[i]))
 
     def forward(
         self, subgraph: FrontierSubgraph
@@ -87,9 +102,9 @@ class FrontierNodesEncoder(nn.Module):
             h = self.convs[i](g, h, edge_feat)
             h = self.bns[i](h)
             if i < self.n_layers - 1:
-                h = F.dropout(F.relu(h), p=self.dropout, training=self.training)
+                h = F.dropout(F.relu(h), p=self.dropouts[i], training=self.training)
             else:
-                h = F.dropout(h, p=self.dropout, training=self.training)
+                h = F.dropout(h, p=self.dropouts[i], training=self.training)
 
         frontier_embeds = h[n_revealed:]
         return frontier_embeds, frontier
@@ -147,16 +162,17 @@ class FrontierNodesEncoder(nn.Module):
                     h[start:start + cnt] = 0
 
         edge_feat = batch_g.edata.get('feat',
-                      torch.empty(0, 7, device=device))
+                      torch.empty(0, self.convs[0].edge_encoder.in_features,
+                                  device=device))
 
         # GNN（一次 forward）
         for i in range(self.n_layers):
             h = self.convs[i](batch_g, h, edge_feat)
             h = self.bns[i](h)
             if i < self.n_layers - 1:
-                h = F.dropout(F.relu(h), p=self.dropout, training=self.training)
+                h = F.dropout(F.relu(h), p=self.dropouts[i], training=self.training)
             else:
-                h = F.dropout(h, p=self.dropout, training=self.training)
+                h = F.dropout(h, p=self.dropouts[i], training=self.training)
 
         # 拆分回每个子图的 frontier embeddings
         results: List[Tuple[torch.Tensor, List[int]]] = []

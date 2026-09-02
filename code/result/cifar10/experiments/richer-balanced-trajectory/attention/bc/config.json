@@ -1,0 +1,17 @@
+{
+  "reader_kind": "attention",
+  "dataset": "cifar10",
+  "hidden_dim": 256,
+  "n_layers_reader": 2,
+  "dropout_reader": 0.25,
+  "m": 4,
+  "n_heads": 8,
+  "temperature": 1.0,
+  "edge_feat_dim": 1,
+  "node_feat_dim": 5,
+  "lr": 0.001,
+  "batch_size": 128,
+  "epochs": 10,
+  "total_params": 3056005,
+  "n_train_trajs": 57536
+}

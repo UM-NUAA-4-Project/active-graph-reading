@@ -13,8 +13,8 @@ import torch
 import torch.nn as nn
 import dgl
 
-from .gin_encoder import GINEEncoder
-from .classifier import GraphClassifier
+from classifier.layers.gin import GINEEncoder
+from classifier.factory import load_classifier
 
 logger = logging.getLogger(__name__)
 
@@ -100,16 +100,7 @@ def build_g_phi_from_fclass(
     """
     device = torch.device(device)
 
-    fclass = GraphClassifier(
-        edge_feat_dim=PPA_EDGE_FEAT_DIM, n_classes=37,
-        hidden_dim=PPA_HIDDEN_DIM, n_layers=5, dropout=PPA_DROPOUT,
-    ).to(device)
-    ckpt = torch.load(str(fclass_ckpt_path), map_location=device,
-                      weights_only=False)
-    fclass.load_state_dict(ckpt['model_state_dict'], strict=True)
-    fclass.eval()
-    for p in fclass.parameters():
-        p.requires_grad = False
+    fclass = load_classifier(str(fclass_ckpt_path), device=device, freeze=True)
 
     g_phi = SubgraphEncoder(
         edge_feat_dim=PPA_EDGE_FEAT_DIM,

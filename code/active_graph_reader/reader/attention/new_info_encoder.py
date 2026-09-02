@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 import dgl
 
-from active_graph_reader.gnn.gin_encoder import GINELayer
+from classifier.layers.gin import GINELayer
 
 
 class NewInfoEncoder(nn.Module):

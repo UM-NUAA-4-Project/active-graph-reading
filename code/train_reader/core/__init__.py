@@ -1,0 +1,10 @@
+"""train_reader 核心：统一 BC/RL 训练循环、评估循环、模型构建。"""
+
+from .bc import train_one_epoch as bc_train_epoch  # noqa: F401
+from .rl import train_one_epoch as rl_train_epoch  # noqa: F401
+from .eval_loop import (evaluate_reader, evaluate_fixed,  # noqa: F401
+                        build_eval_json, budget_stats, rollout_strategy)
+from .build import (load_classifier_frozen, load_reader_from_checkpoint,  # noqa: F401
+                    bootstrap_reader)
+from .common import (compute_reward, normalize_advantages,  # noqa: F401
+                     freeze_shared_layers, reveal_and_update_beliefs_batch)

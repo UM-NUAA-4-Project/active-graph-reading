@@ -1,29 +1,42 @@
-"""ReaderMLP: 将 frontier embeddings 映射为标量 scores。"""
+"""ReaderMLP: 将 frontier embeddings 映射为标量 scores。
+
+支持逐层 hidden/dropout 列表；标量形式（hidden_dim + 3 层）与旧版
+state_dict 键名完全一致（mlp.0 / mlp.3 / mlp.6）。
+"""
+
+from typing import List, Optional
 
 import torch.nn as nn
 
 
 class ReaderMLP(nn.Module):
-    """小型 MLP scorer，供 LearnableReader 使用。
+    """MLP scorer，供 LearnableReader 使用。
 
-    Parameters
-    ----------
-    input_dim : int   输入维度（LearnableReader=128）
-    hidden_dim : int  隐层维度，默认 128
-    dropout : float   Dropout，默认 0.1
+    两种参数形式：
+    - 旧式标量：hidden_dim + dropout（3 个 uniform 隐层）
+    - 新式列表：hidden_dims[i] / dropouts[i]（逐层独立）
+    结构：[Linear(hi) ReLU Dropout]*k → Linear(→1)
     """
 
-    def __init__(self, input_dim: int, hidden_dim: int = 128, dropout: float = 0.1):
+    def __init__(self, input_dim: int, hidden_dim: int = 128, dropout: float = 0.1,
+                 hidden_dims: Optional[List[int]] = None,
+                 dropouts: Optional[List[float]] = None):
         super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(p=dropout),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(p=dropout),
-            nn.Linear(hidden_dim, 1),
-        )
+        if hidden_dims is None:
+            hidden_dims = [hidden_dim] * 3
+        if dropouts is None:
+            dropouts = [dropout] * len(hidden_dims)
+        if len(dropouts) != len(hidden_dims):
+            raise ValueError("dropouts 与 hidden_dims 长度不一致")
+
+        layers: list = []
+        prev = input_dim
+        for i, (h, p) in enumerate(zip(hidden_dims, dropouts)):
+            layers += [nn.Linear(prev, h), nn.ReLU(), nn.Dropout(p=p)]
+            prev = h
+        layers.append(nn.Linear(prev, 1))
+        self.mlp = nn.Sequential(*layers)
+        self.hidden_dims = list(hidden_dims)
 
     def forward(self, frontier_embeds):
         """(N, input_dim) -> (N,)"""
