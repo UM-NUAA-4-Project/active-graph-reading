@@ -36,8 +36,8 @@ from train_reader.core import (build_eval_json, evaluate_fixed,  # noqa: E402
 
 
 def resolve(p) -> Path:
-    path = Path(p)
-    return path if path.is_absolute() else CODE_DIR / path
+    from tools.paths import resolve as _resolve
+    return _resolve(p)
 
 
 def main():

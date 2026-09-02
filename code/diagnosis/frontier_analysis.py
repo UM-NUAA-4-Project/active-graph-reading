@@ -41,9 +41,9 @@ from tools.seeds import deterministic_seed  # noqa: E402
 
 
 def resolve(p) -> Path:
-    """相对路径按 repo root 解析（绝对路径原样）。"""
-    path = Path(p)
-    return path if path.is_absolute() else CODE_DIR / path
+    """双基准解析（code/ 优先，兼容仓库根形式）。"""
+    from tools.paths import resolve as _resolve
+    return _resolve(p)
 
 
 def run_random_walk(state: GraphState, budget: int) -> list:

@@ -20,6 +20,7 @@ UNIT_TESTS = [
     'test_checkpoint_compat.py',
     'test_trajectory_io.py',
     'test_unified_loops.py',
+    'test_self_loop.py',
 ]
 
 CLI_SCRIPTS = [

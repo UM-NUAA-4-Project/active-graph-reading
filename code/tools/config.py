@@ -77,3 +77,14 @@ def build_experiment_config(args, extra: Optional[Dict] = None) -> Dict:
     if extra:
         cfg.update(extra)
     return cfg
+
+
+def require_args(args, names) -> None:
+    """合并后的必填参数校验（允许 required 参数来自 --config）。
+
+    在 --config 合并完成后调用；任一参数仍为空值（None/''）则报错退出。
+    """
+    missing = [n for n in names if not getattr(args, n, None)]
+    if missing:
+        flags = ', '.join('--' + n.replace('_', '-') for n in missing)
+        raise SystemExit(f"缺少必填参数: {flags}（CLI 或 --config 提供其一）")

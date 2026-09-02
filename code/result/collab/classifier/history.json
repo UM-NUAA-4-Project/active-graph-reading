@@ -1,0 +1,108 @@
+{
+  "dataset": "collab",
+  "epochs": [
+    {
+      "epoch": 1,
+      "loss": 0.812318,
+      "train_acc": 0.6425,
+      "test_acc": null,
+      "eval_checkpoint": null
+    },
+    {
+      "epoch": 2,
+      "loss": 0.755454,
+      "train_acc": 0.65475,
+      "test_acc": null,
+      "eval_checkpoint": null
+    },
+    {
+      "epoch": 3,
+      "loss": 0.744395,
+      "train_acc": 0.664,
+      "test_acc": null,
+      "eval_checkpoint": null
+    },
+    {
+      "epoch": 4,
+      "loss": 0.740891,
+      "train_acc": 0.65675,
+      "test_acc": null,
+      "eval_checkpoint": null
+    },
+    {
+      "epoch": 5,
+      "loss": 0.733002,
+      "train_acc": 0.667,
+      "test_acc": 0.674651,
+      "eval_checkpoint": "eval_epoch5.pt"
+    },
+    {
+      "epoch": 6,
+      "loss": 0.740937,
+      "train_acc": 0.656,
+      "test_acc": null,
+      "eval_checkpoint": null
+    },
+    {
+      "epoch": 7,
+      "loss": 0.743866,
+      "train_acc": 0.643,
+      "test_acc": null,
+      "eval_checkpoint": null
+    },
+    {
+      "epoch": 8,
+      "loss": 0.740182,
+      "train_acc": 0.6505,
+      "test_acc": null,
+      "eval_checkpoint": null
+    },
+    {
+      "epoch": 9,
+      "loss": 0.754146,
+      "train_acc": 0.64225,
+      "test_acc": null,
+      "eval_checkpoint": null
+    },
+    {
+      "epoch": 10,
+      "loss": 0.735374,
+      "train_acc": 0.656,
+      "test_acc": 0.640719,
+      "eval_checkpoint": "eval_epoch10.pt"
+    },
+    {
+      "epoch": 11,
+      "loss": 0.749225,
+      "train_acc": 0.64925,
+      "test_acc": null,
+      "eval_checkpoint": null
+    },
+    {
+      "epoch": 12,
+      "loss": 0.745,
+      "train_acc": 0.6485,
+      "test_acc": null,
+      "eval_checkpoint": null
+    },
+    {
+      "epoch": 13,
+      "loss": 0.730349,
+      "train_acc": 0.6605,
+      "test_acc": null,
+      "eval_checkpoint": null
+    },
+    {
+      "epoch": 14,
+      "loss": 0.725382,
+      "train_acc": 0.6605,
+      "test_acc": null,
+      "eval_checkpoint": null
+    }
+  ],
+  "best": {
+    "epoch": 5,
+    "test_acc": 0.674651,
+    "checkpoint": "best_collab_classifier.pt"
+  }
+}

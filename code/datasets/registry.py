@@ -63,7 +63,7 @@ def _ensure_registered() -> None:
     """首次 get_dataset 时才加载数据集模块（避免 dgl 循环导入）。"""
     global _REGISTERED
     if not _REGISTERED:
-        from . import cifar10, ppa  # noqa: F401  导入即注册
+        from . import cifar10, collab, ppa  # noqa: F401  导入即注册
         _REGISTERED = True
 
 

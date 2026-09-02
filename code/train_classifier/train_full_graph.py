@@ -49,15 +49,15 @@ from tools.seeds import set_all_seeds  # noqa: E402
 
 
 def resolve_path(p: str) -> Path:
-    path = Path(p)
-    return path if path.is_absolute() else CODE_DIR / p
+    from tools.paths import resolve as _resolve
+    return _resolve(p)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='全图上界分类器训练（通用）')
     parser.add_argument('--dataset', default='cifar10')
-    parser.add_argument('--root', required=True,
-                        help='数据集根目录（数据地址唯一来源）')
+    parser.add_argument('--root', default='',
+                        help='数据集根目录（必填：CLI 或 --config 提供其一）')
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='每 split 最多加载的图数（0=全部；PPA 必配）')
     parser.add_argument('--device', default='cuda:0')
@@ -177,7 +177,8 @@ def main():
                 setattr(args, k, v)
     args._defaults = {a.dest: parser.get_default(a.dest)
                       for a in parser._actions if a.dest != 'help'}
-    effective = merge_args_with_config(args, cfg_baseline)
+    from tools.config import require_args
+    require_args(args, ['root'])
 
     set_all_seeds(args.seed)
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')

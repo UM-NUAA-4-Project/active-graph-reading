@@ -45,9 +45,8 @@ def main():
                         help='轨迹目录（filter/balance 输出）')
     args = parser.parse_args()
 
-    data_dir = Path(args.data_dir)
-    if not data_dir.is_absolute():
-        data_dir = CODE_DIR / data_dir
+    from tools.paths import resolve as _resolve
+    data_dir = _resolve(args.data_dir)
     print(f'Scanning: {data_dir}')
 
     per_ratio_trajs = load_trajs(data_dir)

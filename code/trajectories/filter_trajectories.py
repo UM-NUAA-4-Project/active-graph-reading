@@ -33,8 +33,8 @@ def ratio_key_from_name(fname: str) -> str:
 
 
 def resolve(p: str) -> Path:
-    path = Path(p)
-    return path if path.is_absolute() else CODE_DIR / p
+    from tools.paths import resolve as _resolve
+    return _resolve(p)
 
 
 def main():

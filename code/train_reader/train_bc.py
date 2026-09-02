@@ -42,8 +42,8 @@ from train_reader.core import bc_train_epoch  # noqa: E402
 
 
 def resolve(p) -> Path:
-    path = Path(p)
-    return path if path.is_absolute() else CODE_DIR / path
+    from tools.paths import resolve as _resolve
+    return _resolve(p)
 
 
 def merge_trajectories(data_dir: Path, teachers: list) -> list:
@@ -71,7 +71,7 @@ def build_graph_cache(spec, ds, needed: set) -> dict:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='BC 训练（任意数据集 × 两种 reader）')
     parser.add_argument('--dataset', default='cifar10')
-    parser.add_argument('--root', required=True, help='数据集根目录')
+    parser.add_argument('--root', default='', help='数据集根目录（必填：CLI 或 --config）')
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='每 split 最多加载图数（0=不限；PPA 必配）')
     parser.add_argument('--data-dir', default='',
@@ -107,6 +107,8 @@ def main():
             if hasattr(args, k) and getattr(args, k) == parser.get_default(k):
                 setattr(args, k, v)
     cli_utils.attach_defaults(args, parser)
+    from tools.config import require_args
+    require_args(args, ['root'])
 
     set_all_seeds(args.seed)
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')

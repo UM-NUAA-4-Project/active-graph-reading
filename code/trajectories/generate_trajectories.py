@@ -60,9 +60,9 @@ def ratio_key(r: float) -> str:
 def main():
     parser = argparse.ArgumentParser(description='教师轨迹生成（registry 数据集）')
     parser.add_argument('--dataset', default='cifar10')
-    parser.add_argument('--root', required=True,
+    parser.add_argument('--root', default='',
                         help='数据集根目录（如 D:\\superpixels）')
-    parser.add_argument('--classifier', required=True,
+    parser.add_argument('--classifier', default='',
                         help='上界分类器 checkpoint（相对 code/，或绝对路径）')
     parser.add_argument('--teachers', nargs='+',
                         default=['gradient', 'structural-degree'])
@@ -85,7 +85,22 @@ def main():
     parser.add_argument('--output-dir', default='',
                         help='输出目录（默认 data/{dataset}/trajectories）')
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--config', default='',
+                        help='实验 config JSON（键名=CLI 选项的下划线形式，'
+                             'CLI 显式传参覆盖其值）')
     args = parser.parse_args()
+
+    cfg_baseline = {}
+    if args.config:
+        from tools.config import load_json
+        cfg_baseline = load_json(args.config)
+        for k, v in cfg_baseline.items():
+            if hasattr(args, k) and getattr(args, k) == parser.get_default(k):
+                setattr(args, k, v)
+    from tools import cli as cli_utils
+    cli_utils.attach_defaults(args, parser)
+    from tools.config import require_args
+    require_args(args, ['root', 'classifier'])
 
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
@@ -128,9 +143,8 @@ def main():
         return
 
     # ---- 分类器（gradient 教师需要 autograd 图 → requires_grad=True）----
-    clf_path = Path(args.classifier)
-    if not clf_path.is_absolute():
-        clf_path = CODE_DIR / args.classifier
+    from tools.paths import resolve as _resolve
+    clf_path = _resolve(args.classifier)
     cls_ckpt = torch.load(str(clf_path), map_location=device, weights_only=False)
     classifier = build_classifier(cls_ckpt, device, requires_grad=True)
     print(f"Classifier: {clf_path} (edge_feat_dim={spec.edge_feat_dim}, "

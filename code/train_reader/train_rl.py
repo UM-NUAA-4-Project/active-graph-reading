@@ -40,28 +40,28 @@ from train_reader.core import (bootstrap_reader, freeze_shared_layers,  # noqa: 
 
 
 def resolve(p) -> Path:
-    path = Path(p)
-    return path if path.is_absolute() else CODE_DIR / path
+    from tools.paths import resolve as _resolve
+    return _resolve(p)
 
 
 def main():
     parser = argparse.ArgumentParser(description='RL 微调（任意数据集 × 两种 reader）')
     parser.add_argument('--dataset', default='cifar10')
-    parser.add_argument('--root', required=True, help='数据集根目录')
+    parser.add_argument('--root', default='', help='数据集根目录（必填：CLI 或 --config）')
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='训练图数限制（0=全部；冒烟传小值）')
     cli_utils.add_reader_args(parser, reader_kind_default='attention',
                               temperature_default=0.2)
     parser.add_argument('--bootstrap', default='',
                         help='迁移起点 reader checkpoint（与 --resume 二选一）')
-    parser.add_argument('--classifier', required=True, help='上界分类器 checkpoint')
+    parser.add_argument('--classifier', default='', help='上界分类器 checkpoint（必填：CLI 或 --config）')
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--graphs-per-batch', type=int, default=32)
     parser.add_argument('--seeds-per-graph', type=int, default=4)
     parser.add_argument('--reward', choices=['binary', 'tanh', 'asymmetric'],
                         default='binary')
-    parser.add_argument('--reward-neg-scale', type=float, default=0.1,
+    parser.add_argument('--reward-neg-scale', type=float, default=1,
                         help='batch 优势归一化后负侧优势的降权系数 λ（λ=1 即无不对称）')
     parser.add_argument('--freeze', action='store_true',
                         help='冻结共享层，仅训练特征投影层（冻结消融用）')
@@ -84,6 +84,8 @@ def main():
             if hasattr(args, k) and getattr(args, k) == parser.get_default(k):
                 setattr(args, k, v)
     cli_utils.attach_defaults(args, parser)
+    from tools.config import require_args
+    require_args(args, ['root', 'classifier'])
 
     assert bool(args.bootstrap) != bool(args.resume), \
         "--bootstrap 与 --resume 必须二选一"
