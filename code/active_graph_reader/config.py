@@ -25,12 +25,15 @@ def _fold(d: Dict, values: List, base: str) -> None:
 
 
 def _unfold(d: Dict, base: str, default: List) -> List:
-    """from_dict 的反向：接受 {base, n_bases} / {base+'s'} / 缺省。"""
-    if base + 's' in d:
-        return list(d[base + 's'])
-    if base in d:
-        n = int(d.get('n_' + base + 's', len(default)))
-        return [d[base]] * n
+    """from_dict 的反向：接受 {base, n_bases} / {base+'s'} / 缺省；None 视同缺省
+    （实验 config 会把未提供的 nargs='+' 参数序列化为 null）。"""
+    vals = d.get(base + 's')
+    if vals is not None:
+        return list(vals)
+    scalar = d.get(base)
+    if scalar is not None:
+        n = _to_int(d.get('n_' + base + 's'), len(default))
+        return [scalar] * n
     return list(default)
 
 
@@ -219,15 +222,20 @@ def infer_reader_config(state_dict: Dict[str, torch.Tensor]) -> ReaderConfig:
 def reader_config_from_checkpoint(ckpt: dict,
                                   state_dict: Optional[dict] = None) -> ReaderConfig:
     """checkpoint → ReaderConfig：结构取自权重 shape，非结构超参（m/n_heads/
-    temperature/stochastic/dropout）取内嵌 config（如有）。"""
+    temperature/stochastic）取内嵌 config（如有）。"""
     sd = state_dict if state_dict is not None else ckpt.get('reader_state_dict', {})
     cfg = infer_reader_config(sd)
     embedded = ckpt.get('config')
     if isinstance(embedded, dict):
         embedded = dict(embedded)
-        # 结构字段以权重为准，防止内嵌 config 漂移（fix_ckpt_config 的教训）
-        for k in ('hidden_dim', 'n_layers', 'n_layers_reader', 'dropout',
-                  'dropout_reader', 'edge_feat_dim', 'node_feat_dim'):
+        # None = CLI 未提供（build_experiment_config 原样序列化），不得覆盖推断值
+        embedded = {k: v for k, v in embedded.items() if v is not None}
+        # 结构字段以权重为准，防止内嵌 config 漂移（fix_ckpt_config 的教训）；
+        # 标量折叠与逐层列表两种形式都要剔掉
+        for k in ('hidden_dim', 'hidden_dims', 'n_hidden_dims',
+                  'n_layers', 'n_layers_reader',
+                  'n_dropouts', 'n_scorer_hidden_dims', 'n_scorer_dropouts',
+                  'edge_feat_dim', 'node_feat_dim'):
             embedded.pop(k, None)
         merged = cfg.to_dict()
         merged.update(embedded)

@@ -21,5 +21,8 @@
   "residual": false,
 
   "backbone": "gin",
-  "n_heads": 4
+  "n_heads": 4,
+
+  "head": "linear",
+  "gnn_norm": null
 }

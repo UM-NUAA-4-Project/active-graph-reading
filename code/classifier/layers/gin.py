@@ -15,6 +15,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Optional
 
+from .norm import make_norm
+
 logger = logging.getLogger(__name__)
 
 
@@ -81,6 +83,7 @@ class GINEEncoder(nn.Module):
         node_feat_dim: int = 0,
         hidden_dims: Optional[List[int]] = None,
         dropouts: Optional[List[float]] = None,
+        gnn_norm: Optional[str] = None,
     ):
         super().__init__()
 
@@ -101,6 +104,9 @@ class GINEEncoder(nn.Module):
         self.dropout = self.dropouts[0]
         self.virtual_node = virtual_node
         self.residual = residual
+        # 历史语义：GIN 层间恒为 BatchNorm（state_dict 键名 bns.i.*），
+        # gnn_norm=None 保持兼容；'none'/'layernorm' 显式覆盖
+        self.norm_type = gnn_norm if gnn_norm is not None else 'batchnorm'
 
         self.node_feat_dim = int(node_feat_dim)
         if node_feat_dim > 0:
@@ -112,7 +118,7 @@ class GINEEncoder(nn.Module):
         self.bns = nn.ModuleList()
         for i in range(self.n_layers):
             self.convs.append(GINELayer(self.hidden_dims[i], edge_feat_dim))
-            self.bns.append(nn.BatchNorm1d(self.hidden_dims[i]))
+            self.bns.append(make_norm(self.hidden_dims[i], self.norm_type))
 
         # Virtual Node (optional, matches OGB gin-virtual)
         if virtual_node:

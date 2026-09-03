@@ -87,6 +87,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--n-heads', type=int, nargs='+', default=None,
                         help='GAT 每层注意力头数（标量或逐层列表，默认 4 头/'
                              '层；要求 hidden_dims[i] 能被 n_heads[i] 整除）')
+    parser.add_argument('--head', default='linear', choices=['linear', 'ffn'],
+                        help='分类头：linear=单层 Linear（默认）；ffn=两层 MLP')
+    parser.add_argument('--gnn-norm', default=None,
+                        choices=['batchnorm', 'layernorm', 'none'],
+                        help='GNN 层间归一化（默认 None=各 backbone 原行为：'
+                             'GIN=BatchNorm、GAT=无；GINELayer MLP 内部的 '
+                             'BatchNorm 不受此参数控制）')
     parser.add_argument('--init-checkpoint', default=None,
                         help='从已有 classifier checkpoint 加载权重微调'
                              '（结构继承自 checkpoint config）')
@@ -128,7 +135,8 @@ def classifier_config_from_args(args, spec, init_cfg: dict):
             edge_feat_dim=spec.edge_feat_dim, node_feat_dim=spec.node_feat_dim,
             n_classes=spec.n_classes, hidden_dims=dims, dropouts=drops,
             virtual_node=args.virtual_node, residual=args.residual,
-            n_heads=_norm_heads(args.n_heads, len(dims)))
+            n_heads=_norm_heads(args.n_heads, len(dims)),
+            head=args.head, gnn_norm=args.gnn_norm)
     else:
         cfg = ClassifierConfig.from_legacy(
             edge_feat_dim=spec.edge_feat_dim, n_classes=spec.n_classes,
@@ -136,7 +144,8 @@ def classifier_config_from_args(args, spec, init_cfg: dict):
             dropout=args.dropout, virtual_node=args.virtual_node,
             residual=args.residual, node_feat_dim=spec.node_feat_dim,
             backbone=args.backbone,
-            n_heads=_norm_heads(args.n_heads, args.n_layers))
+            n_heads=_norm_heads(args.n_heads, args.n_layers),
+            head=args.head, gnn_norm=args.gnn_norm)
     return cfg
 
 

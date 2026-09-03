@@ -25,6 +25,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Optional, Union
 
+from .norm import make_norm
+
 
 class GATLayer(nn.Module):
     """多头 GAT 层（边特征同时参与注意力打分与消息 value）。
@@ -103,6 +105,7 @@ class GATEncoder(nn.Module):
         hidden_dims: Optional[List[int]] = None,
         dropouts: Optional[List[float]] = None,
         n_heads: Optional[Union[int, List[int]]] = None,
+        gnn_norm: Optional[str] = None,
     ):
         super().__init__()
 
@@ -139,6 +142,8 @@ class GATEncoder(nn.Module):
         self.dropout = self.dropouts[0]
         self.virtual_node = virtual_node
         self.residual = residual
+        # 历史语义：GAT 层间原本无归一化，gnn_norm=None 保持兼容
+        self.norm_type = gnn_norm if gnn_norm is not None else 'none'
 
         self.node_feat_dim = int(node_feat_dim)
         if node_feat_dim > 0:
@@ -152,6 +157,8 @@ class GATEncoder(nn.Module):
             self.convs.append(GATLayer(
                 in_dim, self.hidden_dims[i], heads[i], edge_feat_dim))
             in_dim = self.hidden_dims[i]
+        self.bns = nn.ModuleList(
+            make_norm(d, self.norm_type) for d in self.hidden_dims)
 
         # Virtual Node（与 GINEEncoder 相同的模式）
         if virtual_node:
@@ -205,6 +212,7 @@ class GATEncoder(nn.Module):
 
             h_prev = h
             h = self.convs[i](g, h, edge_feat)
+            h = self.bns[i](h)
 
             if i == self.n_layers - 1:
                 h = F.dropout(h, p=self.dropouts[i], training=self.training)

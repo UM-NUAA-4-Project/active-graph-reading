@@ -1,8 +1,8 @@
-"""GraphClassifier：backbone（GINEEncoder 等）+ Linear 分类头。
+"""GraphClassifier：backbone（GINEEncoder/GATEncoder）+ 分类头（linear/ffn）。
 
 自 active_graph_reader/gnn/classifier.py 迁出，与 reader 包完全解耦。
 保持旧构造签名（hidden_dim/n_layers/dropout 标量）与 forward(g, node_ids)
-协议不变；新增 config=ClassifierConfig 支持逐层结构。
+协议不变；新增 config=ClassifierConfig 支持逐层结构、head 与 gnn_norm。
 """
 
 import logging
@@ -56,12 +56,21 @@ class GraphClassifier(nn.Module):
             virtual_node=self.config.virtual_node,
             residual=self.config.residual,
             node_feat_dim=self.config.node_feat_dim,
+            gnn_norm=self.config.gnn_norm,
         )
         if self.config.backbone == 'gat':
             backbone_kwargs['n_heads'] = self.config.n_heads
         self.encoder = backbone_cls(**backbone_kwargs)
 
-        self.head = nn.Linear(self.config.hidden_dims[-1], self.config.n_classes)
+        embed_dim = self.config.hidden_dims[-1]
+        if self.config.head == 'ffn':
+            self.head = nn.Sequential(
+                nn.Linear(embed_dim, embed_dim),
+                nn.ReLU(),
+                nn.Linear(embed_dim, self.config.n_classes),
+            )
+        else:
+            self.head = nn.Linear(embed_dim, self.config.n_classes)
 
     # ------------------------------------------------------------------
     # Pretrained weight loading

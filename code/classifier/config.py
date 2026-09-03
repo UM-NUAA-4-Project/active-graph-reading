@@ -25,6 +25,11 @@ class ClassifierConfig:
     或 'gat'（GATEncoder，多头注意力含边特征）。n_heads 仅 GAT 使用：
     None → encoder 内默认（每层 4 头）；标量/列表均可，要求
     hidden_dims[i] 能被 n_heads[i] 整除（concat heads）。
+
+    head: 分类头类型，'linear'（单层 Linear，默认）| 'ffn'（两层 MLP）。
+    gnn_norm: GNN 层间归一化（注意不含 GINELayer MLP 内部的 BatchNorm），
+    None → 各 backbone 原行为（GIN=BatchNorm、GAT=无），
+    可显式选 'batchnorm' / 'layernorm' / 'none'。
     """
 
     backbone: str = 'gin'
@@ -36,6 +41,8 @@ class ClassifierConfig:
     virtual_node: bool = False
     residual: bool = False
     n_heads: Optional[List[int]] = None
+    head: str = 'linear'
+    gnn_norm: Optional[str] = None
 
     # ---- 兼容旧标量接口 ----
     @property
@@ -73,6 +80,10 @@ class ClassifierConfig:
                 d['n_heads'] = self.n_heads[0]
             else:
                 d['n_heads'] = list(self.n_heads)
+        if self.head != 'linear':
+            d['head'] = self.head
+        if self.gnn_norm is not None:
+            d['gnn_norm'] = self.gnn_norm
         return d
 
     @staticmethod
@@ -88,6 +99,13 @@ class ClassifierConfig:
             dropouts = [float(d.get('dropout', 0.5))] * len(hidden_dims)
         if len(dropouts) != len(hidden_dims):
             raise ValueError(f"dropouts 长度 {len(dropouts)} != hidden_dims 长度 {len(hidden_dims)}")
+        head = d.get('head', 'linear')
+        if head not in ('linear', 'ffn'):
+            raise ValueError(f"未知分类头 '{head}'，可选: linear, ffn")
+        gnn_norm = d.get('gnn_norm')
+        if gnn_norm is not None and gnn_norm not in ('batchnorm', 'layernorm', 'none'):
+            raise ValueError(
+                f"未知层间归一化 '{gnn_norm}'，可选: batchnorm, layernorm, none")
         return ClassifierConfig(
             backbone=d.get('backbone', 'gin'),
             edge_feat_dim=int(d.get('edge_feat_dim', 7)),
@@ -99,6 +117,8 @@ class ClassifierConfig:
             residual=bool(d.get('residual', False)),
             n_heads=(d.get('n_heads') if isinstance(d.get('n_heads'), (list, tuple))
                      else ([int(d['n_heads'])] if 'n_heads' in d else None)),
+            head=head,
+            gnn_norm=gnn_norm,
         )
 
     @staticmethod
@@ -106,12 +126,14 @@ class ClassifierConfig:
                     n_layers: int = 5, dropout: float = 0.5,
                     virtual_node: bool = False, residual: bool = False,
                     node_feat_dim: int = 0, backbone: str = 'gin',
-                    n_heads: Optional[List[int]] = None) -> 'ClassifierConfig':
+                    n_heads: Optional[List[int]] = None,
+                    head: str = 'linear',
+                    gnn_norm: Optional[str] = None) -> 'ClassifierConfig':
         """旧式标量参数 → 配置（保持 m3 时代调用点一行迁移）。"""
         return ClassifierConfig(
             backbone=backbone,
             edge_feat_dim=edge_feat_dim, n_classes=n_classes,
             node_feat_dim=node_feat_dim, virtual_node=virtual_node,
-            residual=residual, n_heads=n_heads,
+            residual=residual, n_heads=n_heads, head=head, gnn_norm=gnn_norm,
             hidden_dims=[hidden_dim] * n_layers, dropouts=[dropout] * n_layers,
         )
