@@ -27,3 +27,7 @@ docs/superpowers/
 docs/slides/
 docs/figures/
 
+
+# baseline 复现产物（GAM 输入 JSON / 输出记录），代码本身提交
+baseline/data/
+baseline/output/
