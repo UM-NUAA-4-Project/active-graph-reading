@@ -18,5 +18,8 @@
   "n_layers": 5,
   "dropout": 0.5,
   "virtual_node": false,
-  "residual": false
+  "residual": false,
+
+  "backbone": "gin",
+  "n_heads": 4
 }

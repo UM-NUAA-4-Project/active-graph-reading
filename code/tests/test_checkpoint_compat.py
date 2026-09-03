@@ -68,7 +68,7 @@ def test_m3_classifier():
     clf = load_classifier(str(p))
     assert clf.config.n_classes == 37 and clf.config.hidden_dim == 300
     assert not any(p_.requires_grad for p_ in clf.parameters())
-    print('  m3 classifier inferred+frozen OK')
+    print('  m3 classifier config 重建+frozen OK')
 
 
 def run_all():

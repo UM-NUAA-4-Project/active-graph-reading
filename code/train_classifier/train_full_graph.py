@@ -82,6 +82,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help='逐层 dropout 列表')
     parser.add_argument('--virtual-node', action='store_true')
     parser.add_argument('--residual', action='store_true')
+    parser.add_argument('--backbone', default='gin', choices=['gin', 'gat'],
+                        help='分类器 backbone（默认 gin）')
+    parser.add_argument('--n-heads', type=int, nargs='+', default=None,
+                        help='GAT 每层注意力头数（标量或逐层列表，默认 4 头/'
+                             '层；要求 hidden_dims[i] 能被 n_heads[i] 整除）')
     parser.add_argument('--init-checkpoint', default=None,
                         help='从已有 classifier checkpoint 加载权重微调'
                              '（结构继承自 checkpoint config）')
@@ -93,6 +98,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--output-dir', default='',
                         help='默认 result/{dataset}/classifier')
     return parser
+
+
+def _norm_heads(n_heads, n_layers: int):
+    """--n-heads 标量/单元素列表 → 逐层列表；None 原样（encoder 内默认）。"""
+    if n_heads is None:
+        return None
+    if isinstance(n_heads, int):
+        n_heads = [n_heads]
+    if len(n_heads) == 1:
+        n_heads = list(n_heads) * n_layers
+    return list(n_heads)
 
 
 def classifier_config_from_args(args, spec, init_cfg: dict):
@@ -108,15 +124,19 @@ def classifier_config_from_args(args, spec, init_cfg: dict):
         dims = list(args.hidden_dims)
         drops = list(args.dropouts) if args.dropouts else [args.dropout] * len(dims)
         cfg = ClassifierConfig(
+            backbone=args.backbone,
             edge_feat_dim=spec.edge_feat_dim, node_feat_dim=spec.node_feat_dim,
             n_classes=spec.n_classes, hidden_dims=dims, dropouts=drops,
-            virtual_node=args.virtual_node, residual=args.residual)
+            virtual_node=args.virtual_node, residual=args.residual,
+            n_heads=_norm_heads(args.n_heads, len(dims)))
     else:
         cfg = ClassifierConfig.from_legacy(
             edge_feat_dim=spec.edge_feat_dim, n_classes=spec.n_classes,
             hidden_dim=args.hidden_dim, n_layers=args.n_layers,
             dropout=args.dropout, virtual_node=args.virtual_node,
-            residual=args.residual, node_feat_dim=spec.node_feat_dim)
+            residual=args.residual, node_feat_dim=spec.node_feat_dim,
+            backbone=args.backbone,
+            n_heads=_norm_heads(args.n_heads, args.n_layers))
     return cfg
 
 

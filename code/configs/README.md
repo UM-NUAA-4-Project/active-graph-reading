@@ -35,7 +35,9 @@ python code/train_reader/train_bc.py --config configs/train_bc.example.json --lr
 | eval_every | int, 5 | 每 N 轮 test 评估并保留 eval_epoch{N}.pt / best_*.pt |
 | hidden_dim / n_layers / dropout | int/float | uniform 结构（300×5 层、dropout 0.5） |
 | hidden_dims / dropouts | int[]/float[] | **逐层结构**（提供时覆盖 uniform，如 [300,256,128]） |
-| virtual_node / residual | bool, false | OGB gin-virtual / 残差 |
+| backbone | str, gin | 分类器 backbone：`gin`（GINEEncoder）/ `gat`（GATEncoder 多头注意力含边特征） |
+| n_heads | int/int[] | GAT 每层注意力头数（默认 4 头/层；要求 hidden_dims[i] 能被 n_heads[i] 整除，如 hidden 256 + heads 4） |
+| virtual_node / residual | bool, false | OGB gin-virtual / 残差（GAT 同样支持，要求各层同宽） |
 | device / seed | - | 设备 / 随机种子 |
 | exp | str | 实验名（默认输出 result/{dataset}/classifier/） |
 

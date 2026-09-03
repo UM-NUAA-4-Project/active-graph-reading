@@ -1,0 +1,59 @@
+{
+  "dataset": "collab",
+  "epochs": [
+    {
+      "epoch": 1,
+      "loss": 0.71457,
+      "train_acc": 0.67425,
+      "test_acc": 0.676647,
+      "eval_checkpoint": "eval_epoch1.pt"
+    },
+    {
+      "epoch": 2,
+      "loss": 0.698356,
+      "train_acc": 0.678,
+      "test_acc": 0.690619,
+      "eval_checkpoint": "eval_epoch2.pt"
+    },
+    {
+      "epoch": 3,
+      "loss": 0.683607,
+      "train_acc": 0.68975,
+      "test_acc": 0.688623,
+      "eval_checkpoint": "eval_epoch3.pt"
+    },
+    {
+      "epoch": 4,
+      "loss": 0.67749,
+      "train_acc": 0.68675,
+      "test_acc": 0.678643,
+      "eval_checkpoint": "eval_epoch4.pt"
+    },
+    {
+      "epoch": 5,
+      "loss": 0.679925,
+      "train_acc": 0.68675,
+      "test_acc": 0.648703,
+      "eval_checkpoint": "eval_epoch5.pt"
+    },
+    {
+      "epoch": 6,
+      "loss": 0.690061,
+      "train_acc": 0.6765,
+      "test_acc": 0.638723,
+      "eval_checkpoint": "eval_epoch6.pt"
+    },
+    {
+      "epoch": 7,
+      "loss": 0.678793,
+      "train_acc": 0.67,
+      "test_acc": 0.660679,
+      "eval_checkpoint": "eval_epoch7.pt"
+    }
+  ],
+  "best": {
+    "epoch": 2,
+    "test_acc": 0.690619,
+    "checkpoint": "best_collab_classifier.pt"
+  }
+}

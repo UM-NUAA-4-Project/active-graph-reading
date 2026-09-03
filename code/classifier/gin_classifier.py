@@ -49,7 +49,7 @@ class GraphClassifier(nn.Module):
                 node_feat_dim=node_feat_dim)
 
         backbone_cls = get_backbone(self.config.backbone)
-        self.encoder = backbone_cls(
+        backbone_kwargs = dict(
             edge_feat_dim=self.config.edge_feat_dim,
             hidden_dims=self.config.hidden_dims,
             dropouts=self.config.dropouts,
@@ -57,6 +57,9 @@ class GraphClassifier(nn.Module):
             residual=self.config.residual,
             node_feat_dim=self.config.node_feat_dim,
         )
+        if self.config.backbone == 'gat':
+            backbone_kwargs['n_heads'] = self.config.n_heads
+        self.encoder = backbone_cls(**backbone_kwargs)
 
         self.head = nn.Linear(self.config.hidden_dims[-1], self.config.n_classes)
 

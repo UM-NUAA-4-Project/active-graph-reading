@@ -21,8 +21,10 @@ def _as_list(value, n: Optional[int] = None) -> List:
 class ClassifierConfig:
     """全图分类器结构配置。
 
-    hidden_dims[i] / dropouts[i] 对应第 i 层；backbone 目前只有 'gin'
-    （'gat' 为预留骨架）。
+    hidden_dims[i] / dropouts[i] 对应第 i 层；backbone 'gin'（GINEEncoder）
+    或 'gat'（GATEncoder，多头注意力含边特征）。n_heads 仅 GAT 使用：
+    None → encoder 内默认（每层 4 头）；标量/列表均可，要求
+    hidden_dims[i] 能被 n_heads[i] 整除（concat heads）。
     """
 
     backbone: str = 'gin'
@@ -33,6 +35,7 @@ class ClassifierConfig:
     dropouts: List[float] = field(default_factory=lambda: [0.5] * 5)
     virtual_node: bool = False
     residual: bool = False
+    n_heads: Optional[List[int]] = None
 
     # ---- 兼容旧标量接口 ----
     @property
@@ -65,6 +68,11 @@ class ClassifierConfig:
             d['dropout'] = self.dropouts[0]
         else:
             d['dropouts'] = list(self.dropouts)
+        if self.backbone == 'gat' and self.n_heads is not None:
+            if len(set(self.n_heads)) == 1:
+                d['n_heads'] = self.n_heads[0]
+            else:
+                d['n_heads'] = list(self.n_heads)
         return d
 
     @staticmethod
@@ -89,17 +97,21 @@ class ClassifierConfig:
             dropouts=dropouts,
             virtual_node=bool(d.get('virtual_node', False)),
             residual=bool(d.get('residual', False)),
+            n_heads=(d.get('n_heads') if isinstance(d.get('n_heads'), (list, tuple))
+                     else ([int(d['n_heads'])] if 'n_heads' in d else None)),
         )
 
     @staticmethod
     def from_legacy(edge_feat_dim: int, n_classes: int, hidden_dim: int = 300,
                     n_layers: int = 5, dropout: float = 0.5,
                     virtual_node: bool = False, residual: bool = False,
-                    node_feat_dim: int = 0) -> 'ClassifierConfig':
+                    node_feat_dim: int = 0, backbone: str = 'gin',
+                    n_heads: Optional[List[int]] = None) -> 'ClassifierConfig':
         """旧式标量参数 → 配置（保持 m3 时代调用点一行迁移）。"""
         return ClassifierConfig(
+            backbone=backbone,
             edge_feat_dim=edge_feat_dim, n_classes=n_classes,
             node_feat_dim=node_feat_dim, virtual_node=virtual_node,
-            residual=residual,
+            residual=residual, n_heads=n_heads,
             hidden_dims=[hidden_dim] * n_layers, dropouts=[dropout] * n_layers,
         )

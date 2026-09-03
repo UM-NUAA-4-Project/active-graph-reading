@@ -1,0 +1,53 @@
+{
+  "dataset": "collab",
+  "root": "D:\\\\data\\\\COLLAB",
+  "max_graphs": 0,
+  "device": "cuda:0",
+  "epochs": 30,
+  "lr": 0.0001,
+  "batch_size": 32,
+  "weight_decay": 0.0,
+  "label_smoothing": 0.0,
+  "scheduler_patience": 0,
+  "early_stop_patience": 5,
+  "eval_every": 1,
+  "hidden_dim": 300,
+  "n_layers": 5,
+  "dropout": 0.5,
+  "hidden_dims": null,
+  "dropouts": null,
+  "virtual_node": false,
+  "residual": false,
+  "backbone": "gin",
+  "n_heads": null,
+  "init_checkpoint": "code\\result\\collab\\classifier\\ex1\\best_collab_classifier.pt",
+  "resume": "",
+  "seed": 42,
+  "config": "",
+  "output_dir": "code\\result\\collab\\classifier\\finetune",
+  "git_commit": "93af054fc54197d5f3fb757e0dfaccde5d4c4a4e",
+  "classifier": {
+    "backbone": "gin",
+    "edge_feat_dim": 1,
+    "node_feat_dim": 0,
+    "n_classes": 3,
+    "virtual_node": false,
+    "residual": false,
+    "hidden_dim": 300,
+    "n_layers": 5,
+    "dropout": 0.5
+  },
+  "dataset_spec": {
+    "name": "collab",
+    "n_classes": 3,
+    "node_feat_dim": 0,
+    "edge_feat_dim": 1,
+    "needs_self_loop": true,
+    "budget_options": [
+      0.05,
+      0.1,
+      0.15
+    ]
+  },
+  "started_at": "2026-09-03T09:23:42"
+}
