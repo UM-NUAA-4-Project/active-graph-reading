@@ -1,0 +1,48 @@
+{
+  "per_ratio": {
+    "0_050": {
+      "teacher": {
+        "gradient": 1891
+      },
+      "label": {
+        "1": 1887,
+        "0": 4
+      },
+      "n_traj": 1891
+    },
+    "0_100": {
+      "teacher": {
+        "gradient": 2846
+      },
+      "label": {
+        "1": 2813,
+        "0": 33
+      },
+      "n_traj": 2846
+    },
+    "0_150": {
+      "teacher": {
+        "gradient": 2918
+      },
+      "label": {
+        "1": 2778,
+        "0": 140
+      },
+      "n_traj": 2918
+    }
+  },
+  "teacher": {
+    "gradient": 7655
+  },
+  "label": {
+    "1": 7478,
+    "0": 177
+  },
+  "label_by_teacher": {
+    "gradient": {
+      "1": 7478,
+      "0": 177
+    }
+  },
+  "n_traj": 7655
+}

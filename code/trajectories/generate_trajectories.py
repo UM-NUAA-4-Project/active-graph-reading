@@ -167,9 +167,9 @@ def main():
     for sid, part, suffix in shards:
         dataset = _GraphList([ds.train_graphs[i] for i in part],
                              [train_labels[i] for i in part])
-        part_idx = list(range(len(part)))     # 本地位置
-        # trajectory.graph_idx = 全局本地位置（keep 中的原值）
-        ogb_to_local = {g: l for l, g in enumerate(part)}
+        # train_idx 必须传原始索引（cifar10 = ds.train_graphs 本地位置 /
+        # PPA = OGB 全局索引，存入 trajectory.graph_idx）；generator 内部
+        # 默认按其建 ogb_to_local ↔ dataset 位置映射，不可传位置 range(len)
         for ratio in ratios:
             key = ratio_key(ratio)
             out_path = output_dir / f'trajectories_r{key}{suffix}.pt'
@@ -177,9 +177,8 @@ def main():
                 print(f"  shard{sid} r={ratio}: 已存在，跳过")
                 continue
             print(f"\n=== shard{sid} reveal_ratio={ratio} ({len(part)} graphs) ===")
-            result = generator.generate_all(dataset, part_idx, ratio,
-                                            n_seeds=args.n_seeds,
-                                            ogb_to_local=ogb_to_local)
+            result = generator.generate_all(dataset, part, ratio,
+                                            n_seeds=args.n_seeds)
             n_correct = {t: sum(len(l) for l in result[t])
                          for t in result}
             summary[f'shard{sid}_{key}'] = n_correct
