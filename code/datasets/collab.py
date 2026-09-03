@@ -133,6 +133,6 @@ register(DatasetSpec(
     node_feat_dim=0,   # 原始数据无节点特征（type embedding / 共享 Embedding 路径）
     edge_feat_dim=1,   # 无边特征：1 维零占位（见 _load_all）
     needs_self_loop=True,
-    budget_options=(0.05, 0.10, 0.15),
+    budget_options=(0.10, 0.15, 0.20),
     load=load_collab,
 ))
