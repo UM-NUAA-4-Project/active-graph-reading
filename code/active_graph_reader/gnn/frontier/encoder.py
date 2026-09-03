@@ -69,6 +69,17 @@ class FrontierNodesEncoder(nn.Module):
             self.convs.append(GINELayer(self.hidden_dims[i], edge_feat_dim))
             self.bns.append(nn.BatchNorm1d(self.hidden_dims[i]))
 
+    def _gnn_layers(self, g, h, edge_feat):
+        """GNN 层循环（forward / forward_batch / forward_all_batch 共享）。"""
+        for i in range(self.n_layers):
+            h = self.convs[i](g, h, edge_feat)
+            h = self.bns[i](h)
+            if i < self.n_layers - 1:
+                h = F.dropout(F.relu(h), p=self.dropouts[i], training=self.training)
+            else:
+                h = F.dropout(h, p=self.dropouts[i], training=self.training)
+        return h
+
     def forward(
         self, subgraph: FrontierSubgraph
     ) -> Tuple[torch.Tensor, List[int]]:
@@ -98,13 +109,7 @@ class FrontierNodesEncoder(nn.Module):
             h[n_revealed:] = 0
 
         # GNN 前向传播
-        for i in range(self.n_layers):
-            h = self.convs[i](g, h, edge_feat)
-            h = self.bns[i](h)
-            if i < self.n_layers - 1:
-                h = F.dropout(F.relu(h), p=self.dropouts[i], training=self.training)
-            else:
-                h = F.dropout(h, p=self.dropouts[i], training=self.training)
+        h = self._gnn_layers(g, h, edge_feat)
 
         frontier_embeds = h[n_revealed:]
         return frontier_embeds, frontier
@@ -166,13 +171,7 @@ class FrontierNodesEncoder(nn.Module):
                                   device=device))
 
         # GNN（一次 forward）
-        for i in range(self.n_layers):
-            h = self.convs[i](batch_g, h, edge_feat)
-            h = self.bns[i](h)
-            if i < self.n_layers - 1:
-                h = F.dropout(F.relu(h), p=self.dropouts[i], training=self.training)
-            else:
-                h = F.dropout(h, p=self.dropouts[i], training=self.training)
+        h = self._gnn_layers(batch_g, h, edge_feat)
 
         # 拆分回每个子图的 frontier embeddings
         results: List[Tuple[torch.Tensor, List[int]]] = []
@@ -185,3 +184,56 @@ class FrontierNodesEncoder(nn.Module):
                 results.append((h[start:start + cnt], sg.frontier_original_ids))
 
         return results
+
+    def forward_all_batch(
+        self, subgraphs: List[FrontierSubgraph],
+    ) -> List[torch.Tensor]:
+        """一次 GNN forward 返回每个子图的**全部节点**嵌入（含已揭示节点）。
+
+        与 forward_batch 的特征构造/GNN 完全一致（evidence reader 用）：
+        返回 h[i] 形状 (n_total_i, hidden_dim)，前 n_revealed 行为已揭示节点
+        （升序），其余为 frontier——调用方按行切片，语义与 forward_batch 对齐。
+        """
+        if not subgraphs:
+            return []
+
+        device = self.node_type_emb.weight.device
+        batch_g = dgl.batch([sg.g.to(device) for sg in subgraphs])
+        n_total = batch_g.num_nodes()
+
+        node_counts = [sg.g.num_nodes() for sg in subgraphs]
+        offsets = [0]
+        for c in node_counts:
+            offsets.append(offsets[-1] + c)
+
+        if 'feat' in batch_g.ndata and self.node_feat_proj is not None:
+            h = self.node_feat_proj(batch_g.ndata['feat'].to(device))
+            for i, sg in enumerate(subgraphs):
+                start = offsets[i]
+                n_rev = sg.n_revealed
+                n_fr = len(sg.frontier_original_ids)
+                if n_fr > 0:
+                    h[start + n_rev:start + n_rev + n_fr] = 0
+        else:
+            node_types = torch.zeros(n_total, dtype=torch.long, device=device)
+            for i, sg in enumerate(subgraphs):
+                start = offsets[i]
+                n_rev = sg.n_revealed
+                n_fr = len(sg.frontier_original_ids)
+                if n_fr > 0:
+                    node_types[start + n_rev:start + n_rev + n_fr] = 1
+            h = self.node_type_emb(node_types)
+            for i, sg in enumerate(subgraphs):
+                start = offsets[i]
+                n_rev = sg.n_revealed
+                n_fr = len(sg.frontier_original_ids)
+                if n_fr > 0:
+                    h[start + n_rev:start + n_rev + n_fr] = 0
+
+        edge_feat = batch_g.edata.get('feat',
+                      torch.empty(0, self.convs[0].edge_encoder.in_features,
+                                  device=device))
+
+        h = self._gnn_layers(batch_g, h, edge_feat)
+
+        return [h[offsets[i]:offsets[i + 1]] for i in range(len(subgraphs))]

@@ -29,7 +29,7 @@ def add_reader_args(parser: argparse.ArgumentParser,
                     reader_kind_default: str = 'base',
                     temperature_default: float = 1.0) -> None:
     """reader 结构参数（键名与 ReaderConfig.to_dict 一致，config 合并无需映射）。"""
-    parser.add_argument('--reader-kind', choices=['base', 'attention'],
+    parser.add_argument('--reader-kind', choices=['base', 'attention', 'evidence'],
                         default=reader_kind_default)
     parser.add_argument('--hidden-dim', type=int, default=128,
                         help='旧式统一隐层宽度；与 --hidden-dims 二选一')
@@ -70,6 +70,9 @@ def reader_config_from_args(args) -> Dict:
         cfg['n_hidden_dims'] = getattr(args, 'n_layers', 2)
         cfg['dropout'] = getattr(args, 'dropout', 0.1)
     scorer = getattr(args, 'scorer_hidden_dims', None)
-    if scorer and cfg['kind'] == 'base':
+    if scorer and cfg['kind'] in ('base', 'evidence'):
         cfg['scorer_hidden_dims'] = list(scorer)
+    if cfg['kind'] == 'evidence':
+        # 证据头类别数：train 脚本拿到 DatasetSpec 后覆写为 spec.n_classes
+        cfg['n_classes'] = getattr(args, 'n_classes', 0)
     return cfg

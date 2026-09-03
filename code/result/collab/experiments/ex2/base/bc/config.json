@@ -1,0 +1,62 @@
+{
+  "dataset": "collab",
+  "root": "D:\\data\\COLLAB",
+  "max_graphs": 0,
+  "data_dir": "C:\\Users\\qq283\\Desktop\\UM-NUAA\\code\\data\\collab\\trajectories_balanced",
+  "teachers": [
+    "gradient",
+    "structural-degree"
+  ],
+  "epochs": 10,
+  "lr": 0.001,
+  "batch_size": 32,
+  "reader_kind": "base",
+  "hidden_dim": 128,
+  "n_layers": 2,
+  "dropout": 0.1,
+  "hidden_dims": null,
+  "encoder_dropouts": null,
+  "scorer_hidden_dims": null,
+  "m": 4,
+  "n_heads": 4,
+  "temperature": 1.0,
+  "edge_feat_dim": null,
+  "node_feat_dim": null,
+  "device": "cuda:0",
+  "exp": "ex2",
+  "output_dir": "",
+  "resume": "",
+  "seed": 42,
+  "config": "",
+  "git_commit": "3c71b9e778b95a03948177012080cc57d1fe2e26",
+  "reader": {
+    "kind": "base",
+    "edge_feat_dim": 1,
+    "node_feat_dim": 0,
+    "m": 4,
+    "n_heads": 4,
+    "stochastic": false,
+    "temperature": 1.0,
+    "hidden_dim": 128,
+    "n_hidden_dims": 2,
+    "dropout": 0.1,
+    "n_dropouts": 2,
+    "scorer_hidden_dim": 128,
+    "n_scorer_hidden_dims": 2,
+    "scorer_dropout": 0.1,
+    "n_scorer_dropouts": 2
+  },
+  "dataset_spec": {
+    "n_classes": 3,
+    "node_feat_dim": 0,
+    "edge_feat_dim": 1,
+    "budget_options": [
+      0.05,
+      0.1,
+      0.15
+    ]
+  },
+  "total_params": 167811,
+  "n_train_trajs": 8752,
+  "started_at": "2026-09-03T21:41:50"
+}

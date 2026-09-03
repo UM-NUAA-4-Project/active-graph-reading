@@ -82,6 +82,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--batch-size', type=int, default=32)
     cli_utils.add_reader_args(parser, reader_kind_default='base')
+    parser.add_argument('--evidence-lambda', type=float, default=1.0,
+                        help='evidence reader 的 L_ev 权重（L = L_act + λ·L_ev；'
+                             '其他 kind 忽略）')
     parser.add_argument('--edge-feat-dim', type=int, default=None,
                         help='覆盖数据集边特征维度（默认跟随 DatasetSpec）')
     parser.add_argument('--node-feat-dim', type=int, default=None,
@@ -152,7 +155,10 @@ def main():
         print(f"Resuming from {resume_path} (done={start_epoch - 1}, "
               f"target={args.epochs})")
     else:
-        reader_cfg = ReaderConfig.from_dict(cli_utils.reader_config_from_args(args))
+        cfg_dict = cli_utils.reader_config_from_args(args)
+        if cfg_dict.get('kind') == 'evidence':
+            cfg_dict['n_classes'] = spec.n_classes   # from_dict 末尾即 validate
+        reader_cfg = ReaderConfig.from_dict(cfg_dict)
         reader_cfg.edge_feat_dim = args.edge_feat_dim or spec.edge_feat_dim
         reader_cfg.node_feat_dim = args.node_feat_dim or spec.node_feat_dim
         reader_cfg.validate()
@@ -195,9 +201,15 @@ def main():
         print(f"\n--- Epoch {epoch}/{args.epochs} ---")
         metrics = bc_train_epoch(reader, optimizer, graph_cache, all_trajs,
                                  args.batch_size, device,
-                                 temperature=1.0)
-        print(f"  Train loss: {metrics['loss']:.4f}")
-        training_log.append({'epoch': epoch, 'train_loss': metrics['loss']})
+                                 temperature=1.0,
+                                 evidence_lambda=args.evidence_lambda)
+        print(f"  Train loss: {metrics['loss']:.4f}"
+              + (f", ev_acc: {metrics['ev_acc']:.4f}"
+                 if 'ev_acc' in metrics else ''))
+        log_entry = {'epoch': epoch, 'train_loss': metrics['loss']}
+        if 'ev_acc' in metrics:
+            log_entry['ev_acc'] = metrics['ev_acc']
+        training_log.append(log_entry)
 
         save_epoch_checkpoint(
             output_dir / f'reader_checkpoint_epoch{epoch}.pt',

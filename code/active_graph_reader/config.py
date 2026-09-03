@@ -50,13 +50,14 @@ class ReaderConfig:
     """reader 结构配置。
 
     encoder_*  ：FrontierNodesEncoder 的 GIN 层（逐层 hidden/dropout）
-    scorer_*   ：base reader 的 ReaderMLP（逐层 hidden/dropout）
+    scorer_*   ：base/evidence reader 的 ReaderMLP（逐层 hidden/dropout）
                  attention reader 要求 encoder 各层同宽（= d_model），
                  scorer_* 忽略
     m/n_heads  ：attention 专用
+    n_classes  ：evidence 专用（证据头类别数，须 >0）
     """
 
-    kind: str = 'base'                    # 'base' | 'attention'
+    kind: str = 'base'                    # 'base' | 'attention' | 'evidence'
     edge_feat_dim: int = 7
     node_feat_dim: int = 0
     encoder_hidden_dims: List[int] = field(default_factory=lambda: [128, 128])
@@ -69,6 +70,7 @@ class ReaderConfig:
     n_heads: int = 4
     stochastic: bool = False
     temperature: float = 1.0
+    n_classes: int = 0
 
     # ---- 便捷属性 ----
     @property
@@ -84,8 +86,8 @@ class ReaderConfig:
         return self.encoder_dropouts[0]
 
     def validate(self) -> None:
-        if self.kind not in ('base', 'attention'):
-            raise ValueError(f"kind 必须是 base/attention，得到 '{self.kind}'")
+        if self.kind not in ('base', 'attention', 'evidence'):
+            raise ValueError(f"kind 必须是 base/attention/evidence，得到 '{self.kind}'")
         if len(self.encoder_dropouts) != len(self.encoder_hidden_dims):
             raise ValueError("encoder_dropouts 与 encoder_hidden_dims 长度不一致")
         if len(self.scorer_dropouts) != len(self.scorer_hidden_dims):
@@ -93,6 +95,8 @@ class ReaderConfig:
         if self.kind == 'attention' and len(set(self.encoder_hidden_dims)) > 1:
             raise ValueError("attention reader 要求 encoder 各层同宽（attention 模块"
                              "与 belief 的 d_model 需要统一）")
+        if self.kind == 'evidence' and self.n_classes <= 0:
+            raise ValueError("evidence reader 需要 n_classes > 0（证据头类别数）")
 
     # ---- 序列化 ----
     def to_dict(self) -> Dict:
@@ -105,9 +109,11 @@ class ReaderConfig:
                    'temperature': self.temperature}
         _fold(d, self.encoder_hidden_dims, 'hidden_dim')
         _fold(d, self.encoder_dropouts, 'dropout')
-        if self.kind == 'base':
+        if self.kind in ('base', 'evidence'):
             _fold(d, self.scorer_hidden_dims, 'scorer_hidden_dim')
             _fold(d, self.scorer_dropouts, 'scorer_dropout')
+        if self.kind == 'evidence':
+            d['n_classes'] = self.n_classes
         return d
 
     @staticmethod
@@ -133,6 +139,7 @@ class ReaderConfig:
             n_heads=_to_int(d.get('n_heads'), 4),
             stochastic=bool(d.get('stochastic', False)),
             temperature=_to_float(d.get('temperature'), 1.0),
+            n_classes=_to_int(d.get('n_classes'), 0),
         )
         cfg.validate()
         return cfg
@@ -143,6 +150,7 @@ class ReaderConfig:
                     n_layers: int = 2, dropout: float = 0.1,
                     m: int = 4, n_heads: int = 4,
                     stochastic: bool = False, temperature: float = 1.0,
+                    n_classes: int = 0,
                     ) -> 'ReaderConfig':
         """旧式标量构造（与旧 LearnableReader/AttentionReader 签名对齐）。"""
         cfg = ReaderConfig(
@@ -152,6 +160,7 @@ class ReaderConfig:
             scorer_hidden_dims=[hidden_dim] * 2,
             scorer_dropouts=[dropout] * 2,
             m=m, n_heads=n_heads, stochastic=stochastic, temperature=temperature,
+            n_classes=n_classes,
         )
         cfg.validate()
         return cfg
@@ -188,14 +197,28 @@ def infer_reader_config(state_dict: Dict[str, torch.Tensor]) -> ReaderConfig:
     edge_feat_dim = int(
         state_dict['frontier_encoder.convs.0.edge_encoder.weight'].shape[1])
 
-    kind = 'attention' if any('belief_state' in k for k in state_dict) else 'base'
+    kind = 'base'
+    if any('belief_state' in k for k in state_dict):
+        kind = 'attention'
+    elif any(k.startswith('evidence_lstm') for k in state_dict):
+        kind = 'evidence'
 
     m = 4
     if kind == 'attention' and 'belief_state.tokens' in state_dict:
         m = int(state_dict['belief_state.tokens'].shape[0])
 
+    # evidence 证据头类别数：Sequential 里最后一个 Linear 的输出宽度
+    n_classes = 0
+    if kind == 'evidence':
+        head_layers = [(int(k.split('.')[1]), int(t.shape[0]))
+                       for k, t in state_dict.items()
+                       if k.startswith('evidence_head.') and
+                       k.endswith('.weight')]
+        if head_layers:
+            n_classes = max(head_layers)[1]
+
     scorer_hidden = [128, 128]
-    if kind == 'base':
+    if kind in ('base', 'evidence'):
         linears = []                             # (block_idx, out_dim)
         for key, tensor in state_dict.items():
             m = _SCORER_HIDDEN_RE.match(key)
@@ -215,6 +238,7 @@ def infer_reader_config(state_dict: Dict[str, torch.Tensor]) -> ReaderConfig:
         scorer_hidden_dims=scorer_hidden,
         scorer_dropouts=[0.1] * len(scorer_hidden),
         m=m,
+        n_classes=n_classes,
     )
     return cfg
 
@@ -253,5 +277,8 @@ def build_reader(config: ReaderConfig):
     if config.kind == 'attention':
         from .reader.attention.attention_reader import AttentionReader
         return AttentionReader(config=config)
+    if config.kind == 'evidence':
+        from .reader.evidence import EvidenceReader
+        return EvidenceReader(config=config)
     from .reader.learnable_reader import LearnableReader
     return LearnableReader(config=config)

@@ -52,6 +52,9 @@ def main():
                         help='训练图数限制（0=全部；冒烟传小值）')
     cli_utils.add_reader_args(parser, reader_kind_default='attention',
                               temperature_default=0.2)
+    parser.add_argument('--evidence-lambda', type=float, default=1.0,
+                        help='evidence reader 的 L_ev 权重（L = L_RL + λ·L_ev；'
+                             '其他 kind 忽略）')
     parser.add_argument('--bootstrap', default='',
                         help='迁移起点 reader checkpoint（与 --resume 二选一）')
     parser.add_argument('--classifier', default='', help='上界分类器 checkpoint（必填：CLI 或 --config）')
@@ -186,13 +189,18 @@ def main():
             train_graphs, train_labels[:len(train_graphs)],
             args.graphs_per_batch, args.seeds_per_graph,
             device, args.reward, ln_k, budget_options,
-            args.reward_neg_scale)
+            args.reward_neg_scale, evidence_lambda=args.evidence_lambda)
         print(f"  Train: loss={metrics['loss']:.4f}  "
-              f"avg_R={metrics['avg_R']:.3f}  acc={metrics['acc']:.3f}")
-        training_log.append({'epoch': epoch,
-                             'train_loss': metrics['loss'],
-                             'train_avg_R': metrics['avg_R'],
-                             'train_acc': metrics['acc']})
+              f"avg_R={metrics['avg_R']:.3f}  acc={metrics['acc']:.3f}"
+              + (f"  ev_acc={metrics['ev_acc']:.3f}"
+                 if 'ev_acc' in metrics else ''))
+        log_entry = {'epoch': epoch,
+                     'train_loss': metrics['loss'],
+                     'train_avg_R': metrics['avg_R'],
+                     'train_acc': metrics['acc']}
+        if 'ev_acc' in metrics:
+            log_entry['ev_acc'] = metrics['ev_acc']
+        training_log.append(log_entry)
         save_epoch_checkpoint(
             output_dir / f'checkpoint_epoch{epoch}.pt',
             epoch=epoch, reader=reader, optimizer=optimizer,

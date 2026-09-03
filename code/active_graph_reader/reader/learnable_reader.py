@@ -117,6 +117,28 @@ class LearnableReader(BaseReader, nn.Module):
 
         return scores, probs, frontier_nodes
 
+    def _policy_scores(self, frontier_embeds, subgraph, graph_state):
+        """budget 占比 + 结构特征拼接 + ReaderMLP 打分（forward/forward_states
+        与 EvidenceReader 共享的选点路径）。"""
+        n_f = frontier_embeds.shape[0]
+
+        remaining = graph_state.get_budget_ratio_remaining()
+        remaining_tensor = torch.full(
+            (n_f, 1), remaining,
+            device=frontier_embeds.device, dtype=frontier_embeds.dtype,
+        )
+
+        struct_all = compute_structural_features(subgraph.g, subgraph.n_revealed)
+        struct_frontier = struct_all[subgraph.n_revealed:].to(
+            device=frontier_embeds.device, dtype=frontier_embeds.dtype,
+        )
+
+        combined = torch.cat(
+            [frontier_embeds, remaining_tensor, struct_frontier], dim=-1,
+        )
+        scores = self.reader_mlp(combined)
+        return scores
+
     def forward_states(
         self, states: List[GraphState], temperature: float = 1.0,
     ) -> List[Tuple[torch.Tensor, torch.Tensor, List[int]]]:
@@ -142,24 +164,7 @@ class LearnableReader(BaseReader, nn.Module):
                 results.append((torch.empty(0), torch.empty(0), []))
                 continue
 
-            sg = subgraphs[k]
-            n_f = len(frontier_nodes)
-
-            remaining = states[k].get_budget_ratio_remaining()
-            remaining_tensor = torch.full(
-                (n_f, 1), remaining,
-                device=frontier_embeds.device, dtype=frontier_embeds.dtype,
-            )
-
-            struct_all = compute_structural_features(sg.g, sg.n_revealed)
-            struct_frontier = struct_all[sg.n_revealed:].to(
-                device=frontier_embeds.device, dtype=frontier_embeds.dtype,
-            )
-
-            combined = torch.cat(
-                [frontier_embeds, remaining_tensor, struct_frontier], dim=-1,
-            )
-            scores = self.reader_mlp(combined)
+            scores = self._policy_scores(frontier_embeds, subgraphs[k], states[k])
             probs = _stable_probs(scores, temperature)
             results.append((scores, probs, frontier_nodes))
 

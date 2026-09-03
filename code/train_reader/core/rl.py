@@ -48,17 +48,22 @@ def _diag_nan(reader, state, belief, batch_result, batch_start, step, state_idx)
 def train_one_epoch(reader, classifier, builder, optimizer,
                     graphs, labels, batch_size: int, n_seeds: int,
                     device, reward_type: str, ln_k: float, budget_options,
-                    neg_scale: float, use_belief: bool = None) -> Dict:
+                    neg_scale: float, use_belief: bool = None,
+                    evidence_lambda: float = 0.0) -> Dict:
     """单轮 REINFORCE（self-sampled）。
 
     Loss = mean_i(-A_i · Σ_t log π_t(a_t))；A 为 batch 优势归一化
     （负侧乘 neg_scale）。R 由冻结上界分类器给出。
+    evidence_lambda: >0 且 reader 含证据流时加 λ·L_ev（逐步图类别监督 CE，
+    不进策略梯度），总损失 = L_RL + λ·L_ev。
     """
     if use_belief is None:
         use_belief = hasattr(reader, 'init_beliefs')
+    use_evidence = evidence_lambda > 0 and hasattr(reader, 'forward_states_evidence')
     reader.train()
     classifier.eval()
     total_R = total_trajs = total_correct = total_loss = 0.0
+    ev_correct = ev_total = 0
     order = list(range(len(graphs)))
     random.shuffle(order)
     micro_batch_size = MICRO_BATCH_SIZE if use_belief else len(order)  # base 无累积
@@ -76,6 +81,8 @@ def train_one_epoch(reader, classifier, builder, optimizer,
             mb_indices = batch_indices[mb_i:mb_i + micro]
             all_states, state_labels, per_state_log_probs = [], [], []
             state_src = []  # state → (图 index, seed_i)（NaN 诊断用）
+            last_revealed = []  # evidence 流：各 state 上一步所揭示节点
+            all_hc = []
             for local_i in mb_indices:
                 g_raw = graphs[local_i]
                 label = int(labels[local_i].item())
@@ -91,6 +98,10 @@ def train_one_epoch(reader, classifier, builder, optimizer,
                     state_labels.append(y)
                     per_state_log_probs.append([])
                     state_src.append((local_i, seed_i))
+                    last_revealed.append(seed_node)
+            if use_evidence:
+                all_hc = reader.init_evidence(len(all_states), device)
+            ev_losses = []
 
             n_total = len(all_states)
             active = [True] * n_total
@@ -106,16 +117,32 @@ def train_one_epoch(reader, classifier, builder, optimizer,
                 for j in range(n_total):
                     if active[j] and all_states[j].is_frontier_empty:
                         st = all_states[j]
-                        if teleport_if_stuck(st) is not None:
+                        tp_node = teleport_if_stuck(st)
+                        if tp_node is not None:
                             if use_belief:
                                 all_subgraphs[j] = reader.frontier_builder.build(st)
+                            if use_evidence:
+                                last_revealed[j] = tp_node
                             if st.get_budget_used() >= st._budget_limit:
                                 active[j] = False
                 active_idx = [j for j in range(n_total)
                               if active[j] and not all_states[j].is_frontier_empty]
                 if not active_idx:
                     break
-                if use_belief:
+                if use_evidence:
+                    batch_results, active_hc, active_ev = reader.forward_states_evidence(
+                        [all_states[j] for j in active_idx],
+                        temperature=reader.temperature,
+                        hc_list=[all_hc[j] for j in active_idx],
+                        last_revealed=[last_revealed[j] for j in active_idx])
+                    for k, j in enumerate(active_idx):
+                        all_hc[j] = active_hc[k]
+                        ev_losses.append(F.cross_entropy(
+                            active_ev[k].unsqueeze(0), state_labels[j]))
+                        ev_correct += int(active_ev[k].argmax().item()
+                                          == state_labels[j].item())
+                        ev_total += 1
+                elif use_belief:
                     active_beliefs = torch.cat(
                         [all_beliefs[j] for j in active_idx], dim=0)
                     active_subgraphs = None
@@ -149,8 +176,10 @@ def train_one_epoch(reader, classifier, builder, optimizer,
                         batch_nodes.append(frontier_nodes[action_idx.item()])
                         batch_local_idx.append(j)
                     else:
-                        reveal_node(all_states[j],
-                                    frontier_nodes[action_idx.item()])
+                        chosen = frontier_nodes[action_idx.item()]
+                        reveal_node(all_states[j], chosen)
+                        if use_evidence:
+                            last_revealed[j] = chosen
                         if all_states[j].get_budget_used() >= all_states[j]._budget_limit:
                             active[j] = False
                 if use_belief:
@@ -215,6 +244,8 @@ def train_one_epoch(reader, classifier, builder, optimizer,
                 total_loss += loss.item() * len(batch_losses) * n_micro
             else:
                 batch_loss = torch.stack(batch_losses).mean()
+                if ev_losses:
+                    batch_loss = batch_loss + evidence_lambda * torch.stack(ev_losses).mean()
                 batch_loss.backward()
                 optimizer.step()
                 optimizer.zero_grad()
@@ -222,10 +253,16 @@ def train_one_epoch(reader, classifier, builder, optimizer,
         if use_belief:
             optimizer.step()
         n = max(total_trajs, 1)
-        pbar.set_postfix({
+        postfix = {
             'loss': f'{total_loss / n:.4f}',
             'avg_R': f'{total_R / n:.3f}',
             'acc': f'{total_correct / n:.3f}',
-        })
+        }
+        if ev_total:
+            postfix['ev_acc'] = f'{ev_correct / ev_total:.3f}'
+        pbar.set_postfix(postfix)
     n = max(total_trajs, 1)
-    return {'loss': total_loss / n, 'avg_R': total_R / n, 'acc': total_correct / n}
+    out = {'loss': total_loss / n, 'avg_R': total_R / n, 'acc': total_correct / n}
+    if ev_total:
+        out['ev_acc'] = ev_correct / ev_total
+    return out

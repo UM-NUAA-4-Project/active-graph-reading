@@ -21,6 +21,7 @@ UNIT_TESTS = [
     'test_trajectory_io.py',
     'test_unified_loops.py',
     'test_self_loop.py',
+    'test_evidence_reader.py',
 ]
 
 CLI_SCRIPTS = [
