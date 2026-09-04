@@ -227,11 +227,53 @@ def test_rl_smoke():
           f"ev_acc={metrics['ev_acc']:.3f}）")
 
 
+def test_eval_smoke():
+    """评估循环 evidence 分支：终判 = 证据头（acc_*），参照 = 冻结分类器（acc_clf_*）。"""
+    import dgl.function as fn
+    from train_reader.core import evaluate_reader
+    from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder
+
+    class _Clf(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lin = torch.nn.Linear(32, 3)
+
+        def forward(self, g, nids):
+            with g.local_scope():
+                g.ndata['h'] = torch.zeros(g.num_nodes(), 32)
+                g.update_all(fn.copy_u('h', 'm'), fn.mean('m', 'H'))
+                return self.lin(g.ndata['H'])
+
+    torch.manual_seed(0)
+    graphs = [_graph(i) for i in range(3)]
+    labels = torch.tensor([0, 1, 2])
+    reader = build_reader(ReaderConfig.from_legacy(
+        'evidence', edge_feat_dim=EFD, hidden_dim=D, n_layers=2,
+        dropout=0.0, n_classes=3))
+    results = evaluate_reader(reader, _Clf(), SubgraphBuilder(),
+                              graphs, labels, budget_options=(0.1,),
+                              device='cpu', n_seeds=2)
+    assert 'acc_10%' in results and 'acc_overall' in results
+    assert 'acc_clf_10%' in results and 'acc_clf_overall' in results
+    n_per_budget = 3 * 2  # graphs × seeds
+    assert len(results['outcomes'][0.1]) == n_per_budget
+    assert len(results['clf_outcomes'][0.1]) == n_per_budget
+    # base 路径不受影响：无 acc_clf_* 键
+    base, _ = _readers()
+    r_base = evaluate_reader(base, _Clf(), SubgraphBuilder(),
+                             graphs, labels, budget_options=(0.1,),
+                             device='cpu', n_seeds=1)
+    assert 'acc_clf_10%' not in r_base
+    print(f"  评估冒烟 OK（ev_acc={results['acc_overall']:.3f}, "
+          f"clf_ref={results['acc_clf_overall']:.3f}）")
+
+
 if __name__ == '__main__':
     test_policy_identical_to_base()
     test_evidence_stream_and_protocol()
     test_hc_reset_independence()
     test_config_roundtrip_infer()
+    test_eval_smoke()
     test_bc_smoke()
     test_rl_smoke()
     print('EVIDENCE READER TESTS PASSED')

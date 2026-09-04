@@ -111,6 +111,12 @@ def main():
     for b in budget_options:
         print(f"  Budget {int(b * 100):2d}%: {results[f'acc_{int(b * 100)}%']:.4f}")
     print(f"  Overall: {results['acc_overall']:.4f}")
+    if 'acc_clf_overall' in results:
+        print("  (evidence 终判 = 自身证据头；参照 = 冻结上界分类器)")
+        for b in budget_options:
+            print(f"  [ref] Budget {int(b * 100):2d}%: "
+                  f"{results[f'acc_clf_{int(b * 100)}%']:.4f}")
+        print(f"  [ref] Overall: {results['acc_clf_overall']:.4f}")
 
     json_out = build_eval_json(
         results, args.split, key, args.n_seeds, budget_options,

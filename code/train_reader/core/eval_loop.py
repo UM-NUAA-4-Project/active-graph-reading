@@ -1,8 +1,12 @@
-"""评估循环：learnable reader（base/attention 统一）+ 固定策略。
+"""评估循环：learnable reader（base/attention/evidence 统一）+ 固定策略。
 
 收敛 m5/base/analysis/eval.py → m6/attention/eval_heldout.py → m7/eval.py
 三代实现（以 m7 为基准），JSON schema 与旧版完全兼容：
     {split: {'learnable'|strategy: {'s0': {...}, ..., 'mean': {...}}}, ...}
+
+evidence reader：rollout 走 forward_states_evidence（选点仍与 base 一致），
+终判 = 自身证据头在预算耗尽步的 ev_logits argmax（决策-分类一体）；
+冻结上界分类器对同一批最终子图的判定写为参照键 acc_clf_*。
 """
 
 import random
@@ -42,7 +46,12 @@ def rollout_strategy(agent, state):
 def evaluate_reader(reader, classifier, builder, graphs, labels,
                     budget_options, device, argmax=True, chunk_size=32,
                     n_seeds=4):
-    """learnable reader 评估：跨图 lockstep + 批量分类器 + 多预算/多 seed 统计。"""
+    """learnable reader 评估：跨图 lockstep + 批量分类器 + 多预算/多 seed 统计。
+
+    evidence reader：终判由自身证据头给出（预算耗尽步的 ev_logits argmax，
+    决策-分类一体）；冻结上界分类器对同一批最终揭示子图的判定作为参照，
+    写入 acc_clf_* 键。base/attention 行为不变（上界分类器即终判）。
+    """
     reader.eval()
     per_budget_correct = defaultdict(int)
     per_budget_total = defaultdict(int)
@@ -50,7 +59,11 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
     per_seed_outcomes = {i: defaultdict(list) for i in range(n_seeds)}
     per_seed_per_class = {i: defaultdict(lambda: defaultdict(list))
                           for i in range(n_seeds)}
+    per_budget_clf_correct = defaultdict(int)
+    per_budget_clf_outcomes = defaultdict(list)
     use_belief = hasattr(reader, 'init_beliefs')
+    use_evidence = (getattr(reader, 'config', None) is not None
+                    and getattr(reader.config, 'kind', '') == 'evidence')
 
     for chunk_start in tqdm(range(0, len(graphs), chunk_size), desc="  Revealing"):
         chunk_end = min(chunk_start + chunk_size, len(graphs))
@@ -75,22 +88,37 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
         if use_belief:
             all_beliefs = [reader.init_beliefs(1).to(device) for _ in range(n_total)]
             all_subgraphs = [None] * n_total
+        if use_evidence:
+            all_hc = reader.init_evidence(n_total, device)
+            last_revealed = [s.seed_node for s in all_states]
+            final_ev = [None] * n_total
 
         eval_rng = random.Random(0)  # 跳转确定性可复现
         for _step in range(max_budget):
             for j in range(n_total):
                 if active[j] and all_states[j].is_frontier_empty:
                     st = all_states[j]
-                    if teleport_if_stuck(st, rng=eval_rng) is not None:
+                    tp_node = teleport_if_stuck(st, rng=eval_rng)
+                    if tp_node is not None:
                         if use_belief:
                             all_subgraphs[j] = reader.frontier_builder.build(st)
+                        if use_evidence:
+                            last_revealed[j] = tp_node
                         if st.get_budget_used() >= st._budget_limit:
                             active[j] = False
             active_idx = [j for j in range(n_total)
                           if active[j] and not all_states[j].is_frontier_empty]
             if not active_idx:
                 break
-            if use_belief:
+            if use_evidence:
+                batch_results, active_hc, active_ev = reader.forward_states_evidence(
+                    [all_states[j] for j in active_idx], temperature=1.0,
+                    hc_list=[all_hc[j] for j in active_idx],
+                    last_revealed=[last_revealed[j] for j in active_idx])
+                for k, j in enumerate(active_idx):
+                    all_hc[j] = active_hc[k]
+                    final_ev[j] = active_ev[k]
+            elif use_belief:
                 active_beliefs = torch.cat([all_beliefs[j] for j in active_idx], dim=0)
                 active_subgraphs = None
                 if all_subgraphs[active_idx[0]] is not None:
@@ -117,6 +145,9 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
                 # belief 路径下 reveal 由 reveal_and_update_beliefs_batch 内部完成
                 for state, node in zip(batch_states, batch_nodes):
                     reveal_node(state, node)
+                if use_evidence:
+                    for j, node in zip(batch_local_idx, batch_nodes):
+                        last_revealed[j] = node
             if use_belief and batch_states:
                 batch_beliefs = torch.cat([all_beliefs[j] for j in batch_local_idx], dim=0)
                 new_beliefs, new_subgraphs = reveal_and_update_beliefs_batch(
@@ -145,7 +176,17 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
             for j, (y, label) in enumerate(all_labels_out[i:i + 512]):
                 budget = all_budgets_out[i + j]
                 seed_i = all_seed_ids_out[i + j]
-                correct = 1.0 if logits[j].argmax(dim=-1).item() == label else 0.0
+                if use_evidence:
+                    # 终判：证据头对预算耗尽步的预测（决策-分类一体）；
+                    # 从未做过前向的 state（如 B=1 且 seed 孤立）无证据判断，计错
+                    ev = final_ev[i + j]
+                    correct = 1.0 if (ev is not None and
+                                      ev.argmax(dim=-1).item() == label) else 0.0
+                    clf_correct = 1.0 if logits[j].argmax(dim=-1).item() == label else 0.0
+                    per_budget_clf_correct[budget] += clf_correct
+                    per_budget_clf_outcomes[budget].append(clf_correct)
+                else:
+                    correct = 1.0 if logits[j].argmax(dim=-1).item() == label else 0.0
                 per_budget_correct[budget] += correct
                 per_budget_total[budget] += 1
                 per_budget_outcomes[budget].append(correct)
@@ -154,7 +195,9 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
 
     return _summarize(budget_options, graphs, per_budget_correct,
                       per_budget_total, per_budget_outcomes,
-                      per_seed_outcomes, per_seed_per_class)
+                      per_seed_outcomes, per_seed_per_class,
+                      clf_correct=(per_budget_clf_correct if use_evidence else None),
+                      clf_outcomes=(per_budget_clf_outcomes if use_evidence else None))
 
 
 def evaluate_fixed(strategy_name, classifier, builder, graphs, labels,
@@ -206,12 +249,20 @@ def evaluate_fixed(strategy_name, classifier, builder, graphs, labels,
 
 
 def _summarize(budget_options, graphs, per_budget_correct, per_budget_total,
-               per_budget_outcomes, per_seed_outcomes, per_seed_per_class):
+               per_budget_outcomes, per_seed_outcomes, per_seed_per_class,
+               clf_correct=None, clf_outcomes=None):
     results = {}
     for b in budget_options:
         results[f'acc_{int(b * 100)}%'] = per_budget_correct[b] / max(per_budget_total[b], 1)
     results['acc_overall'] = (sum(per_budget_correct.values()) /
                               max(sum(per_budget_total.values()), 1))
+    if clf_correct is not None:
+        # 参照：冻结上界分类器对同一批最终揭示子图的判定（仅 evidence）
+        for b in budget_options:
+            results[f'acc_clf_{int(b * 100)}%'] = clf_correct[b] / max(per_budget_total[b], 1)
+        results['acc_clf_overall'] = (sum(clf_correct.values()) /
+                                      max(sum(per_budget_total.values()), 1))
+        results['clf_outcomes'] = {b: list(clf_outcomes[b]) for b in budget_options}
     results['n_graphs'] = len(graphs)
     results['outcomes'] = {b: list(per_budget_outcomes[b]) for b in budget_options}
     n_seeds = len(per_seed_outcomes)
