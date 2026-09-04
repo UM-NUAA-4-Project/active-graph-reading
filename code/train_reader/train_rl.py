@@ -66,6 +66,8 @@ def main():
                         default='binary')
     parser.add_argument('--reward-neg-scale', type=float, default=1,
                         help='batch 优势归一化后负侧优势的降权系数 λ（λ=1 即无不对称）')
+    parser.add_argument('--no-adv-normalize', action='store_true',
+                        help='关闭 batch 优势归一化，直接用原始奖励作优势')
     parser.add_argument('--freeze', action='store_true',
                         help='冻结共享层，仅训练特征投影层（冻结消融用）')
     parser.add_argument('--edge-feat-dim', type=int, default=None,
@@ -172,6 +174,7 @@ def main():
             'freeze': args.freeze,
             'reward': args.reward,
             'reward_neg_scale': args.reward_neg_scale,
+            'adv_normalize': not args.no_adv_normalize,
             'budget_options': list(budget_options),
             'epochs': args.epochs,
             'total_params': total_params,
@@ -189,7 +192,8 @@ def main():
             train_graphs, train_labels[:len(train_graphs)],
             args.graphs_per_batch, args.seeds_per_graph,
             device, args.reward, ln_k, budget_options,
-            args.reward_neg_scale, evidence_lambda=args.evidence_lambda)
+            args.reward_neg_scale, evidence_lambda=args.evidence_lambda,
+            adv_normalize=not args.no_adv_normalize)
         print(f"  Train: loss={metrics['loss']:.4f}  "
               f"avg_R={metrics['avg_R']:.3f}  acc={metrics['acc']:.3f}"
               + (f"  ev_acc={metrics['ev_acc']:.3f}"

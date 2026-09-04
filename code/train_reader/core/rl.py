@@ -49,7 +49,8 @@ def train_one_epoch(reader, classifier, builder, optimizer,
                     graphs, labels, batch_size: int, n_seeds: int,
                     device, reward_type: str, ln_k: float, budget_options,
                     neg_scale: float, use_belief: bool = None,
-                    evidence_lambda: float = 0.0) -> Dict:
+                    evidence_lambda: float = 0.0,
+                    adv_normalize: bool = True) -> Dict:
     """单轮 REINFORCE（self-sampled）。
 
     Loss = mean_i(-A_i · Σ_t log π_t(a_t))；A 为 batch 优势归一化
@@ -230,7 +231,8 @@ def train_one_epoch(reader, classifier, builder, optimizer,
                 total_trajs += 1
                 total_correct += correct
 
-            advs = normalize_advantages(raw_rewards, neg_scale)
+            advs = normalize_advantages(raw_rewards, neg_scale) \
+                if adv_normalize else list(raw_rewards)
 
             batch_losses = []
             for k in range(len(final_states)):
