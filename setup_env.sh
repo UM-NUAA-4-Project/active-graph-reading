@@ -76,7 +76,8 @@ if command -v conda >/dev/null 2>&1 && [[ -x "$(command -v conda)" ]]; then
     CONDA_ROOT="$(cd "$(dirname "$(readlink -f "$(command -v conda)")")/.." && pwd)"
 fi
 if [[ -z "$CONDA_ROOT" ]]; then
-    for cand in "$HOME/miniconda3" "$HOME/anaconda3" /opt/miniconda3 /opt/anaconda3; do
+    for cand in "$HOME/miniconda3" "$HOME/anaconda3" /opt/miniconda3 /opt/anaconda3 /opt/conda \
+                /home/*/miniconda3 /home/*/anaconda3; do
         if [[ -x "$cand/bin/conda" ]]; then
             CONDA_ROOT="$cand"
             break

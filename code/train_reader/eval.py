@@ -52,6 +52,8 @@ def main():
     parser.add_argument('--split', default='test', choices=['train', 'valid', 'test'])
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='评估图数限制（0=全部；PPA 必配）')
+    parser.add_argument('--chunk-size', type=int, default=32,
+                        help='reader 评估时的图批量大小')
     parser.add_argument('--argmax', action=argparse.BooleanOptionalAction, default=True,
                         help='argmax 选择（默认开启；--no-argmax 改为按分布采样）')
     parser.add_argument('--n-seeds', type=int, default=4,
@@ -103,7 +105,7 @@ def main():
               f"(from checkpoint config)")
         results = evaluate_reader(reader, classifier, builder,
                                   graphs, labels, budget_options, device,
-                                  args.argmax, n_seeds=args.n_seeds)
+                                  args.argmax,chunk_size=args.chunk_size, n_seeds=args.n_seeds)
         key = 'learnable'
         out_dir = (resolve(args.output_dir) if args.output_dir
                    else ckpt_path.parent)
