@@ -197,13 +197,17 @@ def main():
         print(f"  Train: loss={metrics['loss']:.4f}  "
               f"avg_R={metrics['avg_R']:.3f}  acc={metrics['acc']:.3f}"
               + (f"  ev_acc={metrics['ev_acc']:.3f}"
-                 if 'ev_acc' in metrics else ''))
+                 if 'ev_acc' in metrics else '')
+              + (f"  ev_acc_final={metrics['ev_acc_final']:.3f}"
+                 if 'ev_acc_final' in metrics else ''))
         log_entry = {'epoch': epoch,
                      'train_loss': metrics['loss'],
                      'train_avg_R': metrics['avg_R'],
                      'train_acc': metrics['acc']}
         if 'ev_acc' in metrics:
             log_entry['ev_acc'] = metrics['ev_acc']
+        if 'ev_acc_final' in metrics:
+            log_entry['ev_acc_final'] = metrics['ev_acc_final']
         training_log.append(log_entry)
         save_epoch_checkpoint(
             output_dir / f'checkpoint_epoch{epoch}.pt',

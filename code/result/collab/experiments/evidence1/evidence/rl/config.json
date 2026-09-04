@@ -31,7 +31,7 @@
   "resume": "",
   "seed": 42,
   "config": "",
-  "git_commit": "1e5e51c8b813ad54d6912e506aca1552bd274339",
+  "git_commit": "32072dbe18e714b95fb1e3a216d580fe1481fd9c",
   "reader": {
     "kind": "evidence",
     "edge_feat_dim": 1,
@@ -61,5 +61,5 @@
   ],
   "total_params": 382726,
   "trainable_params": 382726,
-  "started_at": "2026-09-04T09:47:27"
+  "started_at": "2026-09-04T11:50:29"
 }

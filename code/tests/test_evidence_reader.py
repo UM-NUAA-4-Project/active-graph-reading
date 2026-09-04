@@ -183,13 +183,15 @@ def test_bc_smoke():
                              batch_size=4, device='cpu',
                              temperature=1.0, evidence_lambda=1.0)
     assert metrics['loss'] == metrics['loss'] and metrics['loss'] > 0
-    assert 'ev_acc' in metrics
+    assert 'act_acc' in metrics
+    assert 'ev_acc' in metrics and 'ev_acc_final' in metrics
     # λ=0：证据损失关闭，ev_acc 不出现在返回值
     metrics0 = bc_train_epoch(reader, optimizer, graph_cache, trajs,
                               batch_size=4, device='cpu',
                               temperature=1.0, evidence_lambda=0.0)
-    assert 'ev_acc' not in metrics0 and metrics0['loss'] == metrics0['loss']
-    print('  BC 循环冒烟（λ=1 与 λ=0）OK')
+    assert ('ev_acc' not in metrics0 and 'ev_acc_final' not in metrics0
+            and metrics0['loss'] == metrics0['loss'])
+    print('  BC 循环冒烟（λ=1 与 λ=0，act_acc/ev_acc_final）OK')
 
 
 def test_rl_smoke():
@@ -222,9 +224,10 @@ def test_rl_smoke():
         reward_type='binary', ln_k=1.1, budget_options=(0.1,),
         neg_scale=1.0, evidence_lambda=1.0)
     assert metrics['loss'] == metrics['loss']
-    assert 'ev_acc' in metrics
+    assert 'ev_acc' in metrics and 'ev_acc_final' in metrics
     print(f"  RL 循环冒烟 OK（loss={metrics['loss']:.4f}, "
-          f"ev_acc={metrics['ev_acc']:.3f}）")
+          f"ev_acc={metrics['ev_acc']:.3f}, "
+          f"ev_acc_final={metrics['ev_acc_final']:.3f}）")
 
 
 def test_eval_smoke():

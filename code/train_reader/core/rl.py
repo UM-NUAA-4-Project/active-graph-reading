@@ -65,6 +65,7 @@ def train_one_epoch(reader, classifier, builder, optimizer,
     classifier.eval()
     total_R = total_trajs = total_correct = total_loss = 0.0
     ev_correct = ev_total = 0
+    ev_final_correct = ev_final_total = 0
     order = list(range(len(graphs)))
     random.shuffle(order)
     micro_batch_size = MICRO_BATCH_SIZE if use_belief else len(order)  # base 无累积
@@ -201,14 +202,29 @@ def train_one_epoch(reader, classifier, builder, optimizer,
                             active[j] = False
 
             # ---- 批量分类器评估 → 奖励 → REINFORCE 损失 ----
-            final_states, final_log_probs, final_labels = [], [], []
+            final_states, final_log_probs, final_labels, final_idx = \
+                [], [], [], []
             for j in range(n_total):
                 if per_state_log_probs[j]:
+                    final_idx.append(j)
                     final_states.append(all_states[j])
                     final_log_probs.append(per_state_log_probs[j])
                     final_labels.append(state_labels[j])
             if not final_states:
                 continue
+
+            # ---- 终局判定：读满后的补充前向（含最后一次 reveal 的证据）----
+            if use_evidence:
+                _, _, term_ev = reader.forward_states_evidence(
+                    final_states, reader.temperature,
+                    hc_list=[all_hc[j] for j in final_idx],
+                    last_revealed=[last_revealed[j] for j in final_idx])
+                for k in range(len(final_states)):
+                    ev_losses.append(F.cross_entropy(
+                        term_ev[k].unsqueeze(0), final_labels[k]))
+                    ev_final_correct += int(term_ev[k].argmax().item()
+                                            == final_labels[k].item())
+                    ev_final_total += 1
 
             logits_chunks = []
             with torch.no_grad():
@@ -262,9 +278,13 @@ def train_one_epoch(reader, classifier, builder, optimizer,
         }
         if ev_total:
             postfix['ev_acc'] = f'{ev_correct / ev_total:.3f}'
+        if ev_final_total:
+            postfix['ev_final'] = f'{ev_final_correct / ev_final_total:.3f}'
         pbar.set_postfix(postfix)
     n = max(total_trajs, 1)
     out = {'loss': total_loss / n, 'avg_R': total_R / n, 'acc': total_correct / n}
     if ev_total:
         out['ev_acc'] = ev_correct / ev_total
+    if ev_final_total:
+        out['ev_acc_final'] = ev_final_correct / ev_final_total
     return out

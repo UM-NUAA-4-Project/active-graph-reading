@@ -28,7 +28,10 @@ def train_one_epoch(reader, optimizer, graph_cache: Dict, train_trajs: List,
     evidence_lambda: >0 且 reader 含证据流时启用 L_ev（逐步图类别 CE），
     总损失 = L_act + λ·L_ev。
     Returns: {'loss': 平均 step loss, 'bc': 同 loss（兼容旧日志字段）,
-              'ev_acc': 证据头逐步预测准确率（无证据流时省略）}
+              'act_acc': 教师动作一致率,
+              'ev_acc': 证据头逐步预测准确率,
+              'ev_acc_final': 终局（读满后补充前向）预测准确率
+              （ev 两项无证据流时省略）}
     """
     if use_belief is None:
         use_belief = hasattr(reader, 'init_beliefs')
@@ -37,6 +40,8 @@ def train_one_epoch(reader, optimizer, graph_cache: Dict, train_trajs: List,
     total_loss = 0.0
     total_steps = 0
     ev_correct = ev_total = 0
+    ev_final_correct = ev_final_total = 0
+    act_correct = act_total = 0
 
     random.shuffle(train_trajs)
     n_batches = (len(train_trajs) + batch_size - 1) // batch_size
@@ -122,6 +127,8 @@ def train_one_epoch(reader, optimizer, graph_cache: Dict, train_trajs: List,
                     continue
 
                 step_losses.append(-torch.log(probs[target_idx] + 1e-8))
+                act_correct += int(target_idx == probs.argmax().item())
+                act_total += 1
                 step_counters[j] += 1
                 if use_belief:
                     # reveal 延迟到批量 belief 更新（内部会 reveal）
@@ -147,6 +154,17 @@ def train_one_epoch(reader, optimizer, graph_cache: Dict, train_trajs: List,
         if not step_losses:
             continue
 
+        # ---- 终局判定：读满后的补充前向（含最后一次 reveal 的证据）----
+        if use_evidence:
+            _, _, term_ev = reader.forward_states_evidence(
+                all_states, temperature, all_hc, last_revealed)
+            for k in range(n_total):
+                ev_losses.append(F.cross_entropy(
+                    term_ev[k].unsqueeze(0), state_labels[k]))
+                ev_final_correct += int(term_ev[k].argmax().item()
+                                        == state_labels[k].item())
+                ev_final_total += 1
+
         # ---- Pass 3: L_act + λ·L_ev ----
         batch_loss = torch.stack(step_losses).mean()
         if ev_losses:
@@ -165,13 +183,19 @@ def train_one_epoch(reader, optimizer, graph_cache: Dict, train_trajs: List,
             'avg_step_loss': f'{avg_step_loss:.4f}',
             'batch': f'{batch_idx + 1}/{n_batches}',
             'lr': f'{optimizer.param_groups[0]["lr"]:.1e}',
+            'act_acc': f'{act_correct / max(act_total, 1):.3f}',
         }
         if ev_total:
             postfix['ev_acc'] = f'{ev_correct / ev_total:.3f}'
+        if ev_final_total:
+            postfix['ev_final'] = f'{ev_final_correct / ev_final_total:.3f}'
         pbar.set_postfix(postfix)
 
     n = max(total_steps, 1)
-    out = {'loss': total_loss / n, 'bc': total_loss / n}
+    out = {'loss': total_loss / n, 'bc': total_loss / n,
+           'act_acc': act_correct / max(act_total, 1)}
     if ev_total:
         out['ev_acc'] = ev_correct / ev_total
+    if ev_final_total:
+        out['ev_acc_final'] = ev_final_correct / ev_final_total
     return out

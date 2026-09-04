@@ -5,8 +5,9 @@
     {split: {'learnable'|strategy: {'s0': {...}, ..., 'mean': {...}}}, ...}
 
 evidence reader：rollout 走 forward_states_evidence（选点仍与 base 一致），
-终判 = 自身证据头在预算耗尽步的 ev_logits argmax（决策-分类一体）；
-冻结上界分类器对同一批最终子图的判定写为参照键 acc_clf_*。
+终判 = 读满预算后补充一次证据前向的 ev_logits argmax（决策-分类一体，
+含最后一次 reveal 的证据）；冻结上界分类器对同一批最终子图的判定写为
+参照键 acc_clf_*（并落盘 acc_clf_reference）。
 """
 
 import random
@@ -48,9 +49,9 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
                     n_seeds=4):
     """learnable reader 评估：跨图 lockstep + 批量分类器 + 多预算/多 seed 统计。
 
-    evidence reader：终判由自身证据头给出（预算耗尽步的 ev_logits argmax，
-    决策-分类一体）；冻结上界分类器对同一批最终揭示子图的判定作为参照，
-    写入 acc_clf_* 键。base/attention 行为不变（上界分类器即终判）。
+    evidence reader：终判由自身证据头给出（读满后补充前向的 ev_logits
+    argmax，决策-分类一体）；冻结上界分类器对同一批最终揭示子图的判定
+    作为参照，写入 acc_clf_* 键。base/attention 行为不变（上界分类器即终判）。
     """
     reader.eval()
     per_budget_correct = defaultdict(int)
@@ -91,7 +92,6 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
         if use_evidence:
             all_hc = reader.init_evidence(n_total, device)
             last_revealed = [s.seed_node for s in all_states]
-            final_ev = [None] * n_total
 
         eval_rng = random.Random(0)  # 跳转确定性可复现
         for _step in range(max_budget):
@@ -111,13 +111,12 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
             if not active_idx:
                 break
             if use_evidence:
-                batch_results, active_hc, active_ev = reader.forward_states_evidence(
+                batch_results, active_hc, _ = reader.forward_states_evidence(
                     [all_states[j] for j in active_idx], temperature=1.0,
                     hc_list=[all_hc[j] for j in active_idx],
                     last_revealed=[last_revealed[j] for j in active_idx])
                 for k, j in enumerate(active_idx):
                     all_hc[j] = active_hc[k]
-                    final_ev[j] = active_ev[k]
             elif use_belief:
                 active_beliefs = torch.cat([all_beliefs[j] for j in active_idx], dim=0)
                 active_subgraphs = None
@@ -159,6 +158,12 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
                 if active[j] and all_states[j].get_budget_used() >= all_states[j]._budget_limit:
                     active[j] = False
 
+        # ---- evidence 终局判定：读满后的补充前向（含最后一次 reveal 的证据）----
+        if use_evidence:
+            _, _, final_ev = reader.forward_states_evidence(
+                all_states, temperature=1.0, hc_list=all_hc,
+                last_revealed=last_revealed)
+
         all_subgraphs_out, all_labels_out, all_budgets_out, all_seed_ids_out = \
             [], [], [], []
         for j in range(n_total):
@@ -177,11 +182,8 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
                 budget = all_budgets_out[i + j]
                 seed_i = all_seed_ids_out[i + j]
                 if use_evidence:
-                    # 终判：证据头对预算耗尽步的预测（决策-分类一体）；
-                    # 从未做过前向的 state（如 B=1 且 seed 孤立）无证据判断，计错
-                    ev = final_ev[i + j]
-                    correct = 1.0 if (ev is not None and
-                                      ev.argmax(dim=-1).item() == label) else 0.0
+                    # 终判：证据头读满后的预测（决策-分类一体）
+                    correct = 1.0 if final_ev[i + j].argmax(dim=-1).item() == label else 0.0
                     clf_correct = 1.0 if logits[j].argmax(dim=-1).item() == label else 0.0
                     per_budget_clf_correct[budget] += clf_correct
                     per_budget_clf_outcomes[budget].append(clf_correct)
@@ -324,8 +326,15 @@ def build_eval_json(results, split: str, key: str, n_seeds: int,
                    for b in budget_options}
         for lbl in all_labels
     }
-    return {
+    out = {
         split: {key: per_seed_stats},
         f'per_class_{split}': {key: per_seed_class_stats},
         'config': config,
     }
+    if 'clf_outcomes' in results:
+        # evidence 参照指标落盘：冻结分类器对最终揭示子图的判定
+        out['acc_clf_reference'] = {
+            f'{b:.2f}': budget_stats(results['clf_outcomes'][b])
+            for b in budget_options
+        }
+    return out

@@ -204,11 +204,17 @@ def main():
                                  temperature=1.0,
                                  evidence_lambda=args.evidence_lambda)
         print(f"  Train loss: {metrics['loss']:.4f}"
+              f", act_acc: {metrics['act_acc']:.4f}"
               + (f", ev_acc: {metrics['ev_acc']:.4f}"
-                 if 'ev_acc' in metrics else ''))
-        log_entry = {'epoch': epoch, 'train_loss': metrics['loss']}
+                 if 'ev_acc' in metrics else '')
+              + (f", ev_acc_final: {metrics['ev_acc_final']:.4f}"
+                 if 'ev_acc_final' in metrics else ''))
+        log_entry = {'epoch': epoch, 'train_loss': metrics['loss'],
+                     'act_acc': metrics['act_acc']}
         if 'ev_acc' in metrics:
             log_entry['ev_acc'] = metrics['ev_acc']
+        if 'ev_acc_final' in metrics:
+            log_entry['ev_acc_final'] = metrics['ev_acc_final']
         training_log.append(log_entry)
 
         save_epoch_checkpoint(
