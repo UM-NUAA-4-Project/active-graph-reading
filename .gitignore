@@ -28,6 +28,7 @@ docs/slides/
 docs/figures/
 
 
-# baseline 复现产物（GAM 输入 JSON / 输出记录），代码本身提交
+# baseline 复现产物（中间产物 checkpoints / 独立评估记录），代码本身提交
+baseline/artifacts/
 baseline/data/
 baseline/output/

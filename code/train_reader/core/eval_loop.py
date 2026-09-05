@@ -202,11 +202,17 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
                       clf_outcomes=(per_budget_clf_outcomes if use_evidence else None))
 
 
-def evaluate_fixed(strategy_name, classifier, builder, graphs, labels,
-                   budget_options, device, argmax=True, n_seeds=4):
-    """固定策略（random/bfs/max_degree）评估，统计口径与 evaluate_reader 一致。"""
+def evaluate_fixed(strategy, classifier, builder, graphs, labels,
+                   budget_options, device, argmax=True, n_seeds=4, agent=None):
+    """固定策略（random/bfs/max_degree）评估，统计口径与 evaluate_reader 一致。
+
+    agent 可传入外部策略实例（baseline/ 协议适配基线，如 sagpool——需加载
+    scorer checkpoint，无法经 create_fixed_reader 无参构造）；此时 strategy
+    仅作日志/注册名，允许为 None。
+    """
     from active_graph_reader.reader.fixed import create_fixed_reader
-    agent = create_fixed_reader(strategy_name)
+    if agent is None:
+        agent = create_fixed_reader(strategy)
     per_budget_correct = defaultdict(int)
     per_budget_total = defaultdict(int)
     per_budget_outcomes = defaultdict(list)

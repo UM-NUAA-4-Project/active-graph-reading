@@ -36,6 +36,7 @@ sys.path = [p for p in sys.path
 import torch  # noqa: E402
 
 from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder  # noqa: E402
+from active_graph_reader.reader.fixed import create_fixed_reader  # noqa: E402
 from datasets import get_dataset  # noqa: E402
 from tools.config import save_json  # noqa: E402
 from tools.paths import CODE_DIR  # noqa: E402
@@ -57,8 +58,13 @@ def main():
     parser.add_argument('--checkpoint', default='',
                         help='reader checkpoint；与 --strategy 二选一')
     parser.add_argument('--strategy', nargs='+', default=None,
-                        choices=['random', 'bfs'],
-                        help='固定策略名（可同时多个，默认用法 --strategy random bfs）')
+                        choices=['random', 'bfs', 'max-frontier-degree',
+                                 'random-walk', 'sagpool'],
+                        help='固定策略名（可同时多个，默认用法 --strategy random bfs；'
+                             'random-walk/sagpool 为 baseline/ 协议适配基线）')
+    parser.add_argument('--strategy-ckpt', default='',
+                        help='sagpool scorer checkpoint'
+                             '（默认 baseline/artifacts/{ds}/sagpool.pt）')
     parser.add_argument('--classifier', required=True, help='上界分类器 checkpoint')
     parser.add_argument('--splits', nargs='+', default=['valid', 'test'],
                         choices=['train', 'valid', 'test'],
@@ -106,8 +112,34 @@ def main():
 
     is_fixed = bool(args.strategy)
     strategies = list(args.strategy) if is_fixed else ['learnable']
+    agents = []
     if is_fixed:
         print(f"Strategies: {' '.join(args.strategy)}")
+        if any(s in ('random-walk', 'sagpool') for s in args.strategy):
+            # baseline/ 位于仓库根：注册协议适配基线策略
+            import sys as _sys
+            from tools.paths import REPO_ROOT
+            if str(REPO_ROOT) not in _sys.path:
+                _sys.path.insert(0, str(REPO_ROOT))
+            from baseline.strategies import register_baseline_strategies
+            register_baseline_strategies()
+        for strategy in args.strategy:
+            if strategy == 'sagpool':
+                from baseline.sagpool import SagpoolStrategy
+                ckpt = (resolve(args.strategy_ckpt) if args.strategy_ckpt
+                        else CODE_DIR.parent / 'baseline' / 'artifacts'
+                             / spec.name / 'sagpool.pt')
+                if not ckpt.exists():
+                    raise SystemExit(
+                        f"sagpool scorer checkpoint 不存在: {ckpt}\n"
+                        f"先训练: python baseline/run_sagpool.py "
+                        f"--dataset {spec.name} --root <root>")
+                agent = SagpoolStrategy()
+                agent.load(str(ckpt), device)
+                print(f"SAGPool scorer: {ckpt}")
+            else:
+                agent = create_fixed_reader(strategy)
+            agents.append(agent)
     else:
         ckpt_path = resolve(args.checkpoint)
         print(f"Checkpoint: {ckpt_path}")
@@ -129,11 +161,11 @@ def main():
         n_graphs[split] = len(graphs)
         print(f"[{split}] full-graph 参照 acc = {ref:.4f}（{len(graphs)} 图）")
 
-        for strategy in strategies:
+        for strategy, agent in zip(strategies, agents):
             if is_fixed:
-                results = evaluate_fixed(strategy, classifier, builder,
+                results = evaluate_fixed(None, classifier, builder,
                                          graphs, labels, budget_options, device,
-                                         args.argmax, args.n_seeds)
+                                         args.argmax, args.n_seeds, agent=agent)
             else:
                 results = evaluate_reader(reader, classifier, builder,
                                           graphs, labels, budget_options, device,

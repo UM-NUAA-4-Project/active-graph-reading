@@ -1,62 +1,70 @@
-# baseline/ — 基线复现
+# baseline/ — 基线复现（AGR 协议适配版）
 
-在当前三个数据集（cifar10 / collab / ppa）上复现与我们工作最相似的基线
-**GAM**（Graph Classification Using Structural Attention, KDD 2018,
-Lee/Rossi/Kong）。原实现见 `gam_src/`（逐字复制自
-[benedekrozemberczki/GAM-master](https://github.com/benedekrozemberczki/GAM)，
-MIT License，仅加装运行依赖，未改一行逻辑）。
+在 cifar10 / collab / ppa 三个数据集上与主方法对比的 baseline 复现。
+**所有基线都是协议可行的 agent**：对每个基线从原文设定到协议可用形态的
+改动与理由，见 [protocol-adaptation.md](protocol-adaptation.md)（先读它）。
 
-## GAM 与本工作的对齐决策
+当前基线：
 
-GAM 原设定：RNN 智能体在图上自适应走 `time` 步收集证据后分类。与我们
-的差异及对齐方式：
-
-| 维度 | GAM 原设定 | 本复现 | 理由 |
+| 基线 | 状态 | 训练 | `--strategy` 名 |
 |---|---|---|---|
-| 智能体数 | 测试时 `repetitions=10` 次随机起点读取 + 多数投票（≈多智能体集成） | `--repetitions 1` | 对齐我们的单 reader 设定 |
-| 预算 | 全数据集统一 `time` 步 | `round(ratio × n_nodes)` 逐图计算 | 对齐协议"预算 = 揭示节点数（不含 seed）的比例"语义；GAM 走 t 步访问 t+1 个节点（含随机起点），计数一致 |
-| 节点标签 | 数据集自带离散标签（HIV/ER） | collab/ppa 无节点标签 → 每图度数 quantile 分桶合成（`--node-labels degree`，默认 4 桶）；`constant`=全 0（此时 step 网络失效，退化为随机游走 + LSTM 分类） | GAM 的 step 网络按"标签注意力"选步，必须有离散标签才能运作；度数是结构可见信息，不引入额外监督 |
-| 边 | 原始边 | 剔除协议自环 | GAM 看自然图，reader 协议自环是它不需要的实现细节 |
-| 评估 | 只评 test | 训练后分别评 valid 与 test | 与我们的评估口径一致 |
-| 其余超参 | — | 与原默认一致（batch 32 / lr 1e-3 / γ 0.99 / step 32 / combined 64 / epochs 10 / wd 1e-5） | 忠实复现 |
+| random-walk（GraphSAGE 一族，深度型启发式） | ✅ 已接入 eval | 无需训练 | `random-walk` |
+| SAGPool（ICML 2019，学习打分器） | ✅ 已接入 eval，scorer 待正式训练 | 完整图监督 | `sagpool` |
+| SubgraphX（ICML 2021，测试时搜索） | ⬜ 待实现（适配预决已定，见 protocol-adaptation.md §5） | 无训练/搜索贵 | — |
 
-## 结构
+主仓已有固定策略（random / bfs / max-frontier-degree）不在本目录，
+见 `code/active_graph_reader/reader/fixed/`。
+
+## 结构与产物约定
 
 ```
 baseline/
-├── gam_src/            # GAM 原实现逐字复制（gam/utils/param_parser/main + LICENSE）
-├── convert_dataset.py  # registry 数据集 → GAM JSON（code/datasets 注册表驱动）
-├── run_gam.py          # 单智能体 + 逐图预算比例训练/评估编排 + 记录
-├── data/{dataset}/     # [gitignore] 转换产物 {train,valid,test}/*.json + meta.json
-└── output/{dataset}/   # [gitignore] budget_{key}/{gam_logs,predictions_*,record}.json
-                        #            + summary.json（全部预算档汇总）
+├── README.md                  # 本文件：总览 + 用法
+├── protocol-adaptation.md     # 对 AGR 协议的适配改动诠释（专门文档）
+├── randwalk.py                # random-walk 策略（无训练）
+├── sagpool.py                 # SAGPool 模型（复刻官方骨架）+ 协议合规选点 agent
+├── run_sagpool.py             # SAGPool scorer 训练入口（full graph）
+├── strategies.py              # 注册 random-walk 到 fixed strategy 注册表
+├── artifacts/                 # [gitignore] 中间产物（按数据集分目录）
+│   └── {dataset}/
+│       ├── sagpool.pt               # 训练出的 scorer（eval.py 默认读取）
+│       └── sagpool.history.json     # 训练曲线
+└── output/                    # [gitignore] 最终结果（仅存放不走 eval.py 的
+                               #   独立评估产物；目前为空）
 ```
+
+约定：
+- **代码提交**，`artifacts/` 与 `output/` gitignore（`.gitignore` 已配）；
+- 走 `eval.py` 的基线评估，**最终结果在主仓** `code/result/{ds}/fixed/eval_fixed.json`
+  （统一 schema，与 random/bfs/reader 同表），不在本目录重复落盘；
+- 相对路径一律按仓库根解析（不要用 `tools.paths.resolve`，其 code/ 优先
+  规则会把 baseline/ 误解析到 code/ 下）。
 
 ## 用法
 
 ```bash
-# 1. 数据集转换（collab；cifar10/ppa 转换待补，见 TODO）
-python baseline/convert_dataset.py --dataset collab --root D:\\data\\collab
+# 1. SAGPool scorer 训练（中间产物 → baseline/artifacts/{ds}/sagpool.pt）
+python baseline/run_sagpool.py --dataset cifar10 --root D:\\data\\superpixels \
+    --epochs 30                        # PPA 必配 --max-graphs
+# 冒烟（仅验证管线，精度无意义）
+python baseline/run_sagpool.py --dataset cifar10 --root D:\\data\\superpixels \
+    --max-graphs 2000 --epochs 5 --output baseline/artifacts/cifar10/sagpool_smoke.pt
 
-# 2. 训练 + 评估（单智能体，3 档预算）
-python baseline/run_gam.py --dataset collab --data-dir baseline/data/collab \
-    --budgets 0.10 0.15 0.20 --repetitions 1 --epochs 10
-
-# 冒烟（小样本）
-python baseline/convert_dataset.py --dataset collab --root D:\\data\\collab \
-    --max-graphs 60 --output-dir baseline/data/collab_smoke
-python baseline/run_gam.py --dataset collab --data-dir baseline/data/collab_smoke \
-    --budgets 0.10 --epochs 2 --output-root baseline/output/collab_smoke
+# 2. 评估（与 random/bfs 同管线；sagpool 省略 --strategy-ckpt 时读
+#    baseline/artifacts/{ds}/sagpool.pt）
+python code/train_reader/eval.py --dataset cifar10 --root D:\\data\\superpixels \
+    --strategy random-walk sagpool \
+    --classifier result/cifar10/classifier/GIN/best_cifar10_classifier.pt
 ```
 
-依赖：`texttable`（原仓库要求，`pip install texttable`）；其余
-networkx/pandas/sklearn 环境已备。
+单测（协议合规性 / 确定性 / 预算约束 / 注册集成，已入 smoke_test）：
+
+```bash
+python code/tests/test_baseline_strategies.py
+```
 
 ## TODO
 
-- [x] cifar10 转换：degree 分桶标签（`--max-graphs` 可采样）。注意 GAM 只
-      消费离散节点标签，cifar10 的 5 维连续节点特征不进入 baseline；cifar10
-      无 valid split，run_gam 自动跳过 valid、只评 test。
-- [ ] ppa 转换：需走 `spec.load_graph_subset` 选择性加载（158k 全图不可行），
-      节点标签同样用度数分桶。
-- [ ] 其余基线（若有）按同一目录约定扩展。
+- [ ] SAGPool scorer 正式训练（cifar10 全量 30k、更长 epoch；collab/ppa 各一）。
+- [ ] SubgraphX（连通约束树搜索 + 无标签奖励 + 算力上限，见
+      protocol-adaptation.md §5）。

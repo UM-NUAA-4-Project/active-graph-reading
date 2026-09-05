@@ -23,6 +23,7 @@ UNIT_TESTS = [
     'test_self_loop.py',
     'test_evidence_reader.py',
     'test_eval_json_merge.py',
+    'test_baseline_strategies.py',
 ]
 
 CLI_SCRIPTS = [

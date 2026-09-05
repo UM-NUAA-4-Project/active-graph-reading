@@ -19,13 +19,13 @@ def create_fixed_reader(name: str) -> BaseReader:
     """Factory: return a concrete strategy instance by name.
 
     Usage: create_fixed_reader('random') returns a RandomStrategy instance.
+    运行期经 register_strategy 注册的策略（如 baseline/ 的 random-walk）
+    也可通过本工厂构造。
     """
     cls = _STRATEGY_CLASSES.get(name)
-    if cls is None:
-        raise ValueError(
-            f"Unknown strategy '{name}', available: {sorted(_STRATEGY_CLASSES)}"
-        )
-    return cls()
+    if cls is not None:
+        return cls()
+    return get_strategy(name)
 
 
 __all__ = [
