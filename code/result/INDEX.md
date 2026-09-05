@@ -52,3 +52,29 @@ result/{dataset}/
 ⚠️ **历史评估 JSON 视为只读**：对迁移来的 checkpoint 重跑 eval 时，
 默认输出目录是 checkpoint 同目录，会覆盖历史结果（git 只保留部分历史）。
 请显式传 `--output-dir` 指到新位置，或先备份。
+
+## eval 结果 JSON 统一格式（2026-09-05 起）
+
+自 2026-09-05 起 `train_reader/eval.py` 一次运行评估全部可用 held-out split
+（valid+test，cifar10 无验证集自动跳过）并合并输出**单个** JSON：
+
+| 来源 | 输出 | 顶层 strategy 键 |
+|---|---|---|
+| 固定策略 `--strategy random bfs` | `result/{ds}/fixed/eval_fixed.json` | `random`、`bfs` |
+| reader checkpoint | `<checkpoint 同目录>/eval_learnable.json` | `learnable` |
+
+Schema（与 m5 历史参考文件同构，comparison 脚本直接消费）：
+
+```
+{valid|test} → {strategy} → {s0..sN, mean} → "<budget:.2f>" → {mean, std, n}
+per_class_{split} → {strategy} → {s0..sN, mean} → {class} → ...
+acc_clf_reference_{split}   # 仅 evidence reader（冻结分类器参照）
+config.full_graph_ref       # 分类器全图 acc（现场评估），plot_three_stage 上界虚线
+```
+
+历史三代 eval JSON（m7 `eval_heldout_{split}_*.json`、m6 `evaluate/` 子目录、
+旧 fixed 命名）已用 `tools/migrate_eval_json.py` 合并重命名为上述 canonical
+文件（dry-run 默认、--write 落盘、--archive 归档旧文件至 `_legacy_eval/`）；
+被合并的旧文件默认保留原位，勿再作为绘图输入。已知遗留：collab fixed 评估
+用预算档 0.05/0.10/0.15 而 reader 用 0.10/0.15/0.20，三阶段图 `--budgets`
+需取交集。

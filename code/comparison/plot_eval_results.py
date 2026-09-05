@@ -21,7 +21,20 @@ import json
 import sys
 from pathlib import Path
 
+_CODE_DIR = Path(__file__).resolve().parents[1]
+if str(_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(_CODE_DIR))
+
 import numpy as np
+
+
+def _resolve(p: str) -> Path:
+    """相对路径按 code/ 解析（与 plot_three_stage.resolve 一致）。"""
+    path = Path(p)
+    if path.is_absolute():
+        return path
+    from tools.paths import CODE_DIR
+    return CODE_DIR / p
 
 _SPLIT_NAMES = ('train', 'valid', 'test')
 STRATEGY_COLORS = {
@@ -181,9 +194,9 @@ def main():
     args = parser.parse_args()
 
     for json_arg in args.json:
-        path = Path(json_arg)
+        path = _resolve(json_arg)
         data = _load_json(path)
-        out_dir = Path(args.output_dir) if args.output_dir else path.parent
+        out_dir = _resolve(args.output_dir) if args.output_dir else path.parent
         out_dir.mkdir(parents=True, exist_ok=True)
         name = args.name or 'eval_plot'
 

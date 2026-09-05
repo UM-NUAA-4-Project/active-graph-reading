@@ -288,6 +288,66 @@ def budget_stats(outcomes):
             'n': len(arr)}
 
 
+@torch.no_grad()
+def evaluate_classifier_full(classifier, graphs, labels, device,
+                             batch_size=256):
+    """冻结分类器在全量图上的 accuracy（full-graph 参照上界）。
+
+    与 train_full_graph.evaluate 同口径：graphs 直接 dgl.batch，
+    nids 全零；结果写入 eval JSON 的 config.full_graph_ref，
+    供 plot_three_stage 等脚本画上界虚线。
+    """
+    classifier.eval()
+    correct = total = 0
+    for start in range(0, len(graphs), batch_size):
+        batch_g = dgl.batch(graphs[start:start + batch_size]).to(device)
+        nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
+        y = labels[start:start + batch_size].to(device)
+        logits = classifier(batch_g, nids)
+        correct += (logits.argmax(dim=-1) == y).sum().item()
+        total += len(y)
+    return correct / max(total, 1)
+
+
+_SPLIT_KEYS = ('train', 'valid', 'test')
+
+
+def merge_eval_json(parts, on_conflict=None):
+    """合并多个 build_eval_json 产物 → 统一多 split/多 strategy JSON。
+
+    parts 每项为单 split 产物：{split: {strategy: {...}},
+    'per_class_{split}': {...}, 'acc_clf_reference': {...}(可选), 'config': {...}}。
+    - split/strategy 子树深合并；冲突时靠后覆盖靠前（on_conflict 回调告警）；
+    - 单 split 时代的扁平 acc_clf_reference → acc_clf_reference_{split}
+      （与 per_class_{split} 命名一致）；
+    - config 逐字段合并：dict 值按键 union（n_graphs/full_graph_ref 按 split
+      累积），标量后者覆盖。
+    """
+    out = {}
+    for part in parts:
+        for key, value in part.items():
+            if key in _SPLIT_KEYS or key.startswith('per_class_'):
+                bucket = out.setdefault(key, {})
+                for strategy, sub in value.items():
+                    if strategy in bucket and on_conflict is not None:
+                        on_conflict(f'{key}.{strategy}')
+                    bucket[strategy] = sub
+            elif key == 'acc_clf_reference':
+                split = next((s for s in _SPLIT_KEYS if s in part), None)
+                if split is not None:
+                    out[f'acc_clf_reference_{split}'] = value
+            elif key == 'config':
+                cfg = out.setdefault('config', {})
+                for ck, cv in value.items():
+                    if isinstance(cv, dict) and isinstance(cfg.get(ck), dict):
+                        cfg[ck].update(cv)
+                    else:
+                        cfg[ck] = cv
+            else:
+                out[key] = value
+    return out
+
+
 def build_eval_json(results, split: str, key: str, n_seeds: int,
                     budget_options, config: dict) -> dict:
     """评估结果 → 旧版兼容 JSON（{split: {key: {s0..sN, mean}}}）。"""

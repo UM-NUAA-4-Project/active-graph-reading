@@ -22,10 +22,12 @@ UNIT_TESTS = [
     'test_unified_loops.py',
     'test_self_loop.py',
     'test_evidence_reader.py',
+    'test_eval_json_merge.py',
 ]
 
 CLI_SCRIPTS = [
     'train_classifier/train_full_graph.py',
+    'train_classifier/eval_classifier.py',
     'trajectories/generate_trajectories.py',
     'trajectories/filter_trajectories.py',
     'trajectories/balance_trajectories.py',
@@ -35,6 +37,7 @@ CLI_SCRIPTS = [
     'train_reader/train_rl.py',
     'train_reader/eval.py',
     'train_reader/transfer.py',
+    'tools/migrate_eval_json.py',
     'comparison/plot_eval_results.py',
     'comparison/plot_three_stage.py',
     'comparison/qa_three_stage.py',

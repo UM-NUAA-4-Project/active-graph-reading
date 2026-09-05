@@ -3920,6 +3920,7 @@
     "n_layers": 2,
     "strategies": [
       "learnable"
-    ]
+    ],
+    "mode": "reader"
   }
 }

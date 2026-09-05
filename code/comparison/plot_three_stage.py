@@ -7,12 +7,15 @@
   输出 SVG/PDF/PNG + source_data.csv。
 
 用法:
+  # 2026-09-05 起统一格式：fixed JSON 含 random+bfs 键，reader JSON 含 learnable 键，
+  # 各自含 valid/test 双 split；上界虚线优先取各 JSON config.full_graph_ref
   python code/comparison/plot_three_stage.py \
-      --fixed-json result/ppa/fixed/eval_heldout_test_random.json \
-      --bc-json result/ppa/experiments/bc_baseline/base/bc/eval_heldout_test_reader.json \
-      --rl-json result/ppa/experiments/rl_asymmetric_ex1/base/rl/eval_heldout_test_reader.json \
-      --splits valid test --ref-valid 0.66 --ref-test 0.656 \
+      --fixed-json result/ppa/fixed/eval_fixed.json \
+      --bc-json result/ppa/experiments/bc_baseline/base/bc/eval_learnable.json \
+      --rl-json result/ppa/experiments/rl_asymmetric_ex1/base/rl/analysis/eval_learnable.json \
       --output-dir result/ppa/comparison
+  # 仍兼容旧单 split JSON 与 CLI 显式上界：
+  #   --splits valid test --ref-valid 0.66 --ref-test 0.656
 """
 
 import argparse
@@ -20,6 +23,10 @@ import csv
 import json
 import sys
 from pathlib import Path
+
+_CODE_DIR = Path(__file__).resolve().parents[1]
+if str(_CODE_DIR) not in sys.path:
+    sys.path.insert(0, str(_CODE_DIR))
 
 import numpy as np
 import matplotlib
@@ -72,12 +79,12 @@ def parse_args():
 
 
 def build_stages(args):
-    stages = [('Random', Path(args.fixed_json), 'random', COLORS['Random']),
-              ('BFS', Path(args.fixed_json), 'bfs', COLORS['BFS'])]
+    stages = [('Random', Path(resolve(args.fixed_json)), 'random', COLORS['Random']),
+              ('BFS', Path(resolve(args.fixed_json)), 'bfs', COLORS['BFS'])]
     if args.bc_json:
-        stages.append(('BC', Path(args.bc_json), 'learnable', COLORS['BC']))
+        stages.append(('BC', Path(resolve(args.bc_json)), 'learnable', COLORS['BC']))
     if args.rl_json:
-        stages.append(('RL', Path(args.rl_json), 'learnable', COLORS['RL']))
+        stages.append(('RL', Path(resolve(args.rl_json)), 'learnable', COLORS['RL']))
     return stages
 
 

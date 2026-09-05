@@ -109,3 +109,16 @@ This file is an append-only record of project decisions.
 - RWSE is injected as `[x ‖ pe] → node_proj` (input dim = node_feat_dim + ksteps); it is subgraph-computable and scale-robust, unlike Laplacian PE (sign/axis ambiguity under graph truncation), which is intentionally not implemented.
 - Virtual node remains legacy code inside `gin.py` (not a GNN+ component; collapses to chance on revealed subgraphs — see `result/cifar10/classifier/GIN-res-vn/subgraph_eval.json`).
 - New backbones: implement an encoder (whitelisted kwargs + `out_dim` attribute), register in `BACKBONES` + `BACKBONE_KWARGS`, organize the layer loop per Eq.11 with default-off blocks reproducing original behavior.
+
+### Unified eval JSON schema (multi-split × multi-strategy, one file per source)
+
+**Decision**: `eval.py` evaluates all available held-out splits (default `--splits valid test`; datasets without a validation split such as cifar10 are auto-skipped with a warning) in a single run and writes ONE JSON per source: fixed strategies `--strategy random bfs` → `result/{ds}/fixed/eval_fixed.json`, reader checkpoints → `<checkpoint dir>/eval_learnable.json`. The schema merges the old per-file outputs: top level `{valid,test} → {random,bfs,learnable} → {s0..sN, mean} → "<budget:.2f>" → {mean,std,n}`, plus `per_class_{split}`, and evidence-reader references renamed to `acc_clf_reference_{split}`. `config.full_graph_ref` is now measured live (frozen classifier forward on each evaluated split's full graphs) instead of hardcoded null, so `plot_three_stage.py` draws the upper-bound dashed lines without `--ref-valid/--ref-test`.
+
+**Rationale**: The previous one-JSON-per-(split, strategy) convention required 4 invocations and 4 files for one fixed-strategy baseline, and `plot_three_stage.py` had to be fed multiple files whose split coverage could silently diverge. The merged schema is a strict superset of the m5 reference files (`fixed_eval/eval_fixed.json`, `analysis/eval_learnable.json`), so the comparison scripts' loader (`data[split][strategy]['mean'][f'{b:.2f}']`) works unchanged.
+
+**Implications**:
+
+- `merge_eval_json` (train_reader/core/eval_loop.py) is the single merge implementation, reused by `eval.py` and by `tools/migrate_eval_json.py`, which consolidates the three historical JSON generations (m7 `eval_heldout_{split}_{strategy|reader}.json`, m6 `evaluate/eval_heldout_{split}.json`, old fixed-name files) into the canonical names; dry-run by default, `--write` to apply, `--archive` moves consumed files into `_legacy_eval/`.
+- Historical eval JSONs are treated as merge sources, never deleted by default; conflicts (same split+strategy from multiple files) resolve to the newest mtime with a printed warning.
+- `plot_three_stage.py` / `plot_eval_results.py` now bootstrap `sys.path` and resolve relative input paths against `code/` (previously only the output dir was resolved).
+- Known legacy quirk surfaced by the migration report: collab fixed-strategy evals used budgets 0.05/0.10/0.15 while collab reader evals used 0.10/0.15/0.20 — three-stage plots on collab need `--budgets 0.10 0.15` (the intersection).
