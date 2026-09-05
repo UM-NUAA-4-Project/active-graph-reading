@@ -122,12 +122,61 @@ def test_registry_integration():
     print('  registry integration OK')
 
 
+class _MeanClf(torch.nn.Module):
+    """mock 分类器：图节点特征均值 → 线性 logits（支持 dgl.batch 输入）。"""
+
+    def __init__(self, node_feat_dim=5, n_classes=3):
+        super().__init__()
+        self.lin = torch.nn.Linear(node_feat_dim, n_classes)
+
+    def forward(self, g, nids):
+        x = g.ndata['feat']
+        segs = []
+        off = 0
+        for n in g.batch_num_nodes().tolist():
+            segs.append(x[off:off + n].mean(dim=0))
+            off += n
+        return self.lin(torch.stack(segs))
+
+
+def test_subgraphx_protocol_and_determinism():
+    from baseline.subgraphx import SubgraphXStrategy
+    g = _make_graph(seed=4)
+    clf = _MeanClf().eval()                          # 共享同一分类器（权重一致）
+    hists = []
+    for _ in range(2):
+        agent = SubgraphXStrategy(n_rollout=3, expand_atoms=4, max_evals=64)
+        agent.configure(clf, torch.device('cpu'))
+        state = _rollout(agent, g, budget=5)
+        hists.append(state.reveal_history)
+        assert state.get_budget_used() == 5
+        assert len(state.reveal_history) == 6        # seed + 5 次揭示
+        # 每个新揭示节点不重复（reveal_node 会拒绝重复，能跑完即合规）
+        assert len(set(state.reveal_history)) == 6
+    assert hists[0] == hists[1]                      # 确定性（无随机源）
+    print('  subgraphx protocol + determinism OK')
+
+
+def test_subgraphx_small_component():
+    """分量耗尽早于预算：frontier 空即停，不超预算。"""
+    from baseline.subgraphx import SubgraphXStrategy
+    g = _make_graph(seed=5)
+    agent = SubgraphXStrategy(n_rollout=2, expand_atoms=3, max_evals=32)
+    agent.configure(_MeanClf().eval(), torch.device('cpu'))
+    state = _rollout(agent, g, budget=10_000)
+    assert state.is_frontier_empty
+    assert state.get_budget_used() <= 10_000
+    print('  subgraphx small component OK')
+
+
 def run_all():
     test_random_walk_protocol_and_determinism()
     test_random_walk_budget_overflow()
     test_sagpool_select_and_visible_graph()
     test_sagpool_select_determinism()
     test_registry_integration()
+    test_subgraphx_protocol_and_determinism()
+    test_subgraphx_small_component()
     print('test_baseline_strategies: ALL PASSED')
 
 

@@ -10,7 +10,7 @@
 |---|---|---|---|
 | random-walk（GraphSAGE 一族，深度型启发式） | ✅ 已接入 eval | 无需训练 | `random-walk` |
 | SAGPool（ICML 2019，学习打分器） | ✅ 已接入 eval，scorer 待正式训练 | 完整图监督 | `sagpool` |
-| SubgraphX（ICML 2021，测试时搜索） | ⬜ 待实现（适配预决已定，见 protocol-adaptation.md §5） | 无训练/搜索贵 | — |
+| SubgraphX（ICML 2021，测试时搜索，planner 口径） | ✅ 已接入 eval | 无需训练（搜索用冻结分类器） | `subgraphx` |
 
 主仓已有固定策略（random / bfs / max-frontier-degree）不在本目录，
 见 `code/active_graph_reader/reader/fixed/`。
@@ -24,6 +24,7 @@ baseline/
 ├── randwalk.py                # random-walk 策略（无训练）
 ├── sagpool.py                 # SAGPool 模型（复刻官方骨架）+ 协议合规选点 agent
 ├── run_sagpool.py             # SAGPool scorer 训练入口（full graph）
+├── subgraphx.py               # SubgraphX 生长式 MCTS + 无标签奖励（planner 口径）
 ├── strategies.py              # 注册 random-walk 到 fixed strategy 注册表
 ├── artifacts/                 # [gitignore] 中间产物（按数据集分目录）
 │   └── {dataset}/
@@ -55,6 +56,12 @@ python baseline/run_sagpool.py --dataset cifar10 --root D:\\data\\superpixels \
 python code/train_reader/eval.py --dataset cifar10 --root D:\\data\\superpixels \
     --strategy random-walk sagpool \
     --classifier result/cifar10/classifier/GIN/best_cifar10_classifier.pt
+
+# 3. SubgraphX（planner 口径；搜索超参 --search-rollouts/--search-expand/
+#    --search-max-evals 对齐官方默认 20/12/2048，可下调省算力）
+python code/train_reader/eval.py --dataset cifar10 --root D:\\data\\superpixels \
+    --strategy subgraphx \
+    --classifier result/cifar10/classifier/GIN/best_cifar10_classifier.pt
 ```
 
 单测（协议合规性 / 确定性 / 预算约束 / 注册集成，已入 smoke_test）：
@@ -66,5 +73,5 @@ python code/tests/test_baseline_strategies.py
 ## TODO
 
 - [ ] SAGPool scorer 正式训练（cifar10 全量 30k、更长 epoch；collab/ppa 各一）。
-- [ ] SubgraphX（连通约束树搜索 + 无标签奖励 + 算力上限，见
-      protocol-adaptation.md §5）。
+- [ ] SubgraphX 严格 P4 合规变体（每步 greedy lookahead，无树搜索）留作
+      ablation，暂未实现（见 protocol-adaptation.md §5 口径说明）。

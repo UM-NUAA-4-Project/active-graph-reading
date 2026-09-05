@@ -59,12 +59,18 @@ def main():
                         help='reader checkpoint；与 --strategy 二选一')
     parser.add_argument('--strategy', nargs='+', default=None,
                         choices=['random', 'bfs', 'max-frontier-degree',
-                                 'random-walk', 'sagpool'],
+                                 'random-walk', 'sagpool', 'subgraphx'],
                         help='固定策略名（可同时多个，默认用法 --strategy random bfs；'
-                             'random-walk/sagpool 为 baseline/ 协议适配基线）')
+                             'random-walk/sagpool/subgraphx 为 baseline/ 协议适配基线）')
     parser.add_argument('--strategy-ckpt', default='',
                         help='sagpool scorer checkpoint'
                              '（默认 baseline/artifacts/{ds}/sagpool.pt）')
+    parser.add_argument('--search-rollouts', type=int, default=20,
+                        help='subgraphx MCTS rollout 数（对齐官方默认 20）')
+    parser.add_argument('--search-expand', type=int, default=12,
+                        help='subgraphx 每次扩展的子节点上限（官方 expand_atoms=12）')
+    parser.add_argument('--search-max-evals', type=int, default=2048,
+                        help='subgraphx 单次规划的唯一 coalition 评估数上限（算力上限）')
     parser.add_argument('--classifier', required=True, help='上界分类器 checkpoint')
     parser.add_argument('--splits', nargs='+', default=['valid', 'test'],
                         choices=['train', 'valid', 'test'],
@@ -115,7 +121,7 @@ def main():
     agents = []
     if is_fixed:
         print(f"Strategies: {' '.join(args.strategy)}")
-        if any(s in ('random-walk', 'sagpool') for s in args.strategy):
+        if any(s in ('random-walk', 'sagpool', 'subgraphx') for s in args.strategy):
             # baseline/ 位于仓库根：注册协议适配基线策略
             import sys as _sys
             from tools.paths import REPO_ROOT
@@ -137,6 +143,17 @@ def main():
                 agent = SagpoolStrategy()
                 agent.load(str(ckpt), device)
                 print(f"SAGPool scorer: {ckpt}")
+            elif strategy == 'subgraphx':
+                from baseline.subgraphx import SubgraphXStrategy
+                agent = SubgraphXStrategy(
+                    n_rollout=args.search_rollouts,
+                    expand_atoms=args.search_expand,
+                    max_evals=args.search_max_evals)
+                agent.configure(classifier, device)
+                print(f"SubgraphX planner: rollouts={args.search_rollouts} "
+                      f"expand={args.search_expand} "
+                      f"max_evals={args.search_max_evals}（planner 口径，"
+                      f"详见 baseline/protocol-adaptation.md §5）")
             else:
                 agent = create_fixed_reader(strategy)
             agents.append(agent)
