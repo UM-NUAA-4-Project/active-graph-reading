@@ -17,7 +17,6 @@ virtual_node / residual 仅支持各层同宽，同 GINEEncoder。
 """
 
 import dgl
-import dgl.nn as dglnn
 import dgl.function as fn
 import dgl.ops as dgl_ops
 import torch
@@ -25,7 +24,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Optional, Union
 
-from .norm import make_norm
+from ..plus.edge import EDGE_ENCODER_KINDS, make_edge_encoder
+from ..plus.norm import make_norm
+from ..plus.readout import make_readout
 
 
 class GATLayer(nn.Module):
@@ -36,7 +37,8 @@ class GATLayer(nn.Module):
     """
 
     def __init__(self, in_dim: int, out_dim: int, n_heads: int,
-                 edge_feat_dim: int, negative_slope: float = 0.2):
+                 edge_feat_dim: int, negative_slope: float = 0.2,
+                 edge_encoder_kind: str = 'linear'):
         super().__init__()
         if out_dim % n_heads != 0:
             raise ValueError(
@@ -51,7 +53,8 @@ class GATLayer(nn.Module):
         self.attn_r = nn.Parameter(torch.zeros(1, n_heads, self.out_per_head))
         # 边特征 → 每头一个注意力偏置；边特征 → value 空间
         self.edge_score = nn.Linear(edge_feat_dim, n_heads)
-        self.edge_encoder = nn.Linear(edge_feat_dim, out_dim)
+        self.edge_encoder = make_edge_encoder(edge_feat_dim, out_dim,
+                                              edge_encoder_kind)
         nn.init.xavier_uniform_(self.fc.weight)
         nn.init.xavier_uniform_(self.attn_l)
         nn.init.xavier_uniform_(self.attn_r)
@@ -106,6 +109,8 @@ class GATEncoder(nn.Module):
         dropouts: Optional[List[float]] = None,
         n_heads: Optional[Union[int, List[int]]] = None,
         gnn_norm: Optional[str] = None,
+        readout: str = 'mean',
+        edge_encoder_kind: str = 'linear',
     ):
         super().__init__()
 
@@ -116,6 +121,9 @@ class GATEncoder(nn.Module):
         if len(dropouts) != len(hidden_dims):
             raise ValueError(
                 f"dropouts 长度 {len(dropouts)} != hidden_dims 长度 {len(hidden_dims)}")
+        if edge_encoder_kind not in EDGE_ENCODER_KINDS:
+            raise ValueError(
+                f"未知边编码器 '{edge_encoder_kind}'，可选: {EDGE_ENCODER_KINDS}")
 
         if n_heads is None:
             heads = [self.DEFAULT_HEADS] * len(hidden_dims)
@@ -155,7 +163,8 @@ class GATEncoder(nn.Module):
         in_dim = self.hidden_dims[0]
         for i in range(self.n_layers):
             self.convs.append(GATLayer(
-                in_dim, self.hidden_dims[i], heads[i], edge_feat_dim))
+                in_dim, self.hidden_dims[i], heads[i], edge_feat_dim,
+                edge_encoder_kind=edge_encoder_kind))
             in_dim = self.hidden_dims[i]
         self.bns = nn.ModuleList(
             make_norm(d, self.norm_type) for d in self.hidden_dims)
@@ -176,7 +185,9 @@ class GATEncoder(nn.Module):
                     nn.ReLU(),
                 ))
 
-        self.pool = dglnn.AvgPooling()
+        # 读出（plus/readout.py；meanmax → 两池化拼接，out_dim 翻倍）
+        self.pools = nn.ModuleList(make_readout(readout)[0])
+        self.out_dim = self.hidden_dims[-1] * make_readout(readout)[1]
 
     # ------------------------------------------------------------------
     # Forward
@@ -194,7 +205,9 @@ class GATEncoder(nn.Module):
 
         edge_feat = g.edata.get('feat', None)
         if edge_feat is None:
-            edge_feat_dim = self.convs[0].edge_encoder.in_features
+            enc0 = self.convs[0].edge_encoder
+            edge_feat_dim = enc0.in_features if hasattr(enc0, 'in_features') \
+                else enc0[0].in_features
             edge_feat = torch.zeros(g.num_edges(), edge_feat_dim, device=h.device)
 
         if self.virtual_node:
@@ -230,4 +243,6 @@ class GATEncoder(nn.Module):
                     p=self.dropouts[i], training=self.training,
                 )
 
-        return self.pool(g, h)
+        # 读出（meanmax → 拼接）
+        pooled = [pool(g, h) for pool in self.pools]
+        return torch.cat(pooled, dim=-1) if len(pooled) > 1 else pooled[0]

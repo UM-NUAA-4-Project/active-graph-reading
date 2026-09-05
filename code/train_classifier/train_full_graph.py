@@ -99,6 +99,19 @@ def build_parser() -> argparse.ArgumentParser:
                         help='图读出池化（仅 gin）：mean=AvgPooling（默认）；'
                              'meanmax=mean/max 拼接（对子图规模鲁棒）；'
                              'sum=SumPooling（幅值随节点数缩放，子图易漂移）')
+    # GNN+ 积木（arXiv 2502.09263；plus/ 子包，默认全部关闭=原行为）
+    parser.add_argument('--edge-encoder', default='linear',
+                        choices=['linear', 'mlp'],
+                        help='GNN+ 组件①边特征整合：linear（默认）/mlp')
+    parser.add_argument('--ffn', action='store_true',
+                        help='GNN+ 组件⑤逐层 FFN（自带残差+BN，管线收尾）')
+    parser.add_argument('--ffn-dropout', type=float, default=0.0,
+                        help='FFN 隐层 dropout（--ffn 开启时生效）')
+    parser.add_argument('--pos-enc', default='none', choices=['none', 'rwse'],
+                        help='GNN+ 组件⑥位置编码：rwse（随机游走结构编码）')
+    parser.add_argument('--pos-enc-ksteps', type=int, default=8,
+                        help='RWSE 幂步数 K（--pos-enc rwse 时生效；'
+                             '输入维 = node_feat_dim + K）')
     parser.add_argument('--init-checkpoint', default=None,
                         help='从已有 classifier checkpoint 加载权重微调'
                              '（结构继承自 checkpoint config）')
@@ -141,7 +154,10 @@ def classifier_config_from_args(args, spec, init_cfg: dict):
             n_classes=spec.n_classes, hidden_dims=dims, dropouts=drops,
             virtual_node=args.virtual_node, residual=args.residual,
             n_heads=_norm_heads(args.n_heads, len(dims)),
-            head=args.head, gnn_norm=args.gnn_norm, readout=args.readout)
+            head=args.head, gnn_norm=args.gnn_norm, readout=args.readout,
+            edge_encoder=args.edge_encoder, ffn=args.ffn,
+            ffn_dropout=args.ffn_dropout, pos_enc=args.pos_enc,
+            pos_enc_ksteps=args.pos_enc_ksteps)
     else:
         cfg = ClassifierConfig.from_legacy(
             edge_feat_dim=spec.edge_feat_dim, n_classes=spec.n_classes,
@@ -150,7 +166,10 @@ def classifier_config_from_args(args, spec, init_cfg: dict):
             residual=args.residual, node_feat_dim=spec.node_feat_dim,
             backbone=args.backbone,
             n_heads=_norm_heads(args.n_heads, args.n_layers),
-            head=args.head, gnn_norm=args.gnn_norm, readout=args.readout)
+            head=args.head, gnn_norm=args.gnn_norm, readout=args.readout,
+            edge_encoder=args.edge_encoder, ffn=args.ffn,
+            ffn_dropout=args.ffn_dropout, pos_enc=args.pos_enc,
+            pos_enc_ksteps=args.pos_enc_ksteps)
     return cfg
 
 

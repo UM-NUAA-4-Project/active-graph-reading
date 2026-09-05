@@ -1,4 +1,13 @@
-"""GIN backbone（OGB 官方架构），自 active_graph_reader/gnn/gin_encoder.py 迁出。
+"""GIN backbone（OGB 官方架构）+ GNN+ 逐层管线（arXiv 2502.09263, Eq.11）。
+
+逐层管线：MP(含边特征整合①) → 层间归一化② → σ → Dropout③ → 残差④ →
+FFN⑤(收尾)；位置编码⑥在输入端注入；读出在末层后。各积木由
+ClassifierConfig 字段控制插拔（见 plus/__init__ 的映射表），**默认档
+与旧 checkpoint 的数值和 state_dict 键集逐位一致**。
+
+virtual_node 为历史遗留（非 GNN+ 组件；全局聚合在揭示子图上分布漂移，
+子图评估会退化——见 result/cifar10/classifier/GIN-res-vn/subgraph_eval.json），
+保留原实现与键名（vn_embedding/vn_mlps）。
 
 新增：逐层 hidden_dims / dropouts 列表（旧标量参数自动展开，state_dict 键名
 与旧 checkpoint 完全一致，可直接加载）。virtual_node / residual 仅支持
@@ -15,7 +24,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Optional
 
-from .norm import make_norm
+from ..plus.edge import EDGE_ENCODER_KINDS, make_edge_encoder
+from ..plus.ffn import FFN
+from ..plus.norm import make_norm
+from ..plus.pos_enc import random_walk_structural_encoding
+from ..plus.readout import make_readout
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +37,14 @@ class GINELayer(nn.Module):
     """Single GIN layer with edge features (per-layer edge encoder).
 
     Matches OGB's GINConv:
-      edge_emb      = Linear(edge_feat_dim, hidden_dim)(edge_feat)
-      message       = ReLU(src_h + edge_emb)
+      edge_emb      = edge_encoder(edge_feat)      ← plus/edge.py 积木
+      message       = ReLU(src_h + edge_emb)       ← 边特征整合进聚合（Eq.6）
       aggregation   = sum
       h_new         = MLP((1+eps) * h + aggregated_messages)
     """
 
-    def __init__(self, hidden_dim: int, edge_feat_dim: int, mlp_hidden_mult: int = 2):
+    def __init__(self, hidden_dim: int, edge_feat_dim: int, mlp_hidden_mult: int = 2,
+                 edge_encoder_kind: str = 'linear'):
         super().__init__()
         bottleneck_dim = hidden_dim * mlp_hidden_mult
         self.mlp = nn.Sequential(
@@ -40,7 +54,8 @@ class GINELayer(nn.Module):
             nn.Linear(bottleneck_dim, hidden_dim),
         )
         self.eps = nn.Parameter(torch.zeros(1))
-        self.edge_encoder = nn.Linear(edge_feat_dim, hidden_dim)
+        self.edge_encoder = make_edge_encoder(edge_feat_dim, hidden_dim,
+                                              edge_encoder_kind)
 
     def forward(
         self,
@@ -63,13 +78,16 @@ class GINELayer(nn.Module):
 
 
 class GINEEncoder(nn.Module):
-    """GIN encoder matching OGB official architecture.
+    """GIN encoder，GNN+ 逐层管线骨架。
 
     两种参数形式（二选一，列表优先）：
     - 旧式标量：hidden_dim + n_layers + dropout（逐层统一）
     - 新式列表：hidden_dims / dropouts（逐层独立）
 
-    state_dict 键名与旧 checkpoint 完全一致。
+    plus/ 积木 kwargs（末尾追加，均有默认值=原行为）：
+      readout / edge_encoder_kind / ffn / ffn_dropout / pos_enc / pos_enc_ksteps
+
+    state_dict 键名与旧 checkpoint 完全一致（默认档下零新增键）。
     """
 
     def __init__(
@@ -85,6 +103,11 @@ class GINEEncoder(nn.Module):
         dropouts: Optional[List[float]] = None,
         gnn_norm: Optional[str] = None,
         readout: str = 'mean',
+        edge_encoder_kind: str = 'linear',
+        ffn: bool = False,
+        ffn_dropout: float = 0.0,
+        pos_enc: str = 'none',
+        pos_enc_ksteps: int = 8,
     ):
         super().__init__()
 
@@ -97,8 +120,11 @@ class GINEEncoder(nn.Module):
                 f"dropouts 长度 {len(dropouts)} != hidden_dims 长度 {len(hidden_dims)}")
         if (virtual_node or residual) and len(set(hidden_dims)) > 1:
             raise ValueError("virtual_node / residual 要求各层同宽（维度对齐）")
-        if readout not in ('mean', 'meanmax', 'sum'):
-            raise ValueError(f"未知读出池化 '{readout}'，可选: mean, meanmax, sum")
+        if edge_encoder_kind not in EDGE_ENCODER_KINDS:
+            raise ValueError(
+                f"未知边编码器 '{edge_encoder_kind}'，可选: {EDGE_ENCODER_KINDS}")
+        if pos_enc not in ('none', 'rwse'):
+            raise ValueError(f"未知位置编码 '{pos_enc}'，可选: none, rwse")
 
         self.hidden_dims = [int(d) for d in hidden_dims]
         self.dropouts = [float(p) for p in dropouts]
@@ -107,24 +133,35 @@ class GINEEncoder(nn.Module):
         self.dropout = self.dropouts[0]
         self.virtual_node = virtual_node
         self.residual = residual
-        self.readout = readout
-        # meanmax 读出输出维度翻倍（GraphClassifier 以此定 head 输入维度）
-        self.out_dim = self.hidden_dims[-1] * (2 if readout == 'meanmax' else 1)
         # 历史语义：GIN 层间恒为 BatchNorm（state_dict 键名 bns.i.*），
         # gnn_norm=None 保持兼容；'none'/'layernorm' 显式覆盖
         self.norm_type = gnn_norm if gnn_norm is not None else 'batchnorm'
 
+        # ⑥ 位置编码：开启时输入维 = node_feat_dim + ksteps（Eq.12 拼接投影）
+        self.pos_enc = pos_enc
+        self.pos_enc_ksteps = int(pos_enc_ksteps)
         self.node_feat_dim = int(node_feat_dim)
-        if node_feat_dim > 0:
-            self.node_proj = nn.Linear(int(node_feat_dim), self.hidden_dims[0])
+        proj_in = self.node_feat_dim + (self.pos_enc_ksteps
+                                        if pos_enc == 'rwse' else 0)
+        if pos_enc == 'rwse' or self.node_feat_dim > 0:
+            self.node_proj = nn.Linear(proj_in, self.hidden_dims[0])
         else:
             self.node_emb = nn.Embedding(1, self.hidden_dims[0])
 
         self.convs = nn.ModuleList()
         self.bns = nn.ModuleList()
         for i in range(self.n_layers):
-            self.convs.append(GINELayer(self.hidden_dims[i], edge_feat_dim))
+            self.convs.append(GINELayer(self.hidden_dims[i], edge_feat_dim,
+                                        edge_encoder_kind=edge_encoder_kind))
             self.bns.append(make_norm(self.hidden_dims[i], self.norm_type))
+
+        # ⑤ FFN：关闭时 Identity 占位（零参数零键）
+        if ffn:
+            self.ffns = nn.ModuleList([FFN(d, ffn_dropout)
+                                       for d in self.hidden_dims])
+        else:
+            self.ffns = nn.ModuleList([nn.Identity()
+                                       for _ in range(self.n_layers)])
 
         # Virtual Node (optional, matches OGB gin-virtual)
         if virtual_node:
@@ -142,11 +179,9 @@ class GINEEncoder(nn.Module):
                     nn.ReLU(),
                 ))
 
-        self.pool = dglnn.AvgPooling()
-        if readout == 'meanmax':
-            self.pool_max = dglnn.MaxPooling()
-        elif readout == 'sum':
-            self.pool = dglnn.SumPooling()
+        # 读出（plus/readout.py；meanmax → 两池化拼接，out_dim 翻倍）
+        self.pools = nn.ModuleList(make_readout(readout)[0])
+        self.out_dim = self.hidden_dims[-1] * make_readout(readout)[1]
 
     # ------------------------------------------------------------------
     # Forward
@@ -157,15 +192,28 @@ class GINEEncoder(nn.Module):
         g: dgl.DGLGraph,
         node_ids: torch.Tensor,
     ) -> torch.Tensor:
-        if self.node_feat_dim > 0:
+        # ⑥ 位置编码注入（Eq.12：[x ‖ x_RWSE] → 投影）
+        if self.pos_enc == 'rwse':
+            pe = random_walk_structural_encoding(
+                g, self.pos_enc_ksteps).to(node_ids.device)
+            if self.node_feat_dim > 0:
+                x = torch.cat([g.ndata['feat'].to(node_ids.device), pe], dim=-1)
+            else:
+                x = torch.cat([torch.ones(pe.shape[0], 1,
+                                          device=node_ids.device), pe], dim=-1)
+            h = self.node_proj(x)
+        elif self.node_feat_dim > 0:
             h = self.node_proj(g.ndata['feat'].to(node_ids.device))
         else:
             h = self.node_emb(node_ids)
 
         edge_feat = g.edata.get('feat', None)
         if edge_feat is None:
-            edge_feat_dim = self.convs[0].edge_encoder.in_features
-            edge_feat = torch.zeros(g.num_edges(), edge_feat_dim, device=h.device)
+            edge_feat_dim = self.convs[0].edge_encoder.in_features \
+                if hasattr(self.convs[0].edge_encoder, 'in_features') \
+                else self.convs[0].edge_encoder[0].in_features
+            edge_feat = torch.zeros(g.num_edges(), edge_feat_dim,
+                                    device=h.device)
 
         # Virtual Node init
         if self.virtual_node:
@@ -184,16 +232,14 @@ class GINEEncoder(nn.Module):
             if self.virtual_node:
                 h_list[i] = h_list[i] + vn_h[node_to_graph]
 
-            h = self.convs[i](g, h_list[i], edge_feat)
-            h = self.bns[i](h)
-
-            if i == self.n_layers - 1:
-                h = F.dropout(h, p=self.dropouts[i], training=self.training)
-            else:
-                h = F.dropout(F.relu(h), p=self.dropouts[i], training=self.training)
-
-            if self.residual:
+            h = self.convs[i](g, h_list[i], edge_feat)      # ① MP + 边特征整合
+            h = self.bns[i](h)                              # ② 层间归一化
+            h = h if i == self.n_layers - 1 else F.relu(h)  # σ（末层不激活）
+            h = F.dropout(h, p=self.dropouts[i],            # ③ Dropout
+                          training=self.training)
+            if self.residual:                               # ④ 残差
                 h = h + h_list[i]
+            h = self.ffns[i](h)                             # ⑤ FFN（关闭=恒等）
 
             h_list.append(h)
 
@@ -206,6 +252,6 @@ class GINEEncoder(nn.Module):
                     p=self.dropouts[i], training=self.training,
                 )
 
-        if self.readout == 'meanmax':
-            return torch.cat([self.pool(g, h), self.pool_max(g, h)], dim=-1)
-        return self.pool(g, h)
+        # 读出（meanmax → 拼接）
+        pooled = [pool(g, h) for pool in self.pools]
+        return torch.cat(pooled, dim=-1) if len(pooled) > 1 else pooled[0]

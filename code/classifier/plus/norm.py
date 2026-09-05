@@ -1,7 +1,8 @@
-"""GNN 层间归一化模块工厂（层与层之间，区别于 GINELayer MLP 内部的 BatchNorm）。
+"""GNN+ 组件②归一化：层间 norm 工厂（区别于 GINELayer MLP 内部的 BatchNorm）。
 
 'none' 返回 nn.Identity——无参数、无 state_dict 键，因此各 encoder
 在默认档位下对旧 checkpoint 的 state_dict 键集零影响。
+（自 layers/norm.py 移入 plus/；layers/ 内不再保留副本。）
 """
 
 import torch.nn as nn

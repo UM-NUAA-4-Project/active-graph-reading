@@ -7,6 +7,8 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+from .plus import EDGE_ENCODER_KINDS
+
 
 def _as_list(value, n: Optional[int] = None) -> List:
     """标量 → [v]*n；列表 → 原样。用于 dropout/hidden_dims 的统一化。"""
@@ -34,6 +36,14 @@ class ClassifierConfig:
     'meanmax'（mean 与 max 拼接，输出维度翻倍；mean/max 均不随节点数缩放，
     全图与揭示子图分布一致）| 'sum'（SumPooling，幅值随节点数变化，
     子图上分布漂移大，慎用）。
+
+    GNN+ 积木字段（arXiv 2502.09263；默认值=原行为，对旧 checkpoint 键集
+    零影响；组件↔模块映射见 plus/__init__.py）：
+    edge_encoder: 边特征整合（plus/edge.py），'linear'（默认）| 'mlp'。
+    ffn / ffn_dropout: 逐层 FFN（plus/ffn.py，自带残差+BN，管线收尾），
+    False=关闭。
+    pos_enc / pos_enc_ksteps: 位置编码（plus/pos_enc.py，RWSE），
+    'none'=关闭；开启时输入维 = node_feat_dim + pos_enc_ksteps。
     """
 
     backbone: str = 'gin'
@@ -48,6 +58,11 @@ class ClassifierConfig:
     head: str = 'linear'
     gnn_norm: Optional[str] = None
     readout: str = 'mean'
+    edge_encoder: str = 'linear'
+    ffn: bool = False
+    ffn_dropout: float = 0.0
+    pos_enc: str = 'none'
+    pos_enc_ksteps: int = 8
 
     # ---- 兼容旧标量接口 ----
     @property
@@ -91,6 +106,17 @@ class ClassifierConfig:
             d['gnn_norm'] = self.gnn_norm
         if self.readout != 'mean':
             d['readout'] = self.readout
+        # GNN+ 积木：非默认才落盘（旧 JSON 零漂移）
+        if self.edge_encoder != 'linear':
+            d['edge_encoder'] = self.edge_encoder
+        if self.ffn:
+            d['ffn'] = True
+        if self.ffn_dropout != 0.0:
+            d['ffn_dropout'] = self.ffn_dropout
+        if self.pos_enc != 'none':
+            d['pos_enc'] = self.pos_enc
+        if self.pos_enc != 'none' and self.pos_enc_ksteps != 8:
+            d['pos_enc_ksteps'] = self.pos_enc_ksteps
         return d
 
     @staticmethod
@@ -116,6 +142,13 @@ class ClassifierConfig:
         readout = d.get('readout', 'mean')
         if readout not in ('mean', 'meanmax', 'sum'):
             raise ValueError(f"未知读出池化 '{readout}'，可选: mean, meanmax, sum")
+        edge_encoder = d.get('edge_encoder', 'linear')
+        if edge_encoder not in EDGE_ENCODER_KINDS:
+            raise ValueError(
+                f"未知边编码器 '{edge_encoder}'，可选: {EDGE_ENCODER_KINDS}")
+        pos_enc = d.get('pos_enc', 'none')
+        if pos_enc not in ('none', 'rwse'):
+            raise ValueError(f"未知位置编码 '{pos_enc}'，可选: none, rwse")
         return ClassifierConfig(
             backbone=d.get('backbone', 'gin'),
             edge_feat_dim=int(d.get('edge_feat_dim', 7)),
@@ -130,6 +163,11 @@ class ClassifierConfig:
             head=head,
             gnn_norm=gnn_norm,
             readout=readout,
+            edge_encoder=edge_encoder,
+            ffn=bool(d.get('ffn', False)),
+            ffn_dropout=float(d.get('ffn_dropout', 0.0)),
+            pos_enc=pos_enc,
+            pos_enc_ksteps=int(d.get('pos_enc_ksteps', 8)),
         )
 
     @staticmethod
@@ -140,13 +178,20 @@ class ClassifierConfig:
                     n_heads: Optional[List[int]] = None,
                     head: str = 'linear',
                     gnn_norm: Optional[str] = None,
-                    readout: str = 'mean') -> 'ClassifierConfig':
+                    readout: str = 'mean',
+                    edge_encoder: str = 'linear',
+                    ffn: bool = False,
+                    ffn_dropout: float = 0.0,
+                    pos_enc: str = 'none',
+                    pos_enc_ksteps: int = 8) -> 'ClassifierConfig':
         """旧式标量参数 → 配置（保持 m3 时代调用点一行迁移）。"""
         return ClassifierConfig(
             backbone=backbone,
             edge_feat_dim=edge_feat_dim, n_classes=n_classes,
             node_feat_dim=node_feat_dim, virtual_node=virtual_node,
             residual=residual, n_heads=n_heads, head=head, gnn_norm=gnn_norm,
-            readout=readout,
+            readout=readout, edge_encoder=edge_encoder, ffn=ffn,
+            ffn_dropout=ffn_dropout, pos_enc=pos_enc,
+            pos_enc_ksteps=pos_enc_ksteps,
             hidden_dims=[hidden_dim] * n_layers, dropouts=[dropout] * n_layers,
         )

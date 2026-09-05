@@ -95,3 +95,17 @@ This file is an append-only record of project decisions.
 - `ClassifierConfig.readout` ('mean' | 'meanmax' | 'sum') is serialized in checkpoints; 'mean' stays the default and keeps old configs/JSON unchanged (old checkpoints load strictly, no migration).
 - `GINEEncoder.out_dim` doubles under 'meanmax'; `GraphClassifier` sizes its head from `encoder.out_dim` (falling back to last hidden width for backbones without the attribute).
 - Diagnostic tool: `code/diagnosis/classifier_subgraph_eval.py` measures a classifier checkpoint's full-graph accuracy plus per-budget accuracy under fixed strategies (bfs/random) with protocol seeds — the acceptance gate for any new reward/reference classifier.
+
+### classifier package: GNN+ building-block architecture (plus/)
+
+**Decision**: Reorganize `code/classifier` into a block-based architecture modeled on the GNN+ unified enhancement framework ("Can Classic GNNs Be Strong Baselines for Graph-level Tasks?", ICML 2025, arXiv 2502.09263). The six components map to pluggable blocks controlled by `ClassifierConfig` fields: edge feature integration (`plus/edge.py`, config `edge_encoder`), normalization (`plus/norm.py`, config `gnn_norm`), dropout (in-loop stage, config `dropouts`), residual connections (in-loop stage, config `residual`), per-layer FFN (`plus/ffn.py`, config `ffn`/`ffn_dropout`, faithful to Eq.10 `BN(σ(hW₁)W₂ + h)` with its own residual), and positional encoding (`plus/pos_enc.py`, RWSE per Eq.12, config `pos_enc`/`pos_enc_ksteps`). Graph readout lives in `plus/readout.py` (mean/meanmax/sum). `GINEEncoder.forward` follows the paper's Eq.11 pipeline: MP(edge-integrated) → norm → σ → dropout → residual → FFN.
+
+**Rationale**: The classifier needs continuous capacity growth (GIN+ experiments on cifar10 showed meanmax readout + residual fixes the subgraph collapse that virtual-node causes) without each new technique entangling the encoder loop. Blocks are parameter-controlled, default-off, and default settings reproduce pre-refactor numerics bit-for-bit. Backbones declare supported blocks via `layers.BACKBONE_KWARGS`; `GraphClassifier` filters kwargs by the whitelist and rejects enabled-but-unsupported blocks loudly (no silent ignoring).
+
+**Implications**:
+
+- Dependency direction: `plus/` (torch/dgl only) ← `layers/` ← `graph_classifier.py` (renamed from `gin_classifier.py`) ← `factory.py`. `plus/` must not import config/layers.
+- All new config fields serialize only when non-default; old checkpoints (GIN, GIN-res-vn, GIN-plus, PPA) rebuild and load strictly with identical state_dict keys — verified by golden key-sequence and fixed-input logit tests in `tests/test_plus_blocks.py`, captured pre-refactor.
+- RWSE is injected as `[x ‖ pe] → node_proj` (input dim = node_feat_dim + ksteps); it is subgraph-computable and scale-robust, unlike Laplacian PE (sign/axis ambiguity under graph truncation), which is intentionally not implemented.
+- Virtual node remains legacy code inside `gin.py` (not a GNN+ component; collapses to chance on revealed subgraphs — see `result/cifar10/classifier/GIN-res-vn/subgraph_eval.json`).
+- New backbones: implement an encoder (whitelisted kwargs + `out_dim` attribute), register in `BACKBONES` + `BACKBONE_KWARGS`, organize the layer loop per Eq.11 with default-off blocks reproducing original behavior.

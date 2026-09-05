@@ -4,6 +4,6 @@
 新代码请直接 `from classifier import GraphClassifier, load_classifier`。
 """
 
-from classifier.gin_classifier import GraphClassifier  # noqa: F401
+from classifier.graph_classifier import GraphClassifier  # noqa: F401
 from classifier.factory import load_fclass, load_classifier  # noqa: F401
 from classifier.config import ClassifierConfig  # noqa: F401

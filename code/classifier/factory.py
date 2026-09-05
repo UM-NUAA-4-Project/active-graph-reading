@@ -13,7 +13,7 @@ from typing import Union
 import torch
 
 from .config import ClassifierConfig
-from .gin_classifier import GraphClassifier
+from .graph_classifier import GraphClassifier
 
 logger = logging.getLogger(__name__)
 
