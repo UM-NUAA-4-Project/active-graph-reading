@@ -81,3 +81,17 @@ This file is an append-only record of project decisions.
 - Policies operate on the *known frontier* (neighbors of revealed nodes that are themselves not yet revealed); they do not see the full node set.
 - "Frontier degree" used by the max-degree policy is the count of edges from a frontier node back into the revealed subgraph, not true graph degree (which is hidden).
 - OGBG-PPA's useful observed features are expected to be edge features, not node features, so v0 should avoid assuming raw node attributes.
+
+## 2026-09-05
+
+### Classifier readout for subgraph robustness (GIN+)
+
+**Decision**: The upper-bound classifier must work on both full graphs and small revealed subgraphs (it is the RL reward source and the evidence-reader reference `acc_clf_*`). `GINEEncoder` therefore gains a configurable graph readout: `mean` (default, unchanged behavior), `meanmax` (mean+max concat), `sum`. The GIN+ classifier (residual + ffn head + meanmax readout, no virtual node) is trained with `meanmax`.
+
+**Rationale**: Virtual-node classifiers aggregate global graph statistics, which shift drastically on tiny revealed subgraphs (5-15% budget = a handful of nodes) — measured as severe `acc_clf_*` degradation. Sum pooling scales readout magnitude with node count, so it is rejected for the same distribution-shift reason: on an 8-node subgraph its magnitude is ~20x smaller than on a 150-node full graph. Mean and per-dim max are both invariant to node count, so `meanmax` adds discriminative power without introducing scale drift between full-graph training and subgraph evaluation.
+
+**Implications**:
+
+- `ClassifierConfig.readout` ('mean' | 'meanmax' | 'sum') is serialized in checkpoints; 'mean' stays the default and keeps old configs/JSON unchanged (old checkpoints load strictly, no migration).
+- `GINEEncoder.out_dim` doubles under 'meanmax'; `GraphClassifier` sizes its head from `encoder.out_dim` (falling back to last hidden width for backbones without the attribute).
+- Diagnostic tool: `code/diagnosis/classifier_subgraph_eval.py` measures a classifier checkpoint's full-graph accuracy plus per-budget accuracy under fixed strategies (bfs/random) with protocol seeds — the acceptance gate for any new reward/reference classifier.

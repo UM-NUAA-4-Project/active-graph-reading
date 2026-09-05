@@ -12,6 +12,9 @@
   python code/train_reader/eval.py --dataset cifar10 --root D:\\superpixels \
       --checkpoint result/cifar10/experiments/exp1/attention/rl/checkpoint_epoch5.pt \
       --classifier result/cifar10/classifier/best_cifar10_classifier.pt
+    python code/train_reader/eval.py --dataset cifar10 --root D:\\superpixels 
+    --checkpoint result\cifar10\experiments\evidence\evidence\bc\reader_checkpoint_epoch2.pt 
+    --classifier result\cifar10\classifier\finetune\best_cifar10_classifier.pt
 """
 
 import argparse

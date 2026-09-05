@@ -94,6 +94,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help='GNN 层间归一化（默认 None=各 backbone 原行为：'
                              'GIN=BatchNorm、GAT=无；GINELayer MLP 内部的 '
                              'BatchNorm 不受此参数控制）')
+    parser.add_argument('--readout', default='mean',
+                        choices=['mean', 'meanmax', 'sum'],
+                        help='图读出池化（仅 gin）：mean=AvgPooling（默认）；'
+                             'meanmax=mean/max 拼接（对子图规模鲁棒）；'
+                             'sum=SumPooling（幅值随节点数缩放，子图易漂移）')
     parser.add_argument('--init-checkpoint', default=None,
                         help='从已有 classifier checkpoint 加载权重微调'
                              '（结构继承自 checkpoint config）')
@@ -136,7 +141,7 @@ def classifier_config_from_args(args, spec, init_cfg: dict):
             n_classes=spec.n_classes, hidden_dims=dims, dropouts=drops,
             virtual_node=args.virtual_node, residual=args.residual,
             n_heads=_norm_heads(args.n_heads, len(dims)),
-            head=args.head, gnn_norm=args.gnn_norm)
+            head=args.head, gnn_norm=args.gnn_norm, readout=args.readout)
     else:
         cfg = ClassifierConfig.from_legacy(
             edge_feat_dim=spec.edge_feat_dim, n_classes=spec.n_classes,
@@ -145,7 +150,7 @@ def classifier_config_from_args(args, spec, init_cfg: dict):
             residual=args.residual, node_feat_dim=spec.node_feat_dim,
             backbone=args.backbone,
             n_heads=_norm_heads(args.n_heads, args.n_layers),
-            head=args.head, gnn_norm=args.gnn_norm)
+            head=args.head, gnn_norm=args.gnn_norm, readout=args.readout)
     return cfg
 
 

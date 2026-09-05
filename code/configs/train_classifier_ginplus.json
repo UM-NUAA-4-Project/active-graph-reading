@@ -1,0 +1,31 @@
+{
+  "_comment": "GIN+ 全图上界分类器（cifar10）：残差 + meanmax 读出 + ffn 头，无虚拟节点。目标：全图 acc 显著超过纯 GIN(0.53)且子图不退化（对比 GIN-res-vn 全图 0.649 但子图崩）。readout=meanmax 对揭示子图规模鲁棒（mean/max 均不随节点数缩放）。",
+
+  "dataset": "cifar10",
+  "root": "D:\\data\\superpixels",
+  "max_graphs": 0,
+  "device": "cuda:0",
+  "seed": 42,
+
+  "epochs": 100,
+  "batch_size": 128,
+  "lr": 0.001,
+  "weight_decay": 0.0001,
+  "label_smoothing": 0.1,
+  "scheduler_patience": 5,
+  "early_stop_patience": 40,
+  "eval_every": 2,
+
+  "hidden_dim": 300,
+  "n_layers": 5,
+  "dropout": 0.5,
+  "virtual_node": false,
+  "residual": true,
+
+  "backbone": "gin",
+  "head": "ffn",
+  "gnn_norm": "batchnorm",
+  "readout": "meanmax",
+
+  "output_dir": "result/cifar10/classifier/GIN-plus"
+}

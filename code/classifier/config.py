@@ -30,6 +30,10 @@ class ClassifierConfig:
     gnn_norm: GNN 层间归一化（注意不含 GINELayer MLP 内部的 BatchNorm），
     None → 各 backbone 原行为（GIN=BatchNorm、GAT=无），
     可显式选 'batchnorm' / 'layernorm' / 'none'。
+    readout: 图读出池化（仅 gin backbone），'mean'（默认，AvgPooling）|
+    'meanmax'（mean 与 max 拼接，输出维度翻倍；mean/max 均不随节点数缩放，
+    全图与揭示子图分布一致）| 'sum'（SumPooling，幅值随节点数变化，
+    子图上分布漂移大，慎用）。
     """
 
     backbone: str = 'gin'
@@ -43,6 +47,7 @@ class ClassifierConfig:
     n_heads: Optional[List[int]] = None
     head: str = 'linear'
     gnn_norm: Optional[str] = None
+    readout: str = 'mean'
 
     # ---- 兼容旧标量接口 ----
     @property
@@ -84,6 +89,8 @@ class ClassifierConfig:
             d['head'] = self.head
         if self.gnn_norm is not None:
             d['gnn_norm'] = self.gnn_norm
+        if self.readout != 'mean':
+            d['readout'] = self.readout
         return d
 
     @staticmethod
@@ -106,6 +113,9 @@ class ClassifierConfig:
         if gnn_norm is not None and gnn_norm not in ('batchnorm', 'layernorm', 'none'):
             raise ValueError(
                 f"未知层间归一化 '{gnn_norm}'，可选: batchnorm, layernorm, none")
+        readout = d.get('readout', 'mean')
+        if readout not in ('mean', 'meanmax', 'sum'):
+            raise ValueError(f"未知读出池化 '{readout}'，可选: mean, meanmax, sum")
         return ClassifierConfig(
             backbone=d.get('backbone', 'gin'),
             edge_feat_dim=int(d.get('edge_feat_dim', 7)),
@@ -119,6 +129,7 @@ class ClassifierConfig:
                      else ([int(d['n_heads'])] if 'n_heads' in d else None)),
             head=head,
             gnn_norm=gnn_norm,
+            readout=readout,
         )
 
     @staticmethod
@@ -128,12 +139,14 @@ class ClassifierConfig:
                     node_feat_dim: int = 0, backbone: str = 'gin',
                     n_heads: Optional[List[int]] = None,
                     head: str = 'linear',
-                    gnn_norm: Optional[str] = None) -> 'ClassifierConfig':
+                    gnn_norm: Optional[str] = None,
+                    readout: str = 'mean') -> 'ClassifierConfig':
         """旧式标量参数 → 配置（保持 m3 时代调用点一行迁移）。"""
         return ClassifierConfig(
             backbone=backbone,
             edge_feat_dim=edge_feat_dim, n_classes=n_classes,
             node_feat_dim=node_feat_dim, virtual_node=virtual_node,
             residual=residual, n_heads=n_heads, head=head, gnn_norm=gnn_norm,
+            readout=readout,
             hidden_dims=[hidden_dim] * n_layers, dropouts=[dropout] * n_layers,
         )

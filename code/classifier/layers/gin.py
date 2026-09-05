@@ -84,6 +84,7 @@ class GINEEncoder(nn.Module):
         hidden_dims: Optional[List[int]] = None,
         dropouts: Optional[List[float]] = None,
         gnn_norm: Optional[str] = None,
+        readout: str = 'mean',
     ):
         super().__init__()
 
@@ -96,6 +97,8 @@ class GINEEncoder(nn.Module):
                 f"dropouts 长度 {len(dropouts)} != hidden_dims 长度 {len(hidden_dims)}")
         if (virtual_node or residual) and len(set(hidden_dims)) > 1:
             raise ValueError("virtual_node / residual 要求各层同宽（维度对齐）")
+        if readout not in ('mean', 'meanmax', 'sum'):
+            raise ValueError(f"未知读出池化 '{readout}'，可选: mean, meanmax, sum")
 
         self.hidden_dims = [int(d) for d in hidden_dims]
         self.dropouts = [float(p) for p in dropouts]
@@ -104,6 +107,9 @@ class GINEEncoder(nn.Module):
         self.dropout = self.dropouts[0]
         self.virtual_node = virtual_node
         self.residual = residual
+        self.readout = readout
+        # meanmax 读出输出维度翻倍（GraphClassifier 以此定 head 输入维度）
+        self.out_dim = self.hidden_dims[-1] * (2 if readout == 'meanmax' else 1)
         # 历史语义：GIN 层间恒为 BatchNorm（state_dict 键名 bns.i.*），
         # gnn_norm=None 保持兼容；'none'/'layernorm' 显式覆盖
         self.norm_type = gnn_norm if gnn_norm is not None else 'batchnorm'
@@ -137,6 +143,10 @@ class GINEEncoder(nn.Module):
                 ))
 
         self.pool = dglnn.AvgPooling()
+        if readout == 'meanmax':
+            self.pool_max = dglnn.MaxPooling()
+        elif readout == 'sum':
+            self.pool = dglnn.SumPooling()
 
     # ------------------------------------------------------------------
     # Forward
@@ -196,4 +206,6 @@ class GINEEncoder(nn.Module):
                     p=self.dropouts[i], training=self.training,
                 )
 
+        if self.readout == 'meanmax':
+            return torch.cat([self.pool(g, h), self.pool_max(g, h)], dim=-1)
         return self.pool(g, h)

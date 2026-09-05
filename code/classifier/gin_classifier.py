@@ -58,11 +58,15 @@ class GraphClassifier(nn.Module):
             node_feat_dim=self.config.node_feat_dim,
             gnn_norm=self.config.gnn_norm,
         )
+        if self.config.backbone == 'gin':
+            backbone_kwargs['readout'] = self.config.readout
         if self.config.backbone == 'gat':
             backbone_kwargs['n_heads'] = self.config.n_heads
         self.encoder = backbone_cls(**backbone_kwargs)
 
-        embed_dim = self.config.hidden_dims[-1]
+        # meanmax 等读出会改变 encoder 输出维度（encoder.out_dim）；
+        # 旧 encoder 无该属性时退回末层宽度（GAT/兼容路径）
+        embed_dim = getattr(self.encoder, 'out_dim', self.config.hidden_dims[-1])
         if self.config.head == 'ffn':
             self.head = nn.Sequential(
                 nn.Linear(embed_dim, embed_dim),
