@@ -271,11 +271,102 @@ def test_eval_smoke():
           f"clf_ref={results['acc_clf_overall']:.3f}）")
 
 
+def test_ablation_variants():
+    """A2–A4 消融变体（docs/design/evidence-reader-ablation.md）：
+    装配/选点路径不变/递归关闭时状态不可见/权重推断/checkpoint 重建。"""
+    from active_graph_reader.config import infer_reader_config
+
+    states = _states()
+    base, _ = _readers()
+    r_base = base.forward_states(states, temperature=1.0)
+    last = [s.seed_node for s in states]
+
+    for variant, expect_lstm, expect_pool in (
+            ('full', True, True), ('no_pool', True, False),
+            ('no_lstm', False, True), ('v1', False, False)):
+        torch.manual_seed(1)
+        cfg = ReaderConfig.from_legacy(
+            'evidence', edge_feat_dim=EFD, hidden_dim=D, n_layers=2,
+            dropout=0.0, n_classes=3)
+        cfg.evidence_variant = variant
+        reader = build_reader(cfg).eval()
+        # 与 base 权重对齐（变体缺 evidence_* 键 → missing 合法）
+        missing, unexpected = reader.load_state_dict(
+            base.state_dict(), strict=False)
+        assert not unexpected, f"{variant}: base 键多余 {unexpected}"
+        assert (hasattr(reader, 'evidence_lstm') == expect_lstm
+                and hasattr(reader, 'evidence_pool') == expect_pool)
+
+        hc = reader.init_evidence(len(states), 'cpu')
+        r_ev, _, logits = reader.forward_states_evidence(states, 1.0, hc, last)
+        for (s1, p1, f1), (s2, p2, f2) in zip(r_base, r_ev):
+            assert f1 == f2 and torch.allclose(s1, s2, atol=1e-6), \
+                f"{variant}: 选点路径必须与 base 一致"
+        assert len(logits) == len(states)
+        assert all(lg.shape == (3,) for lg in logits)
+
+        if variant in ('no_lstm', 'v1'):
+            # 递归关闭：(h, c) 扰动不得影响证据预测（状态不可见的可观测断言）
+            hc2 = [(h + torch.randn_like(h), c) for h, c in hc]
+            _, _, logits2 = reader.forward_states_evidence(states, 1.0, hc2, last)
+            for a, b in zip(logits, logits2):
+                assert torch.allclose(a, b, atol=1e-6), \
+                    f"{variant}: (h,c) 泄漏进证据预测"
+
+        # 权重推断：变体 ckpt 仍识别为 evidence（evidence_head 恒在）；
+        # variant 本身来自内嵌 config（结构事实以权重为准的既有约定）
+        sd = reader.state_dict()
+        inferred = infer_reader_config(sd)
+        assert inferred.kind == 'evidence', f"{variant}: 权重推断 kind 错误"
+        ckpt = {'reader_state_dict': sd,
+                'config': {'reader': cfg.to_dict(),
+                           'evidence_variant': variant}}
+        reloaded = load_reader_from_checkpoint(ckpt, 'cpu')
+        assert reloaded.config.evidence_variant == variant
+        assert hasattr(reloaded, 'evidence_lstm') == expect_lstm
+        assert hasattr(reloaded, 'evidence_pool') == expect_pool
+        reloaded.eval()   # load_reader_from_checkpoint 不设模式；BN 需 eval 态
+        hc3 = reloaded.init_evidence(len(states), 'cpu')
+        _, _, logits3 = reloaded.forward_states_evidence(states, 1.0, hc3, last)
+        for a, b in zip(logits, logits3):
+            assert torch.allclose(a, b, atol=1e-5), f"{variant}: 重建后前向漂移"
+    print('  消融变体（装配/选点不变/状态隔离/重建）OK')
+
+
+def test_config_rejects_bad_variant():
+    cfg = ReaderConfig.from_legacy('evidence', edge_feat_dim=EFD,
+                                   hidden_dim=D, n_layers=2, dropout=0.0,
+                                   n_classes=3)
+    cfg.evidence_variant = 'bogus'
+    try:
+        cfg.validate()
+        raise AssertionError('非法 variant 应触发 ValueError')
+    except ValueError:
+        pass
+    cfg2 = ReaderConfig.from_legacy('base', edge_feat_dim=EFD,
+                                    hidden_dim=D, n_layers=2, dropout=0.0)
+    cfg2.evidence_variant = 'no_pool'
+    try:
+        cfg2.validate()
+        raise AssertionError('非 evidence kind 配 variant 应触发 ValueError')
+    except ValueError:
+        pass
+    # 旧序列化（无 evidence_variant 键）→ 默认 full
+    d = ReaderConfig.from_legacy('evidence', edge_feat_dim=EFD,
+                                 hidden_dim=D, n_layers=2, dropout=0.0,
+                                 n_classes=3).to_dict()
+    d.pop('evidence_variant')
+    assert ReaderConfig.from_dict(d).evidence_variant == 'full'
+    print('  variant 校验/旧 config 兼容 OK')
+
+
 if __name__ == '__main__':
     test_policy_identical_to_base()
     test_evidence_stream_and_protocol()
     test_hc_reset_independence()
     test_config_roundtrip_infer()
+    test_ablation_variants()
+    test_config_rejects_bad_variant()
     test_eval_smoke()
     test_bc_smoke()
     test_rl_smoke()

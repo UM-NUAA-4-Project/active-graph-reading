@@ -75,8 +75,13 @@ class EvidenceReader(LearnableReader):
         config.validate()
         super().__init__(config=config)
         d = self.config.hidden_dim   # 证据流工作在编码器输出宽度上
-        self.evidence_lstm = nn.LSTM(d, d)                # seq=1，batch_first=False
-        self.evidence_pool = HistoryPool(d)
+        # 消融变体（docs/design/evidence-reader-ablation.md）：被去掉的模块
+        # 不创建（state_dict 键随之收敛），evidence_head 恒在
+        self.evidence_variant = self.config.evidence_variant
+        if self.evidence_variant not in ('no_lstm', 'v1'):
+            self.evidence_lstm = nn.LSTM(d, d)            # seq=1，batch_first=False
+        if self.evidence_variant not in ('no_pool', 'v1'):
+            self.evidence_pool = HistoryPool(d)
         self.evidence_head = nn.Sequential(
             nn.Linear(2 * d, d), nn.ReLU(), nn.Linear(d, self.config.n_classes),
         )
@@ -129,14 +134,20 @@ class EvidenceReader(LearnableReader):
             hs.append(h.squeeze(0))                            # (d,)
             cs.append(c.squeeze(0))
 
-        # 一次批量 LSTM 步：输入 (1, N, d)，状态 (1, N, d)
-        _, (h_seq, c_seq) = self.evidence_lstm(
-            torch.stack(deltas).unsqueeze(0),
-            (torch.stack(hs).unsqueeze(0), torch.stack(cs).unsqueeze(0)),
-        )
-        h_new = h_seq[0]                                       # (N, d)
-        c_new = c_seq[0]                                       # (N, d)
-        new_hc = [(h_new[i:i + 1], c_new[i:i + 1]) for i in range(len(states))]
+        # 积分器：full/no_pool 走 LSTM；no_lstm/v1 递归关闭，h_t = Δ_t 直通，
+        # (h, c) 原样占位返回（循环侧语义不变，状态不被消费）
+        if self.evidence_variant in ('no_lstm', 'v1'):
+            h_new = torch.stack(deltas)                            # (N, d)
+            new_hc = list(hc_list)
+        else:
+            # 一次批量 LSTM 步：输入 (1, N, d)，状态 (1, N, d)
+            _, (h_seq, c_seq) = self.evidence_lstm(
+                torch.stack(deltas).unsqueeze(0),
+                (torch.stack(hs).unsqueeze(0), torch.stack(cs).unsqueeze(0)),
+            )
+            h_new = h_seq[0]                                       # (N, d)
+            c_new = c_seq[0]                                       # (N, d)
+            new_hc = [(h_new[i:i + 1], c_new[i:i + 1]) for i in range(len(states))]
 
         results: List[Tuple[torch.Tensor, torch.Tensor, List[int]]] = []
         ev_logits: List[torch.Tensor] = []
@@ -154,7 +165,14 @@ class EvidenceReader(LearnableReader):
                 results.append((torch.empty(0), torch.empty(0), []))
 
             h_t = h_new[k]                                     # (d,)
-            z_t = self.evidence_pool(h_t, h_all[:n_rev])       # 历史引导读出
+            # 读出：full/no_lstm 用历史引导注意力；no_pool/v1 退化为对已揭示
+            # 嵌入的非引导均值池化（无可读证据时零向量）
+            if self.evidence_variant in ('no_pool', 'v1'):
+                r_t = h_all[:n_rev]
+                z_t = (r_t.mean(dim=0) if r_t.shape[0] > 0 else
+                       torch.zeros(d, device=h_t.device, dtype=h_t.dtype))
+            else:
+                z_t = self.evidence_pool(h_t, h_all[:n_rev])   # 历史引导读出
             ev_logits.append(self.evidence_head(torch.cat([z_t, h_t])))
 
         return results, new_hc, ev_logits

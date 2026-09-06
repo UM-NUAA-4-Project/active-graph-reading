@@ -36,6 +36,7 @@ CLI_SCRIPTS = [
     'trajectories/augment_trajectories.py',
     'trajectories/analyze_trajectories.py',
     'train_reader/train_bc.py',
+    'train_reader/ablation_bc.py',
     'train_reader/train_rl.py',
     'train_reader/eval.py',
     'train_reader/transfer.py',

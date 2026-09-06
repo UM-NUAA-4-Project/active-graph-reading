@@ -1,6 +1,7 @@
 # Evidence Reader 消融方案（v2）
 
-日期：2026-09-06 ｜ 状态：方案定稿（A2–A4 待实现一个 `--evidence-variant` 开关）
+日期：2026-09-06 ｜ 状态：方案定稿；`--evidence-variant` 已实现
+（ablation_bc.py + 单测 + cifar10 小规模冒烟通过）
 配套：`docs/design/evidence-reader.md`（v2 设计）；主对比（base / attention /
 evidence 三 reader × 三阶段）不属于本文，见 result/INDEX 与实验计划。
 
@@ -78,51 +79,49 @@ A2/A3 与 A4 的差距 = 各组件的**独立**贡献。
 binary（默认）、tanh、asymmetric。读数：RL 后 eval_learnable 的
 budget 曲线。回答：奖励形式对策略的影响，也是 asymmetric 设计的依据。
 
-## 3. 代码改动需求（仅 A2/A3/A4 需要）
+## 3. 代码改动需求（已实现，2026-09-06）
 
-现状核对结论：`EvidenceReader` 的 LSTM / HistoryPool 无开关（写死于
-`__init__` 与 `forward_states_evidence`），`ReaderConfig` 无对应字段；
-A1/A5/A6 均为现有 CLI 参数，零改动。
+现状核对结论：A1/A5/A6 均为现有 CLI 参数，零改动。A2/A3/A4 需要
+**一个 `evidence_variant` 开关**，已按"不改动正常训练脚本"的约束落地：
 
-A2/A3/A4 需要 **一个 `--evidence-variant` 开关**，改动点：
-
-1. `active_graph_reader/config.py`：`ReaderConfig` 增
-   `evidence_variant: str = 'full'`（'full' | 'no_pool' | 'no_lstm' |
-   'v1'），`to_dict`/`from_dict` 增键（旧 ckpt 无此键 → 默认 full，
-   兼容），`validate()` 增取值与 kind=='evidence' 检查；
-2. `reader/evidence.py` `__init__`：variant 非 full 的组件不创建
-   （`no_pool` 不建 evidence_pool；`no_lstm`/`v1` 不建 evidence_lstm），
-   state_dict 键随之收敛；
-3. `reader/evidence.py` `forward_states_evidence`：按 variant 走
-   z_t / h_t 分支（约 6 行；`no_lstm` 时 new_hc 原样返回占位零状态）；
-4. `train_reader/core/build.py`：`reader_config_from_checkpoint` 的
-   embedded merge 已自动携带新键（权重 shape 推断不受缺键影响），
-   预计零改动，需加一条回归断言；
-5. `tools/cli.py add_reader_args`：增 `--evidence-variant`（仅
-   reader_kind=evidence 时生效）；
-6. `tests/test_evidence_reader.py`：每 variant 一组前向 + 防毒断言
-   （`no_pool` 下扰动 h_t 不得改变 z_t；`no_lstm` 下扰动 (h,c) 不得
-   改变输出；`v1` 两者皆然），并注册进 smoke_test。
-
-预计 ~100 行含测试，半天内可完成并保持旧 checkpoint 兼容
-（无 evidence_lstm/pool 键的旧权重只能重建 full/对应 variant——加载时
-`strict=True` 会按 config 生成空缺模块，天然一致）。
+1. `active_graph_reader/config.py`：`ReaderConfig.evidence_variant`
+   字段（'full' | 'no_pool' | 'no_lstm' | 'v1'，默认 full），validate/
+   to_dict/from_dict 接入；`infer_reader_config` 的 evidence 判据从
+   `evidence_lstm` 键扩为 `evidence_head ∪ evidence_lstm`（no_lstm/v1
+   无 lstm 键，evidence_head 恒在）；
+2. `reader/evidence.py`：变体组件按开关不创建（state_dict 键收敛）；
+   `forward_states_evidence` 加 h_t/z_t 分支（no_lstm：h_t=Δ_t 直通、
+   (h,c) 原样占位返回；no_pool/v1：z_t=mean(R_t)，空已揭示集时零向量）；
+   选点路径逐字节不变（单测断言）；
+3. **`train_reader/ablation_bc.py`（新脚本，消融专用入口）**：复用
+   train_bc 的轨迹装载工具与 `core.bc_train_epoch`，新增
+   `--evidence-variant`（默认 exp 名 `ablation_{variant}`）；
+   train_bc.py / train_rl.py / tools/cli.py / eval 链路零改动；
+4. checkpoint 重建（`load_reader_from_checkpoint` → `build_reader`）
+   经内嵌 config 自动携带 variant，RL `--bootstrap` 与 eval.py 直接可用；
+5. `tests/test_evidence_reader.py`：新增 `test_ablation_variants`
+   （装配/选点与 base 逐字节一致/递归关闭时 (h,c) 扰动不影响预测/
+   权重推断/重建后前向一致）与 `test_config_rejects_bad_variant`，
+   注册进 smoke_test；
+6. 顺带修复 eval.py 潜在 bug：reader 模式 `zip(strategies, agents)` 中
+   agents 为空列表导致 parts 恒空（产出 config-only JSON）——此前仅
+   评过 fixed 策略未暴露。
 
 ## 4. 命令（从仓库根运行）
 
 A1：直接消费现有 eval JSON，无命令。
 
-A2/A3/A4（BC，教师轨迹复用，每 variant 每 数据集一条；PPA 待主训练
-完成后同式追加）：
+A2/A3/A4（BC，教师轨迹复用，每 variant 每 数据集一条；**用消融专用脚本
+`ablation_bc.py`，不占用 train_bc.py**；PPA 待主训练完成后同式追加）：
 
 ```bash
 # 以 collab 为例（cifar10 换 --root D:\data\superpixels 与 --data-dir）
-python code/train_reader/train_bc.py --dataset collab \
+python code/train_reader/ablation_bc.py --dataset collab \
     --root D:\\data\\COLLAB \
     --data-dir code/data/collab/trajectories_filtered \
-    --reader-kind evidence --evidence-variant no_pool \
-    --exp ablation_no_pool --epochs 10
-# no_lstm / v1 同式替换 variant 与 exp 名
+    --evidence-variant no_pool --epochs 10
+# no_lstm / v1 同式替换 variant；默认 exp 名 ablation_{variant}，
+# 产物 result/{ds}/experiments/ablation_{variant}/evidence/bc/
 ```
 
 A5（可选）：

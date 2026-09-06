@@ -71,6 +71,10 @@ class ReaderConfig:
     stochastic: bool = False
     temperature: float = 1.0
     n_classes: int = 0
+    # evidence 消融开关（docs/design/evidence-reader-ablation.md）：
+    # full=LSTM+AttnPool（默认）；no_pool=保留 LSTM、读出退化 mean(R_t)；
+    # no_lstm=保留 AttnPool、h_t=Δ_t 直通；v1=两者全去（h_t=Δ_t, z_t=mean）
+    evidence_variant: str = 'full'
 
     # ---- 便捷属性 ----
     @property
@@ -97,6 +101,12 @@ class ReaderConfig:
                              "与 belief 的 d_model 需要统一）")
         if self.kind == 'evidence' and self.n_classes <= 0:
             raise ValueError("evidence reader 需要 n_classes > 0（证据头类别数）")
+        if self.kind == 'evidence' and \
+                self.evidence_variant not in ('full', 'no_pool', 'no_lstm', 'v1'):
+            raise ValueError(f"evidence_variant 非法：'{self.evidence_variant}'"
+                             f"（可选 full/no_pool/no_lstm/v1）")
+        if self.kind != 'evidence' and self.evidence_variant != 'full':
+            raise ValueError("evidence_variant 仅对 kind='evidence' 生效")
 
     # ---- 序列化 ----
     def to_dict(self) -> Dict:
@@ -114,6 +124,7 @@ class ReaderConfig:
             _fold(d, self.scorer_dropouts, 'scorer_dropout')
         if self.kind == 'evidence':
             d['n_classes'] = self.n_classes
+            d['evidence_variant'] = self.evidence_variant
         return d
 
     @staticmethod
@@ -140,6 +151,7 @@ class ReaderConfig:
             stochastic=bool(d.get('stochastic', False)),
             temperature=_to_float(d.get('temperature'), 1.0),
             n_classes=_to_int(d.get('n_classes'), 0),
+            evidence_variant=str(d.get('evidence_variant') or 'full'),
         )
         cfg.validate()
         return cfg
@@ -200,7 +212,9 @@ def infer_reader_config(state_dict: Dict[str, torch.Tensor]) -> ReaderConfig:
     kind = 'base'
     if any('belief_state' in k for k in state_dict):
         kind = 'attention'
-    elif any(k.startswith('evidence_lstm') for k in state_dict):
+    # evidence_head 存在于全部 evidence 变体（no_lstm/v1 无 evidence_lstm 键）
+    elif any(k.startswith(('evidence_head', 'evidence_lstm'))
+             for k in state_dict):
         kind = 'evidence'
 
     m = 4

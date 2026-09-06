@@ -59,7 +59,7 @@ def main():
                         help='reader checkpoint；与 --strategy 二选一')
     parser.add_argument('--strategy', nargs='+', default=None,
                         choices=['random', 'bfs', 'max-frontier-degree',
-                                 'random-walk', 'sagpool', 'subgraphx'],
+                                 'random-walk', 'sagpool'],
                         help='固定策略名（可同时多个，默认用法 --strategy random bfs；'
                              'random-walk/sagpool/subgraphx 为 baseline/ 协议适配基线）')
     parser.add_argument('--strategy-ckpt', default='',
@@ -172,13 +172,16 @@ def main():
     def _warn_conflict(path):
         print(f"[warn] 合并冲突：{path}（后者覆盖前者）")
 
+    # reader 模式无 agent（reader 自身就是策略），补 None 对齐 zip
+    iter_agents = agents if is_fixed else [None] * len(strategies)
+
     for split, graphs, labels in evaluated:
         ref = evaluate_classifier_full(classifier, graphs, labels, device)
         full_graph_ref[split] = round(ref, 6)
         n_graphs[split] = len(graphs)
         print(f"[{split}] full-graph 参照 acc = {ref:.4f}（{len(graphs)} 图）")
 
-        for strategy, agent in zip(strategies, agents):
+        for strategy, agent in zip(strategies, iter_agents):
             if is_fixed:
                 results = evaluate_fixed(None, classifier, builder,
                                          graphs, labels, budget_options, device,
