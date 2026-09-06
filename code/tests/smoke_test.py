@@ -29,6 +29,7 @@ UNIT_TESTS = [
 CLI_SCRIPTS = [
     'train_classifier/train_full_graph.py',
     'train_classifier/eval_classifier.py',
+    'train_classifier/finetune_subgraph.py',
     'trajectories/generate_trajectories.py',
     'trajectories/filter_trajectories.py',
     'trajectories/balance_trajectories.py',
