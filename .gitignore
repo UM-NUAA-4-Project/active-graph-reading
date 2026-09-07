@@ -32,3 +32,6 @@ docs/figures/
 baseline/artifacts/
 baseline/data/
 baseline/output/
+
+#控制服务器
+_ssh*.py

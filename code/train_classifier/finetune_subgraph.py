@@ -35,6 +35,7 @@ sys.path = [p for p in sys.path
             if Path(p).resolve() != Path(__file__).resolve().parent]
 
 from tools.paths import CODE_DIR, REPO_ROOT  # noqa: E402
+from train_classifier.class_weight import compute_class_weight  # noqa: E402
 
 import torch  # noqa: E402
 import torch.nn as nn  # noqa: E402
@@ -74,6 +75,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--weight-decay', type=float, default=0.0)
     parser.add_argument('--label-smoothing', type=float, default=0.0)
+    parser.add_argument('--class-weight', default='none',
+                        choices=['none', 'balanced'],
+                        help='类别加权（cross_entropy weight，同 train_full_graph）：'
+                             '多数类退化时用 balanced（默认 none=不加权）')
     # 采样
     parser.add_argument('--policies', nargs='+',
                         default=['random', 'random-walk', 'bfs'],
@@ -134,7 +139,8 @@ def rollout_partial(graph, agent, budget_ratio, graph_idx: int, seed_i: int,
 
 
 def train_one_epoch(clf, optimizer, graphs, labels, args, policies, agents,
-                    ratios, builder, epoch: int, device, rng):
+                    ratios, builder, epoch: int, device, rng,
+                    class_weight=None):
     clf.train()
     order = list(range(len(graphs)))
     rng.shuffle(order)
@@ -161,7 +167,7 @@ def train_one_epoch(clf, optimizer, graphs, labels, args, policies, agents,
         nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
         y = torch.tensor(ys, dtype=torch.long, device=device)
         logits = clf(batch_g, nids)
-        loss = nn.functional.cross_entropy(logits, y,
+        loss = nn.functional.cross_entropy(logits, y, weight=class_weight,
                                            label_smoothing=args.label_smoothing)
         optimizer.zero_grad()
         loss.backward()
@@ -258,6 +264,9 @@ def main():
     _strip_dgl_id(valid_graphs)
     print(f"Train: {len(train_graphs)} graphs | Valid: {len(valid_graphs)} graphs")
 
+    class_weight = compute_class_weight(args.class_weight, train_labels,
+                                        spec.n_classes, device=device)
+
     # ---- 模型：结构/权重均来自 base ckpt（微调）----
     base_path = resolve_path(args.base_ckpt)
     base_ckpt = torch.load(str(base_path), map_location=device, weights_only=False)
@@ -305,7 +314,8 @@ def main():
         loss, train_acc = train_one_epoch(clf, optimizer, train_graphs,
                                           train_labels, args, args.policies,
                                           agents, ratios, builder, epoch,
-                                          device, rng)
+                                          device, rng,
+                                          class_weight=class_weight)
         rec = {'epoch': epoch, 'loss': round(loss, 6),
                'train_acc': round(train_acc, 6)}
         line = f"Epoch {epoch}/{args.epochs}: loss={loss:.4f} train_acc={train_acc:.4f}"

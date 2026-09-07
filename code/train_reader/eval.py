@@ -83,6 +83,9 @@ def main():
                         help='argmax 选择（默认开启；--no-argmax 改为按分布采样）')
     parser.add_argument('--n-seeds', type=int, default=4,
                         help='每图确定性 seed 数（默认 4，取平均）')
+    parser.add_argument('--ref-batch-size', type=int, default=256,
+                        help='full-graph 参照评估的批量（大图数据集如 collab 在'
+                             '显存有限的 GPU 上 OOM 时调小，如 32）')
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--output-dir', default='',
                         help='输出目录（默认：reader → checkpoint 同目录；'
@@ -176,7 +179,8 @@ def main():
     iter_agents = agents if is_fixed else [None] * len(strategies)
 
     for split, graphs, labels in evaluated:
-        ref = evaluate_classifier_full(classifier, graphs, labels, device)
+        ref = evaluate_classifier_full(classifier, graphs, labels, device,
+                                       batch_size=args.ref_batch_size)
         full_graph_ref[split] = round(ref, 6)
         n_graphs[split] = len(graphs)
         print(f"[{split}] full-graph 参照 acc = {ref:.4f}（{len(graphs)} 图）")

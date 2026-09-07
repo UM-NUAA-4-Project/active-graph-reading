@@ -9,6 +9,7 @@
   "lr": 0.001,
   "weight_decay": 0.0,
   "label_smoothing": 0.0,
+  "class_weight": "balanced",
   "scheduler_patience": 10,
   "early_stop_patience": 50,
   "eval_every": 5,

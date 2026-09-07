@@ -46,6 +46,7 @@ from datasets import get_dataset  # noqa: E402
 from tools.config import (build_experiment_config, load_json,  # noqa: E402
                           merge_args_with_config, save_json)
 from tools.seeds import set_all_seeds  # noqa: E402
+from train_classifier.class_weight import compute_class_weight  # noqa: E402
 
 
 def resolve_path(p: str) -> Path:
@@ -66,6 +67,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--batch-size', type=int, default=64)
     parser.add_argument('--weight-decay', type=float, default=0.0)
     parser.add_argument('--label-smoothing', type=float, default=0.0)
+    parser.add_argument('--class-weight', default='none',
+                        choices=['none', 'balanced'],
+                        help='类别加权（cross_entropy weight）：多数类占比 >0.5 '
+                             '导致退化为预测多数类时用 balanced（w_c=N/(K·count_c)；'
+                             '默认 none=不加权，行为与之前逐位一致）')
     parser.add_argument('--scheduler-patience', type=int, default=0,
                         help='ReduceLROnPlateau patience（0=不用调度器）')
     parser.add_argument('--early-stop-patience', type=int, default=0,
@@ -174,7 +180,7 @@ def classifier_config_from_args(args, spec, init_cfg: dict):
 
 
 def train_one_epoch(clf, optimizer, graphs, labels, batch_size, device,
-                    label_smoothing=0.0):
+                    label_smoothing=0.0, class_weight=None):
     clf.train()
     total_loss = 0.0
     n_batches = 0
@@ -188,7 +194,7 @@ def train_one_epoch(clf, optimizer, graphs, labels, batch_size, device,
         nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
         y = labels[idx].to(device)
         logits = clf(batch_g, nids)
-        loss = nn.functional.cross_entropy(logits, y,
+        loss = nn.functional.cross_entropy(logits, y, weight=class_weight,
                                            label_smoothing=label_smoothing)
         optimizer.zero_grad()
         loss.backward()
@@ -247,6 +253,9 @@ def main():
     train_labels = ds.train_labels
     test_labels = ds.test_labels
     print(f"Train graphs: {len(train_graphs)} (数据集不划分验证集)")
+
+    class_weight = compute_class_weight(args.class_weight, train_labels,
+                                        spec.n_classes, device=device)
 
     # ---- 模型（结构：init ckpt 继承 > 逐层 CLI > uniform CLI）----
     init_ckpt = None
@@ -325,7 +334,8 @@ def main():
     for epoch in range(start_epoch, args.epochs + 1):
         loss, train_acc = train_one_epoch(clf, optimizer, train_graphs,
                                           train_labels, args.batch_size, device,
-                                          label_smoothing=args.label_smoothing)
+                                          label_smoothing=args.label_smoothing,
+                                          class_weight=class_weight)
         rec = {'epoch': epoch, 'loss': round(loss, 6),
                'train_acc': round(train_acc, 6), 'test_acc': None,
                'eval_checkpoint': None}

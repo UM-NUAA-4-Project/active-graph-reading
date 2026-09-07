@@ -30,6 +30,7 @@ python code/train_reader/train_bc.py --config configs/train_bc.example.json --lr
 | epochs / batch_size / lr | int/float | 训练基本参数 |
 | weight_decay | float, 0.0 | Adam weight decay |
 | label_smoothing | float, 0.0 | 交叉熵标签平滑 |
+| class_weight | str, "none" | 类别加权（cross_entropy weight）：`balanced`= w_c=N/(K·count_c)，用于多数类占比 >0.5 导致退化为预测多数类的数据集（如 collab）；`none`=不加权。finetune_subgraph.py 同名参数共用实现 |
 | scheduler_patience | int, 0 | ReduceLROnPlateau patience（0=不用） |
 | early_stop_patience | int, 0 | 连续 N 轮 test acc 无提升早停（0=不用） |
 | eval_every | int, 5 | 每 N 轮 test 评估并保留 eval_epoch{N}.pt / best_*.pt |
