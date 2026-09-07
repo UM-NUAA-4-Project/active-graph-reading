@@ -1,0 +1,32 @@
+{
+  "dataset": "cifar10",
+  "split": "test",
+  "n": 10000,
+  "K": 10,
+  "test_acc": 0.6046,
+  "ce_test_nats": 1.24243,
+  "H_Y_nats": 2.302585,
+  "label_counts": {
+    "0": 1000,
+    "1": 1000,
+    "2": 1000,
+    "3": 1000,
+    "4": 1000,
+    "5": 1000,
+    "6": 1000,
+    "7": 1000,
+    "8": 1000,
+    "9": 1000
+  },
+  "mi_lower_nats": 1.060155,
+  "target_nats": 1.24243,
+  "ceiling_calibrated_fano": 0.709002,
+  "ceiling_loose_same_assumption": 0.894714,
+  "config": {
+    "checkpoint": "C:\\Users\\qq283\\Desktop\\UM-NUAA\\code\\result\\cifar10\\classifier\\GIN-plus\\best_cifar10_classifier.pt",
+    "max_graphs": 0,
+    "batch_size": 256,
+    "note": "校准假设版 Fano 天花板：KL(q‖P(Y|G)) ≤ KL(U‖P_Y) 时对一切读取策略有效；违反的信号是天花板低于某条已测曲线。换更强分类器/重校准后须重算。推导见数学分析文档第 3 章推论 3.3（2026-09-07 修正版）。",
+    "timestamp": "2026-09-07T22:59:18"
+  }
+}

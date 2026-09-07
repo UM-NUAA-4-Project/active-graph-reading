@@ -1,0 +1,30 @@
+{
+  "train": {
+    "gradient": {
+      "mean": {
+        "0.05": {
+          "mean": 0.1555,
+          "std": 0.362426,
+          "n": 4000
+        },
+        "0.10": {
+          "mean": 0.16275,
+          "std": 0.369184,
+          "n": 4000
+        },
+        "0.15": {
+          "mean": 0.188,
+          "std": 0.390761,
+          "n": 4000
+        }
+      }
+    }
+  },
+  "config": {
+    "source_dirs": [
+      "data/collab/trajectories"
+    ],
+    "note": "教师成功率由成功过滤轨迹文件恢复：rate = kept/(n_seeds×graphs)；口径 = 训练 split + 生成时所用冻结分类器；std = 逐图成功比例的样本标准差。",
+    "warnings": []
+  }
+}

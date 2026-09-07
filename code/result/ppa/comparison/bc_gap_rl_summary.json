@@ -1,0 +1,105 @@
+{
+  "base": "bc",
+  "targets": [
+    "rl"
+  ],
+  "budgets": [
+    0.05,
+    0.1,
+    0.15
+  ],
+  "curves": {
+    "fixed": {
+      "split": "valid",
+      "strategy": "bfs",
+      "file": "C:\\Users\\qq283\\Desktop\\UM-NUAA\\code\\result\\ppa\\fixed\\fixed_eval\\eval_fixed.json",
+      "budgets": [
+        0.05,
+        0.1,
+        0.15
+      ],
+      "acc": [
+        0.23446784922394678,
+        0.3406541019955654,
+        0.4084257206208426
+      ]
+    },
+    "bc": {
+      "split": "valid",
+      "strategy": "learnable",
+      "file": "C:\\Users\\qq283\\Desktop\\UM-NUAA\\code\\result\\ppa\\experiments\\bc_baseline\\attention\\bc\\eval_learnable.json",
+      "budgets": [
+        0.05,
+        0.1,
+        0.15
+      ],
+      "acc": [
+        0.2634811529933481,
+        0.36886917960088694,
+        0.4330376940133038
+      ]
+    },
+    "rl": {
+      "split": "test",
+      "strategy": "learnable",
+      "file": "C:\\Users\\qq283\\Desktop\\UM-NUAA\\code\\result\\ppa\\experiments\\rl_baseline\\attention\\rl\\eval_learnable.json",
+      "budgets": [
+        0.05,
+        0.1,
+        0.15
+      ],
+      "acc": [
+        0.30126436781609195,
+        0.4113218390804598,
+        0.4708045977011494
+      ]
+    }
+  },
+  "pairs": [
+    {
+      "base": "bc",
+      "target": "rl",
+      "budgets": [
+        0.05,
+        0.1,
+        0.15
+      ],
+      "gap": [
+        -0.03778321482274383,
+        -0.04245265947957283,
+        -0.03776690368784563
+      ],
+      "fit": {
+        "n_points": 3,
+        "gaps": [
+          -0.03778321482274383,
+          -0.04245265947957283,
+          -0.03776690368784563
+        ],
+        "origin": {
+          "slope_per_ratio": -0.33712749263632336,
+          "r2": -45.49527433616137,
+          "resid": 0.0006782155132032813
+        },
+        "affine": {
+          "coeffs": [
+            0.00016311134898170003,
+            -0.03935057046495225
+          ],
+          "resid": 1.4586629238777666e-05,
+          "r2": 9.119677035651641e-06
+        },
+        "quad": {
+          "coeffs": [
+            1.8710400897112536,
+            -0.3740449065932683,
+            -0.023758569717358513
+          ],
+          "resid": 7.800016274768305e-33,
+          "r2": 1.0
+        },
+        "verdict": "gap ≤ 0：基准不占优，复合误差签名不适用"
+      }
+    }
+  ]
+}
