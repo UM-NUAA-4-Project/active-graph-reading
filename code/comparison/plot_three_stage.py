@@ -3,8 +3,9 @@
 自 code/m5/base/analysis/plot_three_stage.py 去硬编码改写：
 - 输入 JSON 路径、划分、预算档、参考上界全部 CLI 传入；
 - 各 JSON 缺失的 split 自动跳过（如 m7 eval 只有 test）；
-- 图样式与旧版一致（分组柱 + 柱顶数值 + full-graph 虚线 + 面板编号），
-  输出 SVG/PDF/PNG + source_data.csv。
+- 图样式与旧版一致（分组柱 + 柱顶数值 + full-graph 虚线）；
+- 2026-09-08 起每个 split 输出一张独立图（{name}_{split}.svg/pdf/png，
+  图内自带图例，无面板编号），另写合并的 source_data.csv。
 
 用法:
   # 2026-09-05 起统一格式：fixed JSON 含 random+bfs 键，reader JSON 含 learnable 键，
@@ -14,6 +15,7 @@
       --bc-json result/ppa/experiments/bc_baseline/base/bc/eval_learnable.json \
       --rl-json result/ppa/experiments/rl_asymmetric_ex1/base/rl/analysis/eval_learnable.json \
       --output-dir result/ppa/comparison
+  # 产物：three_stage_compare_valid.{svg,pdf,png} + three_stage_compare_test.{...}
   # 仍兼容旧单 split JSON 与 CLI 显式上界：
   #   --splits valid test --ref-valid 0.66 --ref-test 0.656
 """
@@ -142,48 +144,40 @@ def write_source_data(out_dir, stats, splits, budgets):
                                 f'{mean:.6f}', f'{sem:.6f}'])
 
 
-def build_figure(stats, splits, budgets, ref_valid=None, ref_test=None):
+def build_split_figure(stats, split, budgets, ref=None):
+    """单 split 独立图：分组柱 + 柱顶数值 + full-graph 虚线 + 顶部图例。"""
     stages = _stage_tuples(stats)
     n_stages = len(stages)
     w = 0.8 / n_stages
     x = np.arange(len(budgets))
     budget_labels = [f'{b * 100:.0f}%' for b in budgets]
 
-    n_cols = len(splits)
-    fig, axes = plt.subplots(1, n_cols, figsize=(3.6 * n_cols, 3.0), sharey='all')
-    axes = np.atleast_2d(axes)
+    fig, ax = plt.subplots(figsize=(3.6, 3.0))
+    for si, (name, _p, _s, color) in enumerate(stages):
+        cells = stats[name][split]['mean']
+        means = [cells[b][0] for b in budgets]
+        offset = (si - (n_stages - 1) / 2) * w
+        ax.bar(x + offset, means, w,
+               color=color, edgecolor='white', linewidth=0.4)
+        for bx, m in zip(x + offset, means):
+            ax.text(bx, m + 0.012, f'{m:.2f}', ha='center', va='bottom',
+                    fontsize=5.2, color='#4D4D4D')
 
-    for ci, split in enumerate(splits):
-        ax = axes[0][ci]
-        for si, (name, _p, _s, color) in enumerate(stages):
-            cells = stats[name][split]['mean']
-            means = [cells[b][0] for b in budgets]
-            offset = (si - (n_stages - 1) / 2) * w
-            ax.bar(x + offset, means, w,
-                   color=color, edgecolor='white', linewidth=0.4)
-            for bx, m in zip(x + offset, means):
-                ax.text(bx, m + 0.012, f'{m:.2f}', ha='center', va='bottom',
-                        fontsize=5.2, color='#4D4D4D')
+    ax.set_xticks(x)
+    ax.set_xticklabels(budget_labels)
+    ax.set_ylim(YMIN, YMAX)
+    ax.grid(axis='y', color='#E0E0E0', linewidth=0.5, zorder=0)
 
-        ax.set_xticks(x)
-        ax.set_xticklabels(budget_labels)
-        ax.set_ylim(YMIN, YMAX)
-        ax.grid(axis='y', color='#E0E0E0', linewidth=0.5, zorder=0)
+    if ref is not None:
+        ax.axhline(ref, color='#4D4D4D', linestyle='--',
+                   linewidth=0.8, zorder=3)
+        ax.text(1.0, ref + 0.008, f'Full graph {ref:.3f}',
+                transform=blended_transform_factory(ax.transAxes, ax.transData),
+                ha='right', va='bottom', fontsize=6, color='#4D4D4D', zorder=4)
 
-        ref = ref_valid if split == 'valid' else ref_test
-        if ref is not None:
-            ax.axhline(ref, color='#4D4D4D', linestyle='--',
-                       linewidth=0.8, zorder=3)
-            ax.text(1.0, ref + 0.008, f'Full graph {ref:.3f}',
-                    transform=blended_transform_factory(ax.transAxes, ax.transData),
-                    ha='right', va='bottom', fontsize=6, color='#4D4D4D', zorder=4)
-
-        if ci == 0:
-            ax.set_ylabel('Accuracy')
-        ax.set_xlabel('Budget ratio')
-        ax.set_title(f'{split.capitalize()} — mean of seeds', fontsize=7, pad=4)
-        ax.text(-0.09, 1.04, 'ab'[ci], transform=ax.transAxes,
-                fontsize=8, fontweight='bold', va='bottom', ha='left')
+    ax.set_ylabel('Accuracy')
+    ax.set_xlabel('Budget ratio')
+    ax.set_title(f'{split.capitalize()} — mean of seeds', fontsize=7, pad=4)
 
     handles = [plt.Rectangle((0, 0), 1, 1, color=c) for _n, _p, _s, c in stages]
     labels = [n for n, _p, _s, _c in stages]
@@ -192,17 +186,12 @@ def build_figure(stats, splits, budgets, ref_valid=None, ref_test=None):
                handlelength=1.2, handleheight=1.0, columnspacing=1.2)
 
     note = 'Mean over deterministic seeds'
-    if ref_valid is not None or ref_test is not None:
-        refs = []
-        if ref_valid is not None:
-            refs.append(f'{ref_valid:.3f} valid')
-        if ref_test is not None:
-            refs.append(f'{ref_test:.3f} test')
-        note += f'; dashed lines: full-graph accuracy ({ " / ".join(refs) })'
+    if ref is not None:
+        note += f'; dashed line: full-graph accuracy ({ref:.3f})'
     fig.text(0.5, 0.012, note, ha='center', fontsize=6, color='#4D4D4D')
 
-    fig.tight_layout(rect=[0, 0.03, 1, 0.96])
-    return fig, axes
+    fig.tight_layout(rect=[0, 0.03, 1, 0.94])
+    return fig, ax
 
 
 def main():
@@ -215,13 +204,15 @@ def main():
         raise SystemExit(f"各 JSON 无共同 split：{args.splits}")
     out_dir = resolve(args.output_dir)
     write_source_data(out_dir, stats, splits, args.budgets)
-    fig, _axes = build_figure(stats, splits, args.budgets, ref_valid, ref_test)
-    base = out_dir / args.name
-    fig.savefig(f'{base}.svg', bbox_inches='tight')
-    fig.savefig(f'{base}.pdf', bbox_inches='tight')
-    fig.savefig(f'{base}.png', dpi=300, bbox_inches='tight')
-    plt.close(fig)
-    print(f'Figure saved to {out_dir}')
+    for split in splits:
+        ref = ref_valid if split == 'valid' else ref_test
+        fig, _ax = build_split_figure(stats, split, args.budgets, ref)
+        base = out_dir / f'{args.name}_{split}'
+        fig.savefig(f'{base}.svg', bbox_inches='tight')
+        fig.savefig(f'{base}.pdf', bbox_inches='tight')
+        fig.savefig(f'{base}.png', dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        print(f'Figure saved: {base}.png')
 
 
 if __name__ == '__main__':

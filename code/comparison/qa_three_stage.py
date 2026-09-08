@@ -17,8 +17,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from plot_three_stage import (build_stages, build_figure, load_stats,  # noqa: E402
-                              common_splits, resolve, YMIN, YMAX)
+from plot_three_stage import (build_stages, build_split_figure,  # noqa: E402
+                              load_stats, common_splits, resolve, YMIN, YMAX)
 
 
 def check_data(stats, splits, budgets):
@@ -50,7 +50,7 @@ def check_text_overlaps(fig, axes):
     renderer = fig.canvas.get_renderer()
 
     texts = []
-    for ax in axes.flat:
+    for ax in axes:
         for t in ax.texts:
             texts.append(('panel', t))
         for lbl in (ax.get_xticklabels() + ax.get_yticklabels()):
@@ -90,21 +90,16 @@ def check_text_overlaps(fig, axes):
         print('  no significant text overlaps. OK')
 
 
-def check_structure(fig, axes, splits, budgets, stages, ref_valid, ref_test):
-    print('== structure check ==')
-    assert axes.shape == (1, len(splits))
-    for ax in axes.flat:
-        assert len(ax.patches) == len(stages) * len(budgets)
-        assert np.allclose(ax.get_ylim(), (YMIN, YMAX))
-        assert len(ax.get_xticks()) == len(budgets)
-    for ci, split in enumerate(splits):
-        ax = axes[0][ci]
-        n_ref = sum(1 for ln in ax.lines if ln.get_linestyle() == '--')
-        ref = ref_valid if split == 'valid' else ref_test
-        assert n_ref == (1 if ref is not None else 0), (split, n_ref)
+def check_structure(fig, ax, split, budgets, n_stages, ref):
+    print(f'== structure check ({split}) ==')
+    assert len(ax.patches) == n_stages * len(budgets)
+    assert np.allclose(ax.get_ylim(), (YMIN, YMAX))
+    assert len(ax.get_xticks()) == len(budgets)
+    n_ref = sum(1 for ln in ax.lines if ln.get_linestyle() == '--')
+    assert n_ref == (1 if ref is not None else 0), (split, n_ref)
     assert len(fig.legends) == 1
-    assert len(fig.legends[0].get_texts()) == len(stages)
-    print(f'  1x{len(splits)} grid, {len(stages) * len(budgets)} bars/panel, '
+    assert len(fig.legends[0].get_texts()) == n_stages
+    print(f'  single panel, {n_stages * len(budgets)} bars, '
           f'ylim ({YMIN}, {YMAX}). OK')
     print(f'  legend entries: {[t.get_text() for t in fig.legends[0].get_texts()]}')
 
@@ -127,11 +122,12 @@ def main():
                                             args.ref_valid, args.ref_test)
     splits = common_splits(stats, args.splits)
     check_data(stats, splits, args.budgets)
-    fig, axes = build_figure(stats, splits, args.budgets, ref_valid, ref_test)
-    check_structure(fig, axes, splits, args.budgets, list(stats),
-                    ref_valid, ref_test)
-    check_text_overlaps(fig, axes)
-    plt.close(fig)
+    for split in splits:
+        ref = ref_valid if split == 'valid' else ref_test
+        fig, ax = build_split_figure(stats, split, args.budgets, ref)
+        check_structure(fig, ax, split, args.budgets, len(stats), ref)
+        check_text_overlaps(fig, [ax])
+        plt.close(fig)
     print('QA done')
 
 
