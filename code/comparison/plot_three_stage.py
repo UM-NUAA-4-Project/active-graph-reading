@@ -1,21 +1,25 @@
-"""三阶段（Random/BFS vs BC vs RL）预算准确率对比图（泛化版）。
+"""基线 vs BC vs RL 预算准确率对比图（泛化版，原"三阶段图"）。
 
 自 code/m5/base/analysis/plot_three_stage.py 去硬编码改写：
 - 输入 JSON 路径、划分、预算档、参考上界全部 CLI 传入；
 - 各 JSON 缺失的 split 自动跳过（如 m7 eval 只有 test）；
 - 图样式与旧版一致（分组柱 + 柱顶数值 + full-graph 虚线）；
 - 2026-09-08 起每个 split 输出一张独立图（{name}_{split}.svg/pdf/png，
-  图内自带图例，无面板编号），另写合并的 source_data.csv。
+  图内自带图例，无面板编号），另写合并的 source_data.csv；
+- 2026-09-08 起基线不再限于 Random/BFS：默认画 fixed JSON 中实际存在的
+  全部基线（random/bfs/max-frontier-degree/random-walk/sagpool，按此规范
+  序排列），--fixed-strategies 可手动限定子集。
 
 用法:
-  # 2026-09-05 起统一格式：fixed JSON 含 random+bfs 键，reader JSON 含 learnable 键，
-  # 各自含 valid/test 双 split；上界虚线优先取各 JSON config.full_graph_ref
+  # 2026-09-05 起统一格式：fixed JSON 含各基线键，reader JSON 含 learnable 键；
+  # 上界虚线优先取各 JSON config.full_graph_ref
   python code/comparison/plot_three_stage.py \
-      --fixed-json result/ppa/fixed/eval_fixed.json \
-      --bc-json result/ppa/experiments/bc_baseline/base/bc/eval_learnable.json \
-      --rl-json result/ppa/experiments/rl_asymmetric_ex1/base/rl/analysis/eval_learnable.json \
-      --output-dir result/ppa/comparison
+      --fixed-json result/cifar10/fixed/eval_fixed.json \
+      --bc-json result/cifar10/experiments/ev1/evidence/bc/eval_learnable.json \
+      --rl-json result/cifar10/experiments/ev/evidence/rl/eval_learnable.json \
+      --output-dir result/cifar10/comparison
   # 产物：three_stage_compare_valid.{svg,pdf,png} + three_stage_compare_test.{...}
+  # 只要旧两条基线：--fixed-strategies random bfs
   # 仍兼容旧单 split JSON 与 CLI 显式上界：
   #   --splits valid test --ref-valid 0.66 --ref-test 0.656
 """
@@ -47,7 +51,16 @@ plt.rcParams['axes.spines.top'] = False
 plt.rcParams['axes.linewidth'] = 0.8
 plt.rcParams['legend.frameon'] = False
 
-COLORS = {'Random': '#999999', 'BFS': '#55A868', 'BC': '#4C72B0', 'RL': '#C44E52'}
+COLORS = {'Random': '#999999', 'BFS': '#55A868',
+          'Max-Frontier-Degree': '#8172B2', 'Random-Walk': '#CCB974',
+          'SAGPool': '#64B5CD', 'BC': '#4C72B0', 'RL': '#C44E52'}
+
+# fixed JSON 的基线键 → 图例名（顺序即图中排列顺序，与配色一一对应）
+BASELINES = [('random', 'Random'),
+             ('bfs', 'BFS'),
+             ('max-frontier-degree', 'Max-Frontier-Degree'),
+             ('random-walk', 'Random-Walk'),
+             ('sagpool', 'SAGPool')]
 
 # 供 qa_three_stage 引用的默认结构与轴范围
 YMIN, YMAX = 0.10, 0.70
@@ -64,7 +77,10 @@ def resolve(p):
 def parse_args():
     parser = argparse.ArgumentParser(description='三阶段对比图（泛化 CLI）')
     parser.add_argument('--fixed-json', required=True,
-                        help='固定策略 eval JSON（含 random/bfs 键）')
+                        help='固定策略 eval JSON（默认画其中实际存在的全部基线）')
+    parser.add_argument('--fixed-strategies', nargs='+', default=None,
+                        choices=[k for k, _n in BASELINES],
+                        help='限定绘制的基线（默认全部 5 条中 JSON 里有的）')
     parser.add_argument('--bc-json', default='', help='BC eval JSON')
     parser.add_argument('--rl-json', default='', help='RL eval JSON')
     parser.add_argument('--splits', nargs='+', default=['valid', 'test'],
@@ -80,9 +96,31 @@ def parse_args():
     return parser.parse_args()
 
 
+def _fixed_json_strategies(path):
+    """fixed JSON 里实际存在的策略键（任一 split 出现即算，保持出现序）。"""
+    with open(path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    found = []
+    for key, block in data.items():
+        if key in ('train', 'valid', 'test') and isinstance(block, dict):
+            for s in block:
+                if isinstance(block[s], dict) and s not in found:
+                    found.append(s)
+    return found
+
+
 def build_stages(args):
-    stages = [('Random', Path(resolve(args.fixed_json)), 'random', COLORS['Random']),
-              ('BFS', Path(resolve(args.fixed_json)), 'bfs', COLORS['BFS'])]
+    """基线（JSON 里实际有的）+ 可选 BC/RL → [(图例名, 路径, 策略键, 颜色)]。"""
+    fixed_path = Path(resolve(args.fixed_json))
+    present = _fixed_json_strategies(fixed_path)
+    wanted = set(args.fixed_strategies or [k for k, _n in BASELINES])
+    stages = []
+    for key, display in BASELINES:
+        if key in wanted and key in present:
+            stages.append((display, fixed_path, key, COLORS[display]))
+    if wanted and not stages:
+        raise SystemExit(f'fixed JSON {fixed_path} 中没有任何所请求的基线：'
+                         f'现有 {present}，请求 {sorted(wanted)}')
     if args.bc_json:
         stages.append(('BC', Path(resolve(args.bc_json)), 'learnable', COLORS['BC']))
     if args.rl_json:
@@ -152,7 +190,10 @@ def build_split_figure(stats, split, budgets, ref=None):
     x = np.arange(len(budgets))
     budget_labels = [f'{b * 100:.0f}%' for b in budgets]
 
-    fig, ax = plt.subplots(figsize=(3.6, 3.0))
+    # 策略多时加宽图幅、数值标签竖排，避免挤压
+    fig, ax = plt.subplots(figsize=(max(3.6, 0.62 * n_stages), 3.0))
+    rotate = n_stages > 4
+    val_fs = 5.2 if n_stages <= 4 else 4.6
     for si, (name, _p, _s, color) in enumerate(stages):
         cells = stats[name][split]['mean']
         means = [cells[b][0] for b in budgets]
@@ -161,7 +202,8 @@ def build_split_figure(stats, split, budgets, ref=None):
                color=color, edgecolor='white', linewidth=0.4)
         for bx, m in zip(x + offset, means):
             ax.text(bx, m + 0.012, f'{m:.2f}', ha='center', va='bottom',
-                    fontsize=5.2, color='#4D4D4D')
+                    fontsize=val_fs, color='#4D4D4D',
+                    rotation=90 if rotate else 0)
 
     ax.set_xticks(x)
     ax.set_xticklabels(budget_labels)
@@ -181,8 +223,9 @@ def build_split_figure(stats, split, budgets, ref=None):
 
     handles = [plt.Rectangle((0, 0), 1, 1, color=c) for _n, _p, _s, c in stages]
     labels = [n for n, _p, _s, _c in stages]
-    fig.legend(handles, labels, ncol=len(handles), loc='upper center',
-               bbox_to_anchor=(0.5, 0.995), fontsize=7,
+    fig.legend(handles, labels, ncol=min(n_stages, 4), loc='upper center',
+               bbox_to_anchor=(0.5, 0.995),
+               fontsize=7 if n_stages <= 5 else 6,
                handlelength=1.2, handleheight=1.0, columnspacing=1.2)
 
     note = 'Mean over deterministic seeds'
@@ -190,7 +233,7 @@ def build_split_figure(stats, split, budgets, ref=None):
         note += f'; dashed line: full-graph accuracy ({ref:.3f})'
     fig.text(0.5, 0.012, note, ha='center', fontsize=6, color='#4D4D4D')
 
-    fig.tight_layout(rect=[0, 0.03, 1, 0.94])
+    fig.tight_layout(rect=[0, 0.03, 1, 0.91])
     return fig, ax
 
 

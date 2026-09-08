@@ -1,0 +1,24 @@
+{
+  "dataset": "ppa",
+  "root": "/mnt/data",
+  "max_graphs": 0,
+  "device": "cuda:0",
+  "seed": 42,
+
+  "data_dir": "data/ppa/stage7_filtered",
+  "teachers": ["gradient", "structural-degree"],
+
+  "reader_kind": "evidence",
+  "hidden_dim": 256,
+  "n_layers": 2,
+  "dropout": 0.25,
+
+  "m": 4,
+  "n_heads": 4,
+
+  "epochs": 10,
+  "lr": 0.001,
+  "batch_size": 128,
+
+  "exp": "ev256"
+}
