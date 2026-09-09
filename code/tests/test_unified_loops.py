@@ -103,9 +103,39 @@ def test_rl_loops():
             print(f'  RL {kind}/{reward}: loss={m["loss"]:.4f} acc={m["acc"]:.3f} OK')
 
 
+def test_rl_reward_source_reader():
+    """reward_source='reader'：evidence reader 用自身证据头终判计奖
+    （ev 指标出现、classifier 前向被跳过也不出错）；base reader 应报错。"""
+    graphs, labels = _make_graphs()
+    labels_t = torch.stack(labels)
+    builder = SubgraphBuilder()
+    torch.manual_seed(0)
+    reader = build_reader(ReaderConfig.from_legacy(
+        'evidence', hidden_dim=32, n_layers=2, dropout=0.1, stochastic=True,
+        temperature=0.5, n_classes=3))
+    opt = torch.optim.Adam(reader.parameters(), lr=1e-3)
+    m = rl_train_epoch(reader, _StubClassifier(), builder, opt,
+                       graphs, labels_t, 2, 2, 'cpu', 'binary', 1.1,
+                       (0.05, 0.1), 0.1, reward_source='reader')
+    assert {'loss', 'avg_R', 'acc', 'ev_acc', 'ev_acc_final'} <= set(m), m
+    base = build_reader(ReaderConfig.from_legacy(
+        'base', hidden_dim=32, n_layers=2, dropout=0.1, stochastic=True))
+    try:
+        rl_train_epoch(base, _StubClassifier(), builder,
+                       torch.optim.Adam(base.parameters(), lr=1e-3),
+                       graphs, labels_t, 2, 2, 'cpu', 'binary', 1.1,
+                       (0.05, 0.1), 0.1, reward_source='reader')
+        raise AssertionError('base reader + reward_source=reader 应报 ValueError')
+    except ValueError:
+        pass
+    print('  RL reward_source=reader: '
+          f'loss={m["loss"]:.4f} acc={m["acc"]:.3f} OK（base 拒绝 OK）')
+
+
 def run_all():
     test_bc_loops()
     test_rl_loops()
+    test_rl_reward_source_reader()
     print('test_unified_loops: ALL PASSED')
 
 

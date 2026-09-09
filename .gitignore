@@ -35,3 +35,6 @@ baseline/output/
 
 #控制服务器
 _ssh*.py
+
+# 实验产物 JSON（config/训练日志/评估结果）不入库
+code/result/**/*.json

@@ -14,7 +14,8 @@ import torch
 import dgl
 from tqdm import tqdm
 
-from .registry import DatasetSpec, Dataset, register, has_self_loops
+from .registry import DatasetSpec, Dataset, register, has_self_loops, \
+    stratified_take
 
 
 def _load_split(split: str, raw_dir: str) -> Tuple[List[dgl.DGLGraph], List[int]]:
@@ -45,14 +46,31 @@ def load_cifar10(spec: DatasetSpec) -> Dataset:
     if 'test' in spec.splits:
         test_graphs, test_labels = _load_split('test', spec.root)
 
-    # max_graphs 截断（加载后截取，索引即前 N 个，确定性）
+    train_indices = list(range(len(train_graphs)))
+    test_indices = list(range(len(test_graphs)))
+
+    # max_graphs 截断：prefix（前 N 个，历史默认）或分层抽样（按类别比例，
+    # 固定种子）。train/test_indices 记录选中的原始本地位置（轨迹 graph_idx
+    # 空间），与子集列表顺序对齐
     if spec.max_graphs > 0:
-        if 'train' in spec.splits:
-            train_graphs, train_labels = (train_graphs[:spec.max_graphs],
-                                          train_labels[:spec.max_graphs])
-        if 'test' in spec.splits:
-            test_graphs, test_labels = (test_graphs[:spec.max_graphs],
-                                        test_labels[:spec.max_graphs])
+        if spec.stratified:
+            sel = stratified_take(range(len(train_graphs)), train_labels,
+                                  spec.max_graphs)
+            train_graphs = [train_graphs[i] for i in sel]
+            train_labels = [train_labels[i] for i in sel]
+            train_indices = sel
+            sel = stratified_take(range(len(test_graphs)), test_labels,
+                                  spec.max_graphs)
+            test_graphs = [test_graphs[i] for i in sel]
+            test_labels = [test_labels[i] for i in sel]
+            test_indices = sel
+        else:
+            if 'train' in spec.splits:
+                train_graphs = train_graphs[:spec.max_graphs]
+                train_labels = train_labels[:spec.max_graphs]
+            if 'test' in spec.splits:
+                test_graphs = test_graphs[:spec.max_graphs]
+                test_labels = test_labels[:spec.max_graphs]
 
     # 自环检查：数据集已含自环则不再添加（按实际加载到的 split 处理）
     if spec.needs_self_loop:
@@ -71,8 +89,8 @@ def load_cifar10(spec: DatasetSpec) -> Dataset:
         valid_labels=torch.tensor([]),
         test_graphs=test_graphs,
         test_labels=torch.tensor(test_labels),
-        train_indices=list(range(len(train_graphs))),
-        test_indices=list(range(len(test_graphs))),
+        train_indices=train_indices,
+        test_indices=test_indices,
     )
 
 

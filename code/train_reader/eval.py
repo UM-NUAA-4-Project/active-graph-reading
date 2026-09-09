@@ -77,6 +77,9 @@ def main():
                         help='评估的 split（数据集缺少的 split 自动跳过并告警）')
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='每个 split 的评估图数限制（0=全部；PPA 必配）')
+    parser.add_argument('--stratified', action='store_true',
+                        help='--max-graphs 按类别比例分层抽样（默认前 N 截断；'
+                             '与训练侧同种子同选择，保证子集一致）')
     parser.add_argument('--chunk-size', type=int, default=32,
                         help='reader 评估时的图批量大小')
     parser.add_argument('--argmax', action=argparse.BooleanOptionalAction, default=True,
@@ -103,7 +106,8 @@ def main():
     print(f"Device: {device}")
 
     ds = get_dataset(args.dataset, root=args.root,
-                     splits=sorted(set(args.splits)), max_graphs=args.max_graphs)
+                     splits=sorted(set(args.splits)), max_graphs=args.max_graphs,
+                     stratified=args.stratified)
     spec = ds.spec
     budget_options = spec.budget_options
 

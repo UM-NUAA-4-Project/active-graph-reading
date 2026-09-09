@@ -3,6 +3,8 @@
 收敛 m5/base/train_rl.py、m6/attention/train_rl.py、m7/train_rl.py 三份拷贝，
 保留 m7 的最新改进：teleport_if_stuck、batch 优势归一化 + 负侧降权、
 NaN 防护。attention 分支额外：belief 维护、micro-batch 梯度累积。
+奖励判定来源可选（reward_source）：冻结分类器（默认）或 reader 自身
+证据头终判（--reward-source reader，仅 evidence kind）。
 """
 
 import math
@@ -50,17 +52,25 @@ def train_one_epoch(reader, classifier, builder, optimizer,
                     device, reward_type: str, ln_k: float, budget_options,
                     neg_scale: float, use_belief: bool = None,
                     evidence_lambda: float = 0.0,
-                    adv_normalize: bool = True) -> Dict:
+                    adv_normalize: bool = True,
+                    reward_source: str = 'classifier') -> Dict:
     """单轮 REINFORCE（self-sampled）。
 
     Loss = mean_i(-A_i · Σ_t log π_t(a_t))；A 为 batch 优势归一化
-    （负侧乘 neg_scale）。R 由冻结上界分类器给出。
+    （负侧乘 neg_scale）。R 的判定来源由 reward_source 控制：
+    - classifier：冻结上界分类器对揭示子图的判定（默认）；
+    - reader：reader 自身分类头终判（仅 evidence kind，强制开启证据前向）。
     evidence_lambda: >0 且 reader 含证据流时加 λ·L_ev（逐步图类别监督 CE，
     不进策略梯度），总损失 = L_RL + λ·L_ev。
     """
+    if reward_source == 'reader' and not hasattr(reader, 'forward_states_evidence'):
+        raise ValueError(
+            "reward_source='reader' 需要 evidence reader"
+            "（base/attention 无自身分类头，终判即上界分类器）")
     if use_belief is None:
         use_belief = hasattr(reader, 'init_beliefs')
-    use_evidence = evidence_lambda > 0 and hasattr(reader, 'forward_states_evidence')
+    use_evidence = (evidence_lambda > 0 or reward_source == 'reader') \
+        and hasattr(reader, 'forward_states_evidence')
     reader.train()
     classifier.eval()
     total_R = total_trajs = total_correct = total_loss = 0.0
@@ -214,11 +224,13 @@ def train_one_epoch(reader, classifier, builder, optimizer,
                 continue
 
             # ---- 终局判定：读满后的补充前向（含最后一次 reveal 的证据）----
+            reader_term_logits = None
             if use_evidence:
                 _, _, term_ev = reader.forward_states_evidence(
                     final_states, reader.temperature,
                     hc_list=[all_hc[j] for j in final_idx],
                     last_revealed=[last_revealed[j] for j in final_idx])
+                reader_term_logits = [t.detach() for t in term_ev]
                 for k in range(len(final_states)):
                     ev_losses.append(F.cross_entropy(
                         term_ev[k].unsqueeze(0), final_labels[k]))
@@ -226,21 +238,26 @@ def train_one_epoch(reader, classifier, builder, optimizer,
                                             == final_labels[k].item())
                     ev_final_total += 1
 
-            logits_chunks = []
-            with torch.no_grad():
-                for c_start in range(0, len(final_states), 512):
-                    chunk = final_states[c_start:c_start + 512]
-                    sub_graphs = [builder.build(s)[0] for s in chunk]
-                    batch_g = dgl.batch(sub_graphs).to(device)
-                    nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long,
-                                       device=device)
-                    logits_chunks.append(classifier(batch_g, nids))
-            logits_all = torch.cat(logits_chunks, dim=0)
+            # ---- 奖励判定来源 ----
+            if reward_source == 'classifier':
+                logits_chunks = []
+                with torch.no_grad():
+                    for c_start in range(0, len(final_states), 512):
+                        chunk = final_states[c_start:c_start + 512]
+                        sub_graphs = [builder.build(s)[0] for s in chunk]
+                        batch_g = dgl.batch(sub_graphs).to(device)
+                        nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long,
+                                           device=device)
+                        logits_chunks.append(classifier(batch_g, nids))
+                src_logits = torch.cat(logits_chunks, dim=0)
+            else:
+                # reader 判定：奖励来自证据头终判（detached，不进策略梯度之外）
+                src_logits = torch.stack(reader_term_logits, dim=0)
 
             raw_rewards = []
             for k in range(len(final_states)):
-                correct = 1.0 if logits_all[k].argmax(dim=-1).item() == final_labels[k].item() else 0.0
-                R = compute_reward(logits_all[k:k + 1], final_labels[k],
+                correct = 1.0 if src_logits[k].argmax(dim=-1).item() == final_labels[k].item() else 0.0
+                R = compute_reward(src_logits[k:k + 1], final_labels[k],
                                    reward_type, ln_k)
                 raw_rewards.append(R)
                 total_R += R

@@ -23,7 +23,7 @@ import dgl
 from dgl.data import TUDataset
 from tqdm import tqdm
 
-from .registry import DatasetSpec, Dataset, register
+from .registry import DatasetSpec, Dataset, register, stratified_take
 
 SPLIT_SEED = 42
 SPLIT_RATIOS = (0.8, 0.1, 0.1)   # train / valid / test
@@ -95,24 +95,40 @@ def load_collab(spec: DatasetSpec) -> Dataset:
     train_idx, valid_idx, test_idx = _split_indices(all_labels)
 
     def _pick(indices):
+        """返回 (graphs, labels), selected。selected 为分层抽样时选中的
+        split 本地位置（升序，即轨迹 graph_idx 空间）；prefix/全量为 None
+        （此时 train_indices 沿用全局 all_graphs 索引的历史语义）。"""
+        if spec.max_graphs > 0 and spec.stratified:
+            local = stratified_take(range(len(indices)),
+                                    [all_labels[i] for i in indices],
+                                    spec.max_graphs)
+            sel = [indices[i] for i in local]
+            return (([all_graphs[i] for i in sel],
+                     [all_labels[i] for i in sel]), local)
         if spec.max_graphs > 0:
             indices = indices[:spec.max_graphs]
-        return ([all_graphs[i] for i in indices],
-                [all_labels[i] for i in indices])
+        return (([all_graphs[i] for i in indices],
+                 [all_labels[i] for i in indices]), None)
 
     parts = {}
     for split, indices in (('train', train_idx), ('valid', valid_idx),
                            ('test', test_idx)):
         if split in spec.splits:
-            gs, ls = _pick(indices)
-            parts[split] = _finalize(gs, ls, spec.needs_self_loop,
-                                      f'Self-loop {split}')
+            (gs, ls), sel = _pick(indices)
+            parts[split] = (_finalize(gs, ls, spec.needs_self_loop,
+                                      f'Self-loop {split}'), sel)
         else:
-            parts[split] = ([], torch.tensor([]))
+            parts[split] = (([], torch.tensor([])), None)
 
-    train_graphs, train_labels = parts['train']
-    valid_graphs, valid_labels = parts['valid']
-    test_graphs, test_labels = parts['test']
+    (train_graphs, train_labels), train_sel = parts['train']
+    (valid_graphs, valid_labels), valid_sel = parts['valid']
+    (test_graphs, test_labels), test_sel = parts['test']
+
+    def _split_out(split_idx, sel):
+        if sel is not None:
+            return sel
+        return split_idx[:spec.max_graphs if spec.max_graphs > 0 else None]
+
     return Dataset(
         spec=spec,
         train_graphs=train_graphs,
@@ -121,9 +137,9 @@ def load_collab(spec: DatasetSpec) -> Dataset:
         valid_labels=valid_labels,
         test_graphs=test_graphs,
         test_labels=test_labels,
-        train_indices=train_idx[:spec.max_graphs if spec.max_graphs > 0 else None],
-        valid_indices=valid_idx[:spec.max_graphs if spec.max_graphs > 0 else None],
-        test_indices=test_idx[:spec.max_graphs if spec.max_graphs > 0 else None],
+        train_indices=_split_out(train_idx, train_sel),
+        valid_indices=_split_out(valid_idx, valid_sel),
+        test_indices=_split_out(test_idx, test_sel),
     )
 
 

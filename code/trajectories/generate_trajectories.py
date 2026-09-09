@@ -8,7 +8,9 @@
 - --labels 只生成指定类别的轨迹（多台服务器按类别分摊）；
 - --k-shards / --shard-idx 分片：输出 trajectories_r{key}_shard{i}of{K}.pt，
   已存在的分片自动跳过 → 中断后续跑（重跑同一命令即可）；
-- graph_idx 语义 = ds.train_graphs 本地位置（与 train_bc/train_rl 一致）。
+- graph_idx 语义 = ds.train_graphs 本地位置（与 train_bc/train_rl 一致）；
+  --stratified --max-graphs 分层子集时记录原始索引（子集内训练经
+  train_indices 对齐，见 train_bc.build_graph_cache）。
 
 用法:
   python code/trajectories/generate_trajectories.py --dataset cifar10 \
@@ -75,6 +77,9 @@ def main():
                              '便于多台服务器按类别分摊）')
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='限制训练图数（0=全部；冒烟测试传小值）')
+    parser.add_argument('--stratified', action='store_true',
+                        help='--max-graphs 按类别比例分层抽样（默认前 N 截断；'
+                             '轨迹 graph_idx 记录子集外的原始索引）')
     parser.add_argument('--k-shards', type=int, default=1,
                         help='把图列表切成 K 片分批生成（断点续跑单位）')
     parser.add_argument('--shard-idx', type=int, nargs='+', default=None,
@@ -106,7 +111,8 @@ def main():
     print(f"Device: {device}")
 
     ds = get_dataset(args.dataset, root=args.root or None, splits=['train'],
-                     max_graphs=args.max_graphs)
+                     max_graphs=args.max_graphs,
+                     stratified=args.stratified and args.max_graphs > 0)
     spec = ds.spec
     ratios = args.budget_ratios or list(spec.budget_options)
 
@@ -169,7 +175,12 @@ def main():
                              [train_labels[i] for i in part])
         # train_idx 必须传原始索引（cifar10 = ds.train_graphs 本地位置 /
         # PPA = OGB 全局索引，存入 trajectory.graph_idx）；generator 内部
-        # 默认按其建 ogb_to_local ↔ dataset 位置映射，不可传位置 range(len)
+        # 默认按其建 ogb_to_local ↔ dataset 位置映射，不可传位置 range(len)。
+        # 分层子集时 train_indices 记录子集内各图的原始索引（与子集列表同序）
+        if args.stratified and args.max_graphs > 0:
+            idx_part = [ds.train_indices[i] for i in part]
+        else:
+            idx_part = part
         for ratio in ratios:
             key = ratio_key(ratio)
             out_path = output_dir / f'trajectories_r{key}{suffix}.pt'
@@ -177,7 +188,7 @@ def main():
                 print(f"  shard{sid} r={ratio}: 已存在，跳过")
                 continue
             print(f"\n=== shard{sid} reveal_ratio={ratio} ({len(part)} graphs) ===")
-            result = generator.generate_all(dataset, part, ratio,
+            result = generator.generate_all(dataset, idx_part, ratio,
                                             n_seeds=args.n_seeds)
             n_correct = {t: sum(len(l) for l in result[t])
                          for t in result}

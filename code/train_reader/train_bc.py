@@ -62,9 +62,16 @@ def merge_trajectories(data_dir: Path, teachers: list) -> list:
 
 
 def build_graph_cache(spec, ds, needed: set) -> dict:
-    """graph_idx → (graph, label)。PPA（有 load_graph_subset）选择性加载。"""
+    """graph_idx → (graph, label)。PPA（有 load_graph_subset）选择性加载；
+    stratified 子集时 graph_idx 为原始空间位置，经 train_indices 对齐到
+    子集列表（train_indices 与子集列表同序，加载器保证）。"""
     if spec.load_graph_subset is not None:
         return spec.load_graph_subset(spec, needed)
+    # 注意：collab 在 max_graphs=0 时不分层（train_indices 为全局索引空间），
+    # 故重映射仅在真正发生分层截断（stratified 且 max_graphs>0）时启用
+    if getattr(spec, 'stratified', False) and spec.max_graphs > 0:
+        return {gid: (ds.train_graphs[pos], int(ds.train_labels[pos]))
+                for pos, gid in enumerate(ds.train_indices) if gid in needed}
     return {i: (ds.train_graphs[i], int(ds.train_labels[i])) for i in needed}
 
 
@@ -74,6 +81,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--root', default='', help='数据集根目录（必填：CLI 或 --config）')
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='每 split 最多加载图数（0=不限；PPA 必配）')
+    parser.add_argument('--stratified', action='store_true',
+                        help='--max-graphs 按类别比例分层抽样（默认前 N 截断；'
+                             '轨迹按子集内 graph_idx 过滤）')
     parser.add_argument('--data-dir', default='',
                         help='轨迹目录（默认 data/{dataset}/trajectories）')
     parser.add_argument('--teachers', nargs='+',
@@ -118,7 +128,8 @@ def main():
     print(f"Device: {device}")
 
     ds = get_dataset(args.dataset, root=args.root, splits=['train'],
-                     max_graphs=args.max_graphs)
+                     max_graphs=args.max_graphs,
+                     stratified=getattr(args, 'stratified', False))
     spec = ds.spec
 
     # ---- 1. 轨迹 & 图缓存（无验证集：全部轨迹用于 BC） ----
@@ -128,6 +139,12 @@ def main():
     all_trajs = merge_trajectories(data_dir, args.teachers)
     if not all_trajs:
         raise SystemExit(f"无轨迹可用：{data_dir}（先运行 trajectories/generate_trajectories.py）")
+    if args.max_graphs > 0 and getattr(args, 'stratified', False):
+        allowed = set(ds.train_indices)
+        n0 = len(all_trajs)
+        all_trajs = [t for t in all_trajs if t.graph_idx in allowed]
+        print(f"  stratified subset: {n0} -> {len(all_trajs)} trajectories"
+              f"（分层子集内 {len(allowed)} 图）")
 
     print("\n=== Building graph cache ===")
     graph_cache = build_graph_cache(spec, ds, {t.graph_idx for t in all_trajs})

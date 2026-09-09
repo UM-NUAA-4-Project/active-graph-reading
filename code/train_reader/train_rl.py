@@ -3,8 +3,9 @@
 自 m5/base/train_rl.py、m6/attention/train_rl.py、m7/train_rl.py 三份合并：
 - 起点：--bootstrap 任意 reader checkpoint（跨架构/跨数据集时部分权重
   迁移：同形复制 / 末维零填充 / 跳过）；
-- 奖励：冻结上界分类器给出 binary/tanh/asymmetric；batch 优势归一化
-  （负侧乘 --reward-neg-scale）；
+- 奖励：判定来源 --reward-source（classifier=冻结上界分类器（默认）/
+  reader=reader 自身证据头终判，仅 evidence kind）× binary/tanh/
+  asymmetric 变换；batch 优势归一化（负侧乘 --reward-neg-scale）；
 - 断点续训 --resume（结构/超参取 checkpoint config）；--freeze 冻结共享层；
 - 产物：result/{dataset}/experiments/{exp}/{reader-kind}/rl/。
 
@@ -50,6 +51,8 @@ def main():
     parser.add_argument('--root', default='', help='数据集根目录（必填：CLI 或 --config）')
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='训练图数限制（0=全部；冒烟传小值）')
+    parser.add_argument('--stratified', action='store_true',
+                        help='--max-graphs 按类别比例分层抽样（默认前 N 截断）')
     cli_utils.add_reader_args(parser, reader_kind_default='attention',
                               temperature_default=0.2)
     parser.add_argument('--evidence-lambda', type=float, default=1.0,
@@ -64,6 +67,11 @@ def main():
     parser.add_argument('--seeds-per-graph', type=int, default=4)
     parser.add_argument('--reward', choices=['binary', 'tanh', 'asymmetric'],
                         default='binary')
+    parser.add_argument('--reward-source', choices=['classifier', 'reader'],
+                        default='classifier',
+                        help='奖励判定来源：classifier=冻结上界分类器对揭示'
+                             '子图的判定（默认）；reader=reader 自身分类头'
+                             '终判（仅 evidence kind）')
     parser.add_argument('--reward-neg-scale', type=float, default=1,
                         help='batch 优势归一化后负侧优势的降权系数 λ（λ=1 即无不对称）')
     parser.add_argument('--no-adv-normalize', action='store_true',
@@ -90,7 +98,8 @@ def main():
                 setattr(args, k, v)
     cli_utils.attach_defaults(args, parser)
     from tools.config import require_args
-    require_args(args, ['root', 'classifier'])
+    require_args(args, ['root']
+                 + (['classifier'] if args.reward_source == 'classifier' else []))
 
     assert bool(args.bootstrap) != bool(args.resume), \
         "--bootstrap 与 --resume 必须二选一"
@@ -100,7 +109,7 @@ def main():
     print(f"Device: {device}")
 
     ds = get_dataset(args.dataset, root=args.root, splits=['train'],
-                     max_graphs=args.max_graphs)
+                     max_graphs=args.max_graphs, stratified=args.stratified)
     spec = ds.spec
     budget_options = spec.budget_options
     ln_k = math.log(spec.n_classes)
@@ -108,10 +117,14 @@ def main():
     train_labels = ds.train_labels
     print(f"Train graphs: {len(train_graphs)} | budgets: {list(budget_options)}")
 
-    # ---- 冻结分类器（reward 来源） ----
-    clf_path = resolve(args.classifier)
-    classifier = load_classifier_frozen(clf_path, device)
-    print(f"Classifier loaded: {clf_path}")
+    # ---- 冻结分类器（reward 来源；reward-source=reader 时不需要） ----
+    classifier = None
+    if args.reward_source == 'classifier':
+        clf_path = resolve(args.classifier)
+        classifier = load_classifier_frozen(clf_path, device)
+        print(f"Classifier loaded: {clf_path}")
+    else:
+        print("Reward source: reader 自身分类头终判（不加载冻结分类器）")
 
     # ---- reader：resume 直接加载 / bootstrap 迁移 ----
     start_epoch, training_log = 1, []
@@ -148,6 +161,10 @@ def main():
             [p for p in reader.parameters() if p.requires_grad], lr=args.lr)
 
     builder = SubgraphBuilder()
+    if args.reward_source == 'reader' \
+            and not hasattr(reader, 'forward_states_evidence'):
+        raise SystemExit("--reward-source reader 需要 evidence reader"
+                         "（base/attention 无自身分类头，终判即上界分类器）")
     total_params = sum(p.numel() for p in reader.parameters())
     trainable_params = sum(p.numel() for p in reader.parameters() if p.requires_grad)
     print(f"Reader: {reader.config.kind}, params={total_params:,} "
@@ -167,7 +184,8 @@ def main():
             'reader': reader.config.to_dict(),
             'dataset': spec.name,
             'bootstrap': args.bootstrap,
-            'classifier': str(clf_path),
+            'classifier': str(clf_path) if classifier is not None else '',
+            'reward_source': args.reward_source,
             'n_transferred': n_transferred,
             'n_padded': n_padded,
             'n_skipped': len(skipped),
@@ -193,7 +211,8 @@ def main():
             args.graphs_per_batch, args.seeds_per_graph,
             device, args.reward, ln_k, budget_options,
             args.reward_neg_scale, evidence_lambda=args.evidence_lambda,
-            adv_normalize=not args.no_adv_normalize)
+            adv_normalize=not args.no_adv_normalize,
+            reward_source=args.reward_source)
         print(f"  Train: loss={metrics['loss']:.4f}  "
               f"avg_R={metrics['avg_R']:.3f}  acc={metrics['acc']:.3f}"
               + (f"  ev_acc={metrics['ev_acc']:.3f}"

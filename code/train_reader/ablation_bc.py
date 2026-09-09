@@ -57,6 +57,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--root', default='', help='数据集根目录（必填）')
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='每 split 最多加载图数（0=不限；同时过滤轨迹）')
+    parser.add_argument('--stratified', action='store_true',
+                        help='--max-graphs 按类别比例分层抽样（默认前 N 截断；'
+                             '轨迹按子集内 graph_idx 过滤）')
     parser.add_argument('--data-dir', default='',
                         help='轨迹目录（默认 data/{dataset}/trajectories）')
     parser.add_argument('--teachers', nargs='+',
@@ -102,7 +105,8 @@ def main():
     print(f"Device: {device} | evidence-variant={args.evidence_variant}")
 
     ds = get_dataset(args.dataset, root=args.root, splits=['train'],
-                     max_graphs=args.max_graphs)
+                     max_graphs=args.max_graphs,
+                     stratified=args.stratified)
     spec = ds.spec
 
     # ---- 1. 轨迹 & 图缓存 ----
@@ -112,8 +116,14 @@ def main():
     all_trajs = merge_trajectories(data_dir, args.teachers)
     if args.max_graphs > 0:
         n_before = len(all_trajs)
-        all_trajs = [t for t in all_trajs if t.graph_idx < args.max_graphs]
-        print(f"  --max-graphs={args.max_graphs}: "
+        if args.stratified:
+            allowed = set(ds.train_indices)
+            all_trajs = [t for t in all_trajs if t.graph_idx in allowed]
+            mode = f'stratified（子集内 {len(allowed)} 图）'
+        else:
+            all_trajs = [t for t in all_trajs if t.graph_idx < args.max_graphs]
+            mode = 'prefix'
+        print(f"  --max-graphs={args.max_graphs} [{mode}]: "
               f"{n_before} -> {len(all_trajs)} trajectories")
     if not all_trajs:
         raise SystemExit(f"无轨迹可用：{data_dir}")
