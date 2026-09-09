@@ -46,12 +46,16 @@ def rollout_strategy(agent, state):
 
 def evaluate_reader(reader, classifier, builder, graphs, labels,
                     budget_options, device, argmax=True, chunk_size=32,
-                    n_seeds=4):
+                    n_seeds=4, confidence_out=None):
     """learnable reader 评估：跨图 lockstep + 批量分类器 + 多预算/多 seed 统计。
 
     evidence reader：终判由自身证据头给出（读满后补充前向的 ev_logits
     argmax，决策-分类一体）；冻结上界分类器对同一批最终揭示子图的判定
     作为参照，写入 acc_clf_* 键。base/attention 行为不变（上界分类器即终判）。
+
+    confidence_out 不为 None 时（校准分析，预测 5.3c），按预算档收集逐样本
+    [最大类置信度(4位舍入), 是否正确]：ev = 证据头终判（仅 evidence），
+    clf = 冻结分类器对同一揭示子图的判定。
     """
     reader.eval()
     per_budget_correct = defaultdict(int)
@@ -189,6 +193,17 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
                     per_budget_clf_outcomes[budget].append(clf_correct)
                 else:
                     correct = 1.0 if logits[j].argmax(dim=-1).item() == label else 0.0
+                if confidence_out is not None:
+                    rec = confidence_out.setdefault(
+                        budget, {'ev': [], 'clf': []})
+                    if use_evidence:
+                        p_ev = torch.softmax(final_ev[i + j].float(), dim=-1)
+                        rec['ev'].append(
+                            [round(float(p_ev.max()), 4), int(correct)])
+                    p_clf = torch.softmax(logits[j].float(), dim=-1)
+                    rec['clf'].append(
+                        [round(float(p_clf.max()), 4),
+                         int(clf_correct if use_evidence else correct)])
                 per_budget_correct[budget] += correct
                 per_budget_total[budget] += 1
                 per_budget_outcomes[budget].append(correct)

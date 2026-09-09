@@ -83,6 +83,10 @@ def main():
                         help='argmax 选择（默认开启；--no-argmax 改为按分布采样）')
     parser.add_argument('--n-seeds', type=int, default=4,
                         help='每图确定性 seed 数（默认 4，取平均）')
+    parser.add_argument('--export-confidence', action='store_true',
+                        help='导出逐样本 [最大类置信度, 正误] → checkpoint 同目录 '
+                             'calibration.json（校准/可靠性分析，预测 5.3c；'
+                             '仅 reader 模式，ev=证据头终判 / clf=冻结分类器）')
     parser.add_argument('--ref-batch-size', type=int, default=256,
                         help='full-graph 参照评估的批量（大图数据集如 collab 在'
                              '显存有限的 GPU 上 OOM 时调小，如 32）')
@@ -171,6 +175,10 @@ def main():
               f"(from checkpoint config)")
 
     parts, full_graph_ref, n_graphs = [], {}, {}
+    # 校准导出（--export-confidence，仅 reader 模式）：split → budget → ev/clf 样本对
+    calibration = {} if (args.export_confidence and not is_fixed) else None
+    if args.export_confidence and is_fixed:
+        print("[warn] --export-confidence 仅支持 reader 模式，本次忽略")
 
     def _warn_conflict(path):
         print(f"[warn] 合并冲突：{path}（后者覆盖前者）")
@@ -194,7 +202,9 @@ def main():
                 results = evaluate_reader(reader, classifier, builder,
                                           graphs, labels, budget_options, device,
                                           args.argmax, chunk_size=args.chunk_size,
-                                          n_seeds=args.n_seeds)
+                                          n_seeds=args.n_seeds,
+                                          confidence_out=(calibration.setdefault(split, {})
+                                                          if calibration is not None else None))
             parts.append(build_eval_json(results, split, strategy,
                                          args.n_seeds, budget_options, config={}))
             print(f"[{split}] {strategy}: "
@@ -236,6 +246,15 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     save_json(json_out, out_path)
     print(f"JSON saved to {out_path}")
+    if calibration:
+        calib_out = {
+            'calibration': calibration,
+            'config': {'note': '[[max_prob(4位舍入), correct], ...] 逐 (图, seed) 样本'},
+        }
+        calib_path = out_dir / 'calibration.json'
+        save_json(calib_out, calib_path)
+        print(f"Calibration saved to {calib_path}")
+        print(f"绘图: python code/comparison/plot_calibration.py --json {calib_path}")
     print(f"绘图: python code/comparison/plot_eval_results.py --json {out_path}")
 
 
