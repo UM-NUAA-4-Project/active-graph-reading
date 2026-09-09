@@ -72,7 +72,8 @@ def train_one_epoch(reader, classifier, builder, optimizer,
     use_evidence = (evidence_lambda > 0 or reward_source == 'reader') \
         and hasattr(reader, 'forward_states_evidence')
     reader.train()
-    classifier.eval()
+    if classifier is not None:
+        classifier.eval()   # reward_source='reader' 时不加载分类器（None）
     total_R = total_trajs = total_correct = total_loss = 0.0
     ev_correct = ev_total = 0
     ev_final_correct = ev_final_total = 0

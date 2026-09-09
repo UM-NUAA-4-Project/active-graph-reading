@@ -104,8 +104,9 @@ def test_rl_loops():
 
 
 def test_rl_reward_source_reader():
-    """reward_source='reader'：evidence reader 用自身证据头终判计奖
-    （ev 指标出现、classifier 前向被跳过也不出错）；base reader 应报错。"""
+    """reward_source='reader'：evidence reader 用自身证据头终判计奖，
+    classifier=None（train_rl 真实行为：不加载冻结分类器）不得报错；
+    base reader 应报 ValueError。"""
     graphs, labels = _make_graphs()
     labels_t = torch.stack(labels)
     builder = SubgraphBuilder()
@@ -114,7 +115,7 @@ def test_rl_reward_source_reader():
         'evidence', hidden_dim=32, n_layers=2, dropout=0.1, stochastic=True,
         temperature=0.5, n_classes=3))
     opt = torch.optim.Adam(reader.parameters(), lr=1e-3)
-    m = rl_train_epoch(reader, _StubClassifier(), builder, opt,
+    m = rl_train_epoch(reader, None, builder, opt,
                        graphs, labels_t, 2, 2, 'cpu', 'binary', 1.1,
                        (0.05, 0.1), 0.1, reward_source='reader')
     assert {'loss', 'avg_R', 'acc', 'ev_acc', 'ev_acc_final'} <= set(m), m
