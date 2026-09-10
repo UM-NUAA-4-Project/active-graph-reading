@@ -146,6 +146,8 @@ class InfoGainTeacher(Teacher):
         edge_keys = list(edge_keys)
         if not edge_keys:
             sub_g = dgl.graph(([], []), num_nodes=n_nodes)
+            if state.has_node_feat and state.node_feat is not None:
+                sub_g.ndata['feat'] = state.node_feat[nodes]
             sub_g = dgl.add_self_loop(sub_g)
             return sub_g
 
@@ -168,5 +170,9 @@ class InfoGainTeacher(Teacher):
 
         sub_g = dgl.graph((src, dst), num_nodes=n_nodes)
         sub_g.edata['feat'] = edge_feats.repeat_interleave(2, dim=0)
+        if state.has_node_feat and state.node_feat is not None:
+            # 节点特征同步携带（cifar10 等有 feat 的数据集；原实现只带边
+            # 特征，分类器前向 KeyError: 'feat'）
+            sub_g.ndata['feat'] = state.node_feat[nodes]
         sub_g = dgl.add_self_loop(sub_g)
         return sub_g
