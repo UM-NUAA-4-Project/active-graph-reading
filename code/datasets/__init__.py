@@ -18,9 +18,10 @@ from .registry import (
     get_dataset,
     register,
     has_self_loops,
+    release_dataset,
 )
 
 __all__ = [
     'DatasetSpec', 'Dataset', 'DATASETS', 'get_dataset', 'register',
-    'has_self_loops',
+    'has_self_loops', 'release_dataset',
 ]

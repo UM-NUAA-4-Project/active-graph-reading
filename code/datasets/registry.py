@@ -181,3 +181,15 @@ def get_dataset(
 def has_self_loops(g) -> bool:
     u, v = g.edges()
     return bool(torch.any(u == v).item())
+
+
+def release_dataset(ds) -> None:
+    """移除缓存引用并丢弃已加载数据（eval 逐 split「加载→评估→释放」用）。
+
+    仅从 _CACHE 摘除该实例并清空其 _real；调用方须同时删除自己的局部
+    引用（graphs/labels 等），否则对象不会回收。
+    """
+    for key in [k for k, v in _CACHE.items() if v is ds]:
+        del _CACHE[key]
+    if isinstance(ds, _LazyDataset):
+        ds._real = None

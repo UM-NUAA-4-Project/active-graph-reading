@@ -14,6 +14,10 @@
 config.full_graph_ref 由冻结分类器在各 split 全量图上现场评估填入
 （plot_three_stage 的上界虚线不再需要 --ref-valid/--ref-test）。
 
+内存策略：**逐 split 按需加载**——先加载并评估 valid（无则跳过），
+释放后（缓存摘除 + gc + empty_cache）再加载评估 test；JSON 在每个
+split 评估完即增量落盘，后续 split 崩溃不丢已完成结果。
+
 用法:
   # 固定策略基线（一次跑 random+bfs × valid+test）→ result/{ds}/fixed/eval_fixed.json
   python code/train_reader/eval.py --dataset cifar10 --root D:\\data\\superpixels \
@@ -25,6 +29,7 @@ config.full_graph_ref 由冻结分类器在各 split 全量图上现场评估填
 """
 
 import argparse
+import gc
 import sys
 from pathlib import Path
 
@@ -37,7 +42,7 @@ import torch  # noqa: E402
 
 from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder  # noqa: E402
 from active_graph_reader.reader.fixed import create_fixed_reader  # noqa: E402
-from datasets import get_dataset  # noqa: E402
+from datasets import get_dataset, release_dataset  # noqa: E402
 from tools.config import save_json  # noqa: E402
 from tools.paths import CODE_DIR  # noqa: E402
 from tools.seeds import SEED_METHOD_STR  # noqa: E402
@@ -105,23 +110,11 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
-    ds = get_dataset(args.dataset, root=args.root,
-                     splits=sorted(set(args.splits)), max_graphs=args.max_graphs,
-                     stratified=args.stratified)
-    spec = ds.spec
+    # spec 只读探针：splits=() 的缓存项永不访问数据字段，不触发加载
+    spec = get_dataset(args.dataset, root=args.root, splits=(),
+                       max_graphs=args.max_graphs,
+                       stratified=args.stratified).spec
     budget_options = spec.budget_options
-
-    # 自动检查数据集划分：无 valid（如 cifar10）时跳过并告警，不中断
-    evaluated = []  # [(split, graphs, labels)]
-    for split in args.splits:
-        graphs = getattr(ds, f'{split}_graphs')
-        labels = getattr(ds, f'{split}_labels')
-        if len(graphs) == 0:
-            print(f"[skip] 数据集 '{spec.name}' 无 {split} 划分（或为空），跳过")
-            continue
-        evaluated.append((split, graphs, labels))
-    if not evaluated:
-        raise SystemExit(f"数据集 '{spec.name}' 所请求 split {args.splits} 全部为空")
 
     classifier = load_classifier_frozen(resolve(args.classifier), device)
     print(f"Classifier: {args.classifier}")
@@ -178,7 +171,7 @@ def main():
               f"m={reader.config.m} n_heads={reader.config.n_heads} "
               f"(from checkpoint config)")
 
-    parts, full_graph_ref, n_graphs = [], {}, {}
+    parts = []
     # 校准导出（--export-confidence，仅 reader 模式）：split → budget → ev/clf 样本对
     calibration = {} if (args.export_confidence and not is_fixed) else None
     if args.export_confidence and is_fixed:
@@ -190,12 +183,51 @@ def main():
     # reader 模式无 agent（reader 自身就是策略），补 None 对齐 zip
     iter_agents = agents if is_fixed else [None] * len(strategies)
 
-    for split, graphs, labels in evaluated:
+    if args.output_dir:
+        out_dir = resolve(args.output_dir)
+    elif is_fixed:
+        out_dir = CODE_DIR / 'result' / spec.name / 'fixed'
+    else:
+        out_dir = ckpt_path.parent
+    out_path = out_dir / ('eval_fixed.json' if is_fixed else 'eval_learnable.json')
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    config = {
+        'dataset': spec.name,
+        'mode': 'fixed' if is_fixed else 'reader',
+        'strategies': strategies,
+        'strategy_or_checkpoint': ' '.join(args.strategy) if is_fixed else str(ckpt_path),
+        'classifier': str(resolve(args.classifier)),
+        'budgets': list(budget_options),
+        'n_graphs': {},          # 逐 split 累积
+        'n_seeds': args.n_seeds,
+        'argmax': args.argmax,
+        'seed_method': SEED_METHOD_STR,
+        'full_graph_ref': {},    # 逐 split 累积
+    }
+    if not is_fixed:
+        config['checkpoint'] = str(ckpt_path)
+    n_graphs, full_graph_ref = config['n_graphs'], config['full_graph_ref']
+
+    evaluated = []  # 已完成评估的 split（全部为空时报错退出）
+    # 逐 split 按需加载：先 valid 后 test（按 --splits 顺序），评估完释放
+    # 内存再加载下一个 split；JSON 每个 split 评估完增量落盘
+    for split in list(dict.fromkeys(args.splits)):
+        ds = get_dataset(args.dataset, root=args.root, splits=(split,),
+                         max_graphs=args.max_graphs, stratified=args.stratified)
+        graphs = getattr(ds, f'{split}_graphs')
+        labels = getattr(ds, f'{split}_labels')
+        if len(graphs) == 0:
+            print(f"[skip] 数据集 '{spec.name}' 无 {split} 划分（或为空），跳过")
+            release_dataset(ds)
+            continue
+
         ref = evaluate_classifier_full(classifier, graphs, labels, device,
                                        batch_size=args.ref_batch_size)
         full_graph_ref[split] = round(ref, 6)
         n_graphs[split] = len(graphs)
-        print(f"[{split}] full-graph 参照 acc = {ref:.4f}（{len(graphs)} 图）")
+        print(f"[{split}] 已加载 {len(graphs)} 图；"
+              f"full-graph 参照 acc = {ref:.4f}")
 
         for strategy, agent in zip(strategies, iter_agents):
             if is_fixed:
@@ -222,41 +254,30 @@ def main():
                       + f"  overall={results['acc_clf_overall']:.4f}"
                       + "（evidence 终判 = 自身证据头；ref = 冻结上界分类器）")
 
-    json_out = merge_eval_json(parts, on_conflict=_warn_conflict)
-    config = {
-        'dataset': spec.name,
-        'mode': 'fixed' if is_fixed else 'reader',
-        'strategies': strategies,
-        'strategy_or_checkpoint': ' '.join(args.strategy) if is_fixed else str(ckpt_path),
-        'classifier': str(resolve(args.classifier)),
-        'budgets': list(budget_options),
-        'n_graphs': n_graphs,
-        'n_seeds': args.n_seeds,
-        'argmax': args.argmax,
-        'seed_method': SEED_METHOD_STR,
-        'full_graph_ref': full_graph_ref,
-    }
-    if not is_fixed:
-        config['checkpoint'] = str(ckpt_path)
-    json_out['config'] = config
+        evaluated.append(split)
+        # 增量落盘：后续 split 失败/崩溃不丢已完成结果
+        json_out = merge_eval_json(parts, on_conflict=_warn_conflict)
+        json_out['config'] = config
+        save_json(json_out, out_path)
+        print(f"[{split}] JSON saved to {out_path}")
+        if calibration:
+            save_json({'calibration': calibration,
+                       'config': {'note': '[[max_prob(4位舍入), correct], '
+                                          '...] 逐 (图, seed) 样本'}},
+                      out_dir / 'calibration.json')
 
-    if args.output_dir:
-        out_dir = resolve(args.output_dir)
-    elif is_fixed:
-        out_dir = CODE_DIR / 'result' / spec.name / 'fixed'
-    else:
-        out_dir = ckpt_path.parent
-    out_path = out_dir / ('eval_fixed.json' if is_fixed else 'eval_learnable.json')
-    out_dir.mkdir(parents=True, exist_ok=True)
-    save_json(json_out, out_path)
+        # 释放本 split 的图数据：缓存摘除 + gc；GPU 侧顺带清空分配缓存
+        del graphs, labels
+        release_dataset(ds)
+        gc.collect()
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()
+
+    if not evaluated:
+        raise SystemExit(f"数据集 '{spec.name}' 所请求 split {args.splits} 全部为空")
     print(f"JSON saved to {out_path}")
     if calibration:
-        calib_out = {
-            'calibration': calibration,
-            'config': {'note': '[[max_prob(4位舍入), correct], ...] 逐 (图, seed) 样本'},
-        }
         calib_path = out_dir / 'calibration.json'
-        save_json(calib_out, calib_path)
         print(f"Calibration saved to {calib_path}")
         print(f"绘图: python code/comparison/plot_calibration.py --json {calib_path}")
     print(f"绘图: python code/comparison/plot_eval_results.py --json {out_path}")
