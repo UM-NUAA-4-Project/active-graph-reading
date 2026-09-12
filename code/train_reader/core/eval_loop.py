@@ -44,6 +44,8 @@ def rollout_strategy(agent, state):
             agent.on_new_frontier(new_frontier)
 
 
+@torch.no_grad()  # 必需：evidence 的 (h,c) 跨 lockstep 步携带 grad_fn，开梯度会链式
+                  # 保留整个 chunk 的全部前向图 → 24G OOM（2026-09-12 PPA 全量 valid）
 def evaluate_reader(reader, classifier, builder, graphs, labels,
                     budget_options, device, argmax=True, chunk_size=32,
                     n_seeds=4, confidence_out=None):
@@ -217,6 +219,7 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
                       clf_outcomes=(per_budget_clf_outcomes if use_evidence else None))
 
 
+@torch.no_grad()
 def evaluate_fixed(strategy, classifier, builder, graphs, labels,
                    budget_options, device, argmax=True, n_seeds=4, agent=None):
     """固定策略（random/bfs/max_degree）评估，统计口径与 evaluate_reader 一致。
