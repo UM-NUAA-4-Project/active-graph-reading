@@ -3,8 +3,9 @@
 收敛 m5/base/train_rl.py、m6/attention/train_rl.py、m7/train_rl.py 三份拷贝，
 保留 m7 的最新改进：teleport_if_stuck、batch 优势归一化 + 负侧降权、
 NaN 防护。attention 分支额外：belief 维护、micro-batch 梯度累积。
-奖励判定来源可选（reward_source）：冻结分类器（默认）或 reader 自身
-证据头终判（--reward-source reader，仅 evidence kind）。
+奖励判定来源可选（reward_source）：冻结分类器（默认）、reader 自身
+证据头终判（--reward-source reader，仅 evidence kind），或 both（分类器
+与证据头同时判对才计奖，仅 evidence kind）。
 """
 
 import math
@@ -59,17 +60,20 @@ def train_one_epoch(reader, classifier, builder, optimizer,
     Loss = mean_i(-A_i · Σ_t log π_t(a_t))；A 为 batch 优势归一化
     （负侧乘 neg_scale）。R 的判定来源由 reward_source 控制：
     - classifier：冻结上界分类器对揭示子图的判定（默认）；
-    - reader：reader 自身分类头终判（仅 evidence kind，强制开启证据前向）。
+    - reader：reader 自身分类头终判（仅 evidence kind，强制开启证据前向）；
+    - both：分类器（primary）与证据头终判（gate）同时判对才计奖
+      （仅 evidence kind；tanh 变换在判错时钳到非正）。
     evidence_lambda: >0 且 reader 含证据流时加 λ·L_ev（逐步图类别监督 CE，
     不进策略梯度），总损失 = L_RL + λ·L_ev。
     """
-    if reward_source == 'reader' and not hasattr(reader, 'forward_states_evidence'):
+    if reward_source in ('reader', 'both') \
+            and not hasattr(reader, 'forward_states_evidence'):
         raise ValueError(
-            "reward_source='reader' 需要 evidence reader"
-            "（base/attention 无自身分类头，终判即上界分类器）")
+            "reward_source='reader'/'both' 需要 evidence reader"
+            "（base/attention 无自身分类头，无法参与联合/自身判定）")
     if use_belief is None:
         use_belief = hasattr(reader, 'init_beliefs')
-    use_evidence = (evidence_lambda > 0 or reward_source == 'reader') \
+    use_evidence = (evidence_lambda > 0 or reward_source in ('reader', 'both')) \
         and hasattr(reader, 'forward_states_evidence')
     reader.train()
     if classifier is not None:
@@ -240,7 +244,8 @@ def train_one_epoch(reader, classifier, builder, optimizer,
                     ev_final_total += 1
 
             # ---- 奖励判定来源 ----
-            if reward_source == 'classifier':
+            clf_logits = None
+            if reward_source in ('classifier', 'both'):
                 logits_chunks = []
                 with torch.no_grad():
                     for c_start in range(0, len(final_states), 512):
@@ -250,16 +255,25 @@ def train_one_epoch(reader, classifier, builder, optimizer,
                         nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long,
                                            device=device)
                         logits_chunks.append(classifier(batch_g, nids))
-                src_logits = torch.cat(logits_chunks, dim=0)
-            else:
+                clf_logits = torch.cat(logits_chunks, dim=0)
+
+            if reward_source == 'reader':
                 # reader 判定：奖励来自证据头终判（detached，不进策略梯度之外）
-                src_logits = torch.stack(reader_term_logits, dim=0)
+                primary = torch.stack(reader_term_logits, dim=0)
+            else:
+                primary = clf_logits
+            gate = reader_term_logits if reward_source == 'both' else None
 
             raw_rewards = []
             for k in range(len(final_states)):
-                correct = 1.0 if src_logits[k].argmax(dim=-1).item() == final_labels[k].item() else 0.0
-                R = compute_reward(src_logits[k:k + 1], final_labels[k],
-                                   reward_type, ln_k)
+                R = compute_reward(
+                    primary[k:k + 1], final_labels[k], reward_type, ln_k,
+                    gate_logits=(gate[k] if gate is not None else None))
+                correct = 1.0 if primary[k].argmax(dim=-1).item() \
+                    == final_labels[k].item() else 0.0
+                if gate is not None \
+                        and gate[k].argmax(dim=-1).item() != final_labels[k].item():
+                    correct = 0.0
                 raw_rewards.append(R)
                 total_R += R
                 total_trajs += 1

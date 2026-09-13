@@ -40,12 +40,24 @@ def reveal_and_update_beliefs_batch(reader, states: list, chosen_nodes: list,
 # ---------------------------------------------------------------------------
 
 def compute_reward(logits_i: torch.Tensor, label: torch.Tensor,
-                   reward_type: str, ln_k: float) -> float:
-    """单轨迹奖励：binary / tanh / asymmetric。"""
-    correct = 1.0 if logits_i.argmax(dim=-1).item() == label.item() else 0.0
+                   reward_type: str, ln_k: float,
+                   gate_logits: torch.Tensor = None) -> float:
+    """单轨迹奖励：binary / tanh / asymmetric。
+
+    gate_logits 不为 None（reward_source='both'）：主判 logits 与 gate
+    logits 的 argmax 同时正确才记判对；tanh 判错时钳到非正
+    （"同时判对才给奖励"对连续变换同样成立）。gate_logits=None 时
+    行为与旧版逐位一致。
+    """
+    correct = logits_i.argmax(dim=-1).item() == label.item()
+    if gate_logits is not None:
+        correct = correct and (gate_logits.argmax(dim=-1).item() == label.item())
     if reward_type == 'tanh':
         ce = F.cross_entropy(logits_i, label).item()
-        return math.tanh(1.0 - ce / ln_k)
+        r = math.tanh(1.0 - ce / ln_k)
+        if gate_logits is not None and not correct:
+            r = min(r, 0.0)
+        return r
     if reward_type == 'asymmetric':
         return 1.0 if correct else -0.1
     return float(correct)  # binary
