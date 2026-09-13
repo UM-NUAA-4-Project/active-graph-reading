@@ -5,8 +5,9 @@
   迁移：同形复制 / 末维零填充 / 跳过）；
 - 奖励：判定来源 --reward-source（classifier=冻结上界分类器（默认）/
   reader=reader 自身证据头终判，仅 evidence kind / both=分类器与证据头
-  同时判对才计奖，仅 evidence kind）× binary/tanh/
-  asymmetric 变换；batch 优势归一化（负侧乘 --reward-neg-scale）；
+  同时判对才计奖，仅 evidence kind / soft-both=R 为两模型对正确类置信度
+  的乘积 ∈[0,1]，忽略 --reward 变换）× binary/tanh/asymmetric 变换；
+  batch 优势归一化（负侧乘 --reward-neg-scale）；
 - 断点续训 --resume（结构/超参取 checkpoint config）；--freeze 冻结共享层；
 - 产物：result/{dataset}/experiments/{exp}/{reader-kind}/rl/。
 
@@ -68,12 +69,15 @@ def main():
     parser.add_argument('--seeds-per-graph', type=int, default=4)
     parser.add_argument('--reward', choices=['binary', 'tanh', 'asymmetric'],
                         default='binary')
-    parser.add_argument('--reward-source', choices=['classifier', 'reader', 'both'],
+    parser.add_argument('--reward-source',
+                        choices=['classifier', 'reader', 'both', 'soft-both'],
                         default='classifier',
                         help='奖励判定来源：classifier=冻结上界分类器对揭示'
                              '子图的判定（默认）；reader=reader 自身分类头'
                              '终判（仅 evidence kind）；both=分类器与证据头'
-                             '同时判对才计奖（仅 evidence kind）')
+                             '同时判对才计奖（仅 evidence kind）；soft-both='
+                             'R 为两模型对正确类置信度的乘积（仅 evidence '
+                             'kind，忽略 --reward 变换）')
     parser.add_argument('--reward-neg-scale', type=float, default=1,
                         help='batch 优势归一化后负侧优势的降权系数 λ（λ=1 即无不对称）')
     parser.add_argument('--no-adv-normalize', action='store_true',
@@ -101,8 +105,7 @@ def main():
     cli_utils.attach_defaults(args, parser)
     from tools.config import require_args
     require_args(args, ['root']
-                 + (['classifier'] if args.reward_source in ('classifier', 'both')
-                    else []))
+                 + (['classifier'] if args.reward_source != 'reader' else []))
 
     assert bool(args.bootstrap) != bool(args.resume), \
         "--bootstrap 与 --resume 必须二选一"
@@ -122,12 +125,14 @@ def main():
 
     # ---- 冻结分类器（reward 来源；reward-source=reader 时不加载） ----
     classifier = None
-    if args.reward_source in ('classifier', 'both'):
+    if args.reward_source != 'reader':
         clf_path = resolve(args.classifier)
         classifier = load_classifier_frozen(clf_path, device)
         print(f"Classifier loaded: {clf_path}")
         if args.reward_source == 'both':
             print("Reward source: both（分类器与证据头同时判对才计奖）")
+        elif args.reward_source == 'soft-both':
+            print("Reward source: soft-both（R = 两模型对正确类置信度的乘积）")
     else:
         print("Reward source: reader 自身分类头终判（不加载冻结分类器）")
 
@@ -166,10 +171,10 @@ def main():
             [p for p in reader.parameters() if p.requires_grad], lr=args.lr)
 
     builder = SubgraphBuilder()
-    if args.reward_source in ('reader', 'both') \
+    if args.reward_source in ('reader', 'both', 'soft-both') \
             and not hasattr(reader, 'forward_states_evidence'):
-        raise SystemExit("--reward-source reader/both 需要 evidence reader"
-                         "（base/attention 无自身分类头）")
+        raise SystemExit("--reward-source reader/both/soft-both 需要 evidence "
+                         "reader（base/attention 无自身分类头）")
     total_params = sum(p.numel() for p in reader.parameters())
     trainable_params = sum(p.numel() for p in reader.parameters() if p.requires_grad)
     print(f"Reader: {reader.config.kind}, params={total_params:,} "

@@ -7,5 +7,6 @@ from .eval_loop import (evaluate_reader, evaluate_fixed,  # noqa: F401
                         evaluate_classifier_full, merge_eval_json)
 from .build import (load_classifier_frozen, load_reader_from_checkpoint,  # noqa: F401
                     bootstrap_reader)
-from .common import (compute_reward, normalize_advantages,  # noqa: F401
-                     freeze_shared_layers, reveal_and_update_beliefs_batch)
+from .common import (compute_reward, compute_soft_both_reward,  # noqa: F401
+                     normalize_advantages, freeze_shared_layers,
+                     reveal_and_update_beliefs_batch)

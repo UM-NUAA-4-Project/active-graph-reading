@@ -63,6 +63,20 @@ def compute_reward(logits_i: torch.Tensor, label: torch.Tensor,
     return float(correct)  # binary
 
 
+def compute_soft_both_reward(clf_logits: torch.Tensor, reader_logits: torch.Tensor,
+                             label: torch.Tensor) -> float:
+    """软 both 奖励（reward_source='soft-both'）：概率乘积代替硬联合判定。
+
+    R = p_clf(y_true) · p_reader(y_true) ∈ [0, 1]——两模型对正确类的
+    softmax 置信度同高才接近 1，任一方给正确类的概率低则奖励按比例衰减
+    （与硬 both 的区别：部分正确可得部分奖励）。--reward 变换对此源不适用。
+    """
+    y = label.item()
+    p_clf = torch.softmax(clf_logits.float().flatten(), dim=-1)[y]
+    p_reader = torch.softmax(reader_logits.float().flatten(), dim=-1)[y]
+    return float(p_clf * p_reader)
+
+
 def normalize_advantages(rewards, neg_scale: float) -> List[float]:
     """Batch 级优势归一化 + 负侧降权。
 

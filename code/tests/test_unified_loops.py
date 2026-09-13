@@ -134,8 +134,17 @@ def test_rl_reward_source_reader():
 
 
 def test_rl_reward_source_both():
-    """reward_source='both'：冻结分类器（primary）与证据头终判（gate）
-    同时判对才计奖，三种 reward 变换均可跑通；base reader 应报 ValueError。"""
+    """reward_source='both'/'soft-both'：硬联合判定与软置信度乘积奖励；
+    三种 reward 变换 + soft-both 均可跑通；base reader 应报 ValueError。"""
+    from train_reader.core import compute_soft_both_reward
+    # 已知值单测：R = softmax(clf)[y] · softmax(reader)[y]
+    clf_l = torch.tensor([2.0, 0.0, 0.0])
+    rd_l = torch.tensor([0.0, 0.0, 1.0])
+    expected = (torch.softmax(clf_l, dim=-1)[2]
+                * torch.softmax(rd_l, dim=-1)[2]).item()
+    got = compute_soft_both_reward(clf_l, rd_l, torch.tensor([2]))
+    assert abs(got - expected) < 1e-6 and 0.0 < got < 1.0, (got, expected)
+
     graphs, labels = _make_graphs()
     labels_t = torch.stack(labels)
     builder = SubgraphBuilder()
@@ -149,18 +158,26 @@ def test_rl_reward_source_both():
                            graphs, labels_t, 2, 2, 'cpu', reward, 1.1,
                            (0.05, 0.1), 0.1, reward_source='both')
         assert {'loss', 'avg_R', 'acc', 'ev_acc', 'ev_acc_final'} <= set(m), m
+    m = rl_train_epoch(reader, _StubClassifier(), builder, opt,
+                       graphs, labels_t, 2, 2, 'cpu', 'asymmetric', 1.1,
+                       (0.05, 0.1), 0.1, reward_source='soft-both')
+    assert {'loss', 'avg_R', 'acc', 'ev_acc', 'ev_acc_final'} <= set(m), m
+    assert 0.0 <= m['avg_R'] <= 1.0, f'soft-both avg_R 应在 [0,1]: {m["avg_R"]}'
     base = build_reader(ReaderConfig.from_legacy(
         'base', hidden_dim=32, n_layers=2, dropout=0.1, stochastic=True))
-    try:
-        rl_train_epoch(base, _StubClassifier(), builder,
-                       torch.optim.Adam(base.parameters(), lr=1e-3),
-                       graphs, labels_t, 2, 2, 'cpu', 'binary', 1.1,
-                       (0.05, 0.1), 0.1, reward_source='both')
-        raise AssertionError('base reader + reward_source=both 应报 ValueError')
-    except ValueError:
-        pass
-    print('  RL reward_source=both: '
-          f'loss={m["loss"]:.4f} acc={m["acc"]:.3f} OK（base 拒绝 OK）')
+    for src in ('both', 'soft-both'):
+        try:
+            rl_train_epoch(base, _StubClassifier(), builder,
+                           torch.optim.Adam(base.parameters(), lr=1e-3),
+                           graphs, labels_t, 2, 2, 'cpu', 'binary', 1.1,
+                           (0.05, 0.1), 0.1, reward_source=src)
+            raise AssertionError(f'base reader + reward_source={src} '
+                                 '应报 ValueError')
+        except ValueError:
+            pass
+    print('  RL reward_source=both/soft-both: '
+          f'loss={m["loss"]:.4f} acc={m["acc"]:.3f} '
+          f'avg_R={m["avg_R"]:.3f} OK（base 拒绝 OK）')
 
 
 def run_all():

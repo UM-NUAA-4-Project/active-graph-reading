@@ -4,8 +4,9 @@
 保留 m7 的最新改进：teleport_if_stuck、batch 优势归一化 + 负侧降权、
 NaN 防护。attention 分支额外：belief 维护、micro-batch 梯度累积。
 奖励判定来源可选（reward_source）：冻结分类器（默认）、reader 自身
-证据头终判（--reward-source reader，仅 evidence kind），或 both（分类器
-与证据头同时判对才计奖，仅 evidence kind）。
+证据头终判（--reward-source reader，仅 evidence kind）、both（分类器
+与证据头同时判对才计奖，仅 evidence kind），或 soft-both（软 both：
+R = 两模型对正确类置信度的乘积，∈[0,1]，忽略 --reward 变换）。
 """
 
 import math
@@ -21,8 +22,8 @@ from tqdm import tqdm
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node, teleport_if_stuck
 from tools.seeds import deterministic_seed
-from .common import (compute_reward, normalize_advantages,
-                     reveal_and_update_beliefs_batch)
+from .common import (compute_reward, compute_soft_both_reward,  # noqa: F401
+                     normalize_advantages, reveal_and_update_beliefs_batch)
 
 MICRO_BATCH_SIZE = 16   # attention reader 梯度累积的 micro-batch（沿用 m6/m7）
 
@@ -62,18 +63,21 @@ def train_one_epoch(reader, classifier, builder, optimizer,
     - classifier：冻结上界分类器对揭示子图的判定（默认）；
     - reader：reader 自身分类头终判（仅 evidence kind，强制开启证据前向）；
     - both：分类器（primary）与证据头终判（gate）同时判对才计奖
-      （仅 evidence kind；tanh 变换在判错时钳到非正）。
+      （仅 evidence kind；tanh 变换在判错时钳到非正）；
+    - soft-both：软 both，R = p_clf(y_true)·p_reader(y_true)
+      （仅 evidence kind；忽略 reward_type 变换）。
     evidence_lambda: >0 且 reader 含证据流时加 λ·L_ev（逐步图类别监督 CE，
     不进策略梯度），总损失 = L_RL + λ·L_ev。
     """
-    if reward_source in ('reader', 'both') \
+    if reward_source in ('reader', 'both', 'soft-both') \
             and not hasattr(reader, 'forward_states_evidence'):
         raise ValueError(
-            "reward_source='reader'/'both' 需要 evidence reader"
+            "reward_source='reader'/'both'/'soft-both' 需要 evidence reader"
             "（base/attention 无自身分类头，无法参与联合/自身判定）")
     if use_belief is None:
         use_belief = hasattr(reader, 'init_beliefs')
-    use_evidence = (evidence_lambda > 0 or reward_source in ('reader', 'both')) \
+    use_evidence = (evidence_lambda > 0
+                    or reward_source in ('reader', 'both', 'soft-both')) \
         and hasattr(reader, 'forward_states_evidence')
     reader.train()
     if classifier is not None:
@@ -245,7 +249,7 @@ def train_one_epoch(reader, classifier, builder, optimizer,
 
             # ---- 奖励判定来源 ----
             clf_logits = None
-            if reward_source in ('classifier', 'both'):
+            if reward_source != 'reader':
                 logits_chunks = []
                 with torch.no_grad():
                     for c_start in range(0, len(final_states), 512):
@@ -262,18 +266,23 @@ def train_one_epoch(reader, classifier, builder, optimizer,
                 primary = torch.stack(reader_term_logits, dim=0)
             else:
                 primary = clf_logits
-            gate = reader_term_logits if reward_source == 'both' else None
+            gate = reader_term_logits \
+                if reward_source in ('both', 'soft-both') else None
 
             raw_rewards = []
             for k in range(len(final_states)):
-                R = compute_reward(
-                    primary[k:k + 1], final_labels[k], reward_type, ln_k,
-                    gate_logits=(gate[k] if gate is not None else None))
                 correct = 1.0 if primary[k].argmax(dim=-1).item() \
                     == final_labels[k].item() else 0.0
                 if gate is not None \
                         and gate[k].argmax(dim=-1).item() != final_labels[k].item():
                     correct = 0.0
+                if reward_source == 'soft-both':
+                    R = compute_soft_both_reward(primary[k], gate[k],
+                                                 final_labels[k])
+                else:
+                    R = compute_reward(
+                        primary[k:k + 1], final_labels[k], reward_type, ln_k,
+                        gate_logits=(gate[k] if gate is not None else None))
                 raw_rewards.append(R)
                 total_R += R
                 total_trajs += 1
