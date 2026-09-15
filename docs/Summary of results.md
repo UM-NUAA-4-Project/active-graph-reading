@@ -1,16 +1,89 @@
 # Summary of Experiments
 
-## Reader
+## Reader 结构
 
-1.base：只有GNN+MLP决策头，使用冻结分类器分类
+1.base：只有GNN、MLP决策头。训练时按照前沿节点分数分布温度采样，预算使用完后得到子图。最后使用冻结分类器分类
 
-2.attention：使用注意力机制维护信念，辅助决策。在base reader的基础上，在决策前加入注意力机制改变前沿节点的编码再给MLP决策。由于设计上的冗余导致性能与base reader没有区分度，后文不展示评估数据
+![1789463173933](images/Summaryofresults/1789463173933.png)2.attention：使用注意力机制维护信念，辅助决策。在base reader的基础上，在决策前加入注意力机制改变前沿节点的编码再给MLP决策。由于设计上的冗余导致性能与base reader没有区分度，不展示评估数据
 
-3.evidence：拥有决策头与分类头，而这共用一个GNN。决策头：MLP；分类头使用LSTM状态+attention池化层+MLP分类。这样设计的reader 可以突破分类器的限制
+![1789463376735](images/Summaryofresults/1789463376735.png)3.evidence：拥有决策头与分类头，而这共用一个GNN。决策头：MLP；分类头使用LSTM状态+attention池化层+MLP分类。这样设计的reader 可以突破分类器的限制
+
+![1789462920172](figures/evidence-reader-1.png)
+
+## Reader 两阶段训练
+
+### base reader
+
+BC阶段：
+
+* 损失函数：教师动作的逐步负对数似然（行为克隆）
+
+$$
+\mathcal{L}_{act}=\frac{1}{|\mathcal{D}|}\sum_{\tau\in\mathcal{D}}\sum_{t=1}^{T_\tau}-\log\,\pi_\theta\big(a_t^{tea}\mid s_t\big)
+$$
+
+其中 $s_t$ 为第 $t$ 步的已揭示状态，$a_t^{tea}$ 为教师轨迹在该步的选点。
+
+RL阶段：
+
+* 奖励源：冻结的全图分类器
+* 奖励函数：asymmetric 读满预算后对最终揭示子图 $G_i$ 判定，判对给 $+1$、判错给 $-0.1$：
+
+$$
+R_i=\begin{cases}+1, & \arg\max\, z^{clf}(G_i)=y_i\\ -0.1, & \text{否则}\end{cases}
+$$
+
+其中 $z^{clf}(G_i)$ 为冻结分类器对揭示子图的 logits，$y_i$ 为真标签。
+
+* 损失函数：REINFORCE（自采样轨迹），batch 优势归一化(可关闭，$A_i$ 变为 $R_i$)
+
+$$
+\mathcal{L}_{RL}=-\frac{1}{N}\sum_{i=1}^{N}A_i\sum_{t=1}^{T_i}\log\,\pi_\theta(a_t\mid s_t),\qquad A_i=\frac{R_i-\mu_R}{\sigma_R+\varepsilon}
+$$
+
+### evidence reader
+
+BC阶段：
+
+* 损失函数：动作克隆 + 证据头监督联合（证据头 CE 在每步 reveal 后与读满后的补充前向各计一次）
+
+$$
+\mathcal{L}_{BC}=\mathcal{L}_{act}+\lambda_{ev}\,\mathcal{L}_{ev}
+$$
+
+$\mathcal{L}_{act}$ 同 base reader；$\mathcal{L}_{ev}=\frac{1}{M}\sum_m \mathrm{CE}\big(z^{ev}_m,\,y_m\big)$ 为证据头对图标签的交叉熵。
+
+RL阶段
+
+* 奖励源：classifier、reader、both、soft-both
+* 奖励函数：
+
+* [ ] classifier、reader、both：判定指示 $c_i$ + asymmetric 变换
+* [ ] soft-both：软乘积（不经判定指示）。记 $z^{ev}(G_i)$ 为证据头终判 logits：
+
+$$
+c_i=\begin{cases}\mathbb{1}\big[\arg\max z^{clf}(G_i)=y_i\big], & \text{classifier}\\[2pt] \mathbb{1}\big[\arg\max z^{ev}(G_i)=y_i\big], & \text{reader}\\[2pt] \mathbb{1}\big[\arg\max z^{clf}=y_i\big]\cdot\mathbb{1}\big[\arg\max z^{ev}=y_i\big], & \text{both}\end{cases}\qquad R_i=\begin{cases}+1, & c_i=1\\ -0.1, & c_i=0\end{cases}
+$$
+
+$$
+R_i^{\text{soft-both}}=\underbrace{\mathrm{softmax}\big(z^{ev}(G_i)\big)_{y_i}}_{P_{reader}(y)}\cdot\underbrace{\mathrm{softmax}\big(z^{clf}(G_i)\big)_{y_i}}_{P_{classifier}(y)}\;\in[0,1]
+$$
+
+* [ ] 可以选择开启优势归一化
+
+* 损失函数：与 base 同一 REINFORCE，另加证据流监督
+
+$$
+\mathcal{L}=\mathcal{L}_{RL}+\lambda_{ev}\,\mathcal{L}_{ev}
+$$
 
 ## 基线
 
-Random：随机从前沿节点揭示；BFS：依次选择所有邻居；Max-Frontier-Degree：选择前沿节点中度数最大的节点；
+Random：随机从前沿节点揭示；
+
+BFS：依次选择所有邻居；
+
+Max-Frontier-Degree：选择前沿节点中度数最大的节点；
 
 Random-Walk：DFS，每次只选择上次揭示节点的邻居；
 
@@ -25,9 +98,12 @@ SAGPool适应协议：两阶段：全图 scorer 训练 → 协议选点策略。
 
 ## 实验设置
 
-1.冻结分类器：reader 和 基线 读出的子图在冻结分类器上评估可以判断是否阅读到关键的特征。工程上可用联合训练于提升系统的指标，但是无法评估是否获取到关键的特征。
+1. 冻结分类器：reader 和 基线 读出的子图在冻结分类器上评估可以判断是否阅读到关键的特征。工程上可用联合训练于提升系统的指标，但是无法评估是否获取到关键的特征。
+2. RL阶段的seed使用伪随机公式生成：deterministic formula: (idx\*31 + seed\_i\*17 + 7) % n\_nodes。其中idx为图在数据集中的索引
+3. Reader在RL阶段训练时采用分布采样，评估时使用argmax
+4. 基线选择前沿节点都是采取argmax，相同分数取id小的节点
 
-2.奖励R判断方式：分类器分类正确、soft-both：$R=P_{reader}(y)⋅P_{classifier}(y)$、hard-both：分类器和 reader 同时分类正确、reader分类正确。
+---
 
 ## 基础对比实验
 
