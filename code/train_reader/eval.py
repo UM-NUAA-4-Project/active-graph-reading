@@ -64,9 +64,12 @@ def main():
                         help='reader checkpoint；与 --strategy 二选一')
     parser.add_argument('--strategy', nargs='+', default=None,
                         choices=['random', 'bfs', 'max-frontier-degree',
-                                 'random-walk', 'sagpool'],
+                                 'random-walk', 'sagpool', 'subgraphx',
+                                 'softmask', 'agentnet'],
                         help='固定策略名（可同时多个，默认用法 --strategy random bfs；'
-                             'random-walk/sagpool/subgraphx 为 baseline/ 协议适配基线）')
+                             'random-walk/sagpool/subgraphx/softmask/agentnet 为 '
+                             'baseline/ 协议适配基线；softmask/agentnet 需 scorer '
+                             'checkpoint，--strategy-ckpt 单值故每命令只跑一个）')
     parser.add_argument('--strategy-ckpt', default='',
                         help='sagpool scorer checkpoint'
                              '（默认 baseline/artifacts/{ds}/sagpool.pt）')
@@ -125,7 +128,8 @@ def main():
     agents = []
     if is_fixed:
         print(f"Strategies: {' '.join(args.strategy)}")
-        if any(s in ('random-walk', 'sagpool', 'subgraphx') for s in args.strategy):
+        if any(s in ('random-walk', 'sagpool', 'subgraphx',
+                     'softmask', 'agentnet') for s in args.strategy):
             # baseline/ 位于仓库根：注册协议适配基线策略
             import sys as _sys
             from tools.paths import REPO_ROOT
@@ -147,6 +151,23 @@ def main():
                 agent = SagpoolStrategy()
                 agent.load(str(ckpt), device)
                 print(f"SAGPool scorer: {ckpt}")
+            elif strategy in ('softmask', 'agentnet'):
+                if strategy == 'softmask':
+                    from baseline.softmask import SoftmaskStrategy
+                    agent = SoftmaskStrategy()
+                else:
+                    from baseline.agentnet import AgentnetStrategy
+                    agent = AgentnetStrategy()
+                ckpt = (resolve(args.strategy_ckpt) if args.strategy_ckpt
+                        else CODE_DIR.parent / 'baseline' / 'artifacts'
+                             / spec.name / f'{strategy}.pt')
+                if not ckpt.exists():
+                    raise SystemExit(
+                        f"{strategy} scorer checkpoint 不存在: {ckpt}\n"
+                        f"先训练: python baseline/run_{strategy}.py "
+                        f"--dataset {spec.name} --root <root>")
+                agent.load(str(ckpt), device)
+                print(f"{strategy} scorer: {ckpt}")
             elif strategy == 'subgraphx':
                 from baseline.subgraphx import SubgraphXStrategy
                 agent = SubgraphXStrategy(

@@ -4,8 +4,9 @@
 GNNs*，用户本地 `soft-mask-gnn-main`，PyG 官方代码）的原版端到端工作流，
 以及移植为 AGR 协议基线的接入方案。
 
-**状态：方案设计，未实现。** 接入后应在 `protocol-adaptation.md` 增补
-决策表（理由论证放那边，本文只记录流程与方案）。
+**状态：已实现（2026-09-15，cifar10 冒烟通过）。** 实现落点：
+`baseline/softmask.py`（SoftMaskModel + SoftmaskStrategy）+ 
+`baseline/run_softmask.py`；决策表见 `protocol-adaptation.md` §6。
 
 一句话总结：Soft-Mask 与 SAGPool 同类——**分类模型内部的软掩码打分层**。
 每层由掩码生成器给每个节点输出 $m_v\in(0,1)$，消息传递被掩码调制

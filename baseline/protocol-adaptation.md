@@ -27,7 +27,11 @@ Budget check),架构决策见 `docs/decisions.md`;本文不重复协议定义,�
 2. **训练全知、评测可见**:训练阶段允许使用完整图监督(与主方法的
    BC/RL 训练同权);推理时切换到可见子图。由此产生的分布漂移是基线
    设定的一部分,不是 bug。
-3. **预算记账**:只有"首次揭示"消耗预算;游走重访、搜索回溯、瞬移不消耗。
+3. **预算记账**:只有"首次揭示"消耗预算;游走重访、搜索回溯不消耗。
+   瞬移(teleport_if_stuck,reader lockstep 评估在 frontier 空且预算未满时
+   调用)= 一次伪随机 reveal,**消耗 1 预算**(reveal_action.py docstring
+   明确);固定策略 rollout 契约无瞬移,frontier 空(预算未满)即终止
+   rollout,剩余预算作废——个别策略的内部兜底见 §3/§5/§6/§7。
 4. **确定性**:同一 (graph, seed_i) 必须产出同一轨迹。策略内部随机源从
    `(seed_node, n_nodes)` 算术播种(禁止 `hash(tuple)`,其进程间随机化);
    平分 tie-break 取小 id。
@@ -95,7 +99,45 @@ oracle 口径。它回答的问题是:"学习到的序贯策略,相对'直接对
 变体,可退化为每步 greedy lookahead(仅对当前 frontier 逐一评估,无树搜索),
 留作 ablation,暂未实现。
 
-## 6. 已否决选项(决策记录,防止重复讨论)
+## 6. Soft-Mask(WWW 2021)——协议适配(已实现)
+
+复刻官方实现骨架(用户本地 soft-mask-gnn-main,PyG 版,`baseline/softmask.py`
+DGL 移植):SMG 变体,3×(WeightConv1 掩码生成 → SparseConv 掩码调制卷积)、
+add-pool 读出、2 层 MLP 头;超参对齐原默认(hidden 128 / dropout 0.5 /
+lr 5e-4 / wd 1e-4 / seed 777)。工作流详见 `softmask-gnn-workflow.md`。
+
+| 维度 | 原文设定 | 本实现 | 理由 |
+|---|---|---|---|
+| 卷积 | GCN 式消息传递 | WeightConv1 掩码生成 + SparseConv 掩码调制(DGL 移植) | 原版骨架;DGL 复刻,聚合排除自环(原版 remove_self_loops,以 not_self 边权实现) |
+| 边特征 | 分类管线弃用(TU 无边特征) | 小 MLP 编码为**每边标量权重**,走 SparseConv 原版 edge_weight 消息通道 | PPA/cifar10 边特征是协议可见信息,必须消费;**末层零初始化**使初始行为与无边权原版逐位一致,调制由训练习得 |
+| 无节点特征 | 不存在该概念(TU 必有) | 共享 node token | 对齐 sagpool.py 约定 |
+| 训练 | 10 折 CV + NLL + 早停 | 完整图标准监督(单图 batch CE),自环 remove+add 归一 | 原则 2:训练全知合法;与 run_sagpool 同约定 |
+| **评测选点** | **无选点(软掩码加权,全节点保留)** | **每步在可见子图上重算第一层掩码分数,取最高分 frontier 节点** | 软掩码 m∈(0,1) 无序贯入口;重打分口径与 SAGPool 适配一致(P3/P4);平分取小 id(原则 4) |
+| 评分函数 | 各层动态重算 | 评测取**第一层**(pre-sigmoid logit) | 首层输入为原始特征,与逐节点选点对应;sigmoid 单调,排序不变 |
+| 终判 | 模型自身读出头 | 冻结上界分类器(P5) | 与全部基线同口径 |
+
+## 7. AgentNet(ICLR 2023)——协议适配(已实现)
+
+复现官方实现核心(用户本地 AgentNet-main,PyG 版,`baseline/agentnet.py`
+DGL 单 agent 移植):移动头 Q·K 注意力([邻居‖当前‖边])+ BSEU 探索偏置
+(back/stay/explored/unexplored,visited 衰减 0.9),gumbel-softmax(hard,
+straight-through) 选边,节点/agent 残差更新 + 逐步读出累加。超参对齐
+README(hidden 128 / steps 16 / lr 1e-4 / wd 0.01 / clip 1.0 / τ=2/3 /
+seed 777)。工作流详见 `agentnet-workflow.md`。
+
+| 维度 | 原文设定 | 本实现 | 理由 |
+|---|---|---|---|
+| agent 数 | K=18~26 并行游走 | **单 agent** | 预算语义逐字节对齐(每步揭示 1 节点);训练/评测同构 |
+| time conditioning | TimeEmbedding(固定 num_steps+1) | **移除** | 评测预算步数可变,固定表会越界;单 agent 下收益有限 |
+| 初始位置 | 随机均匀撒/注意力选址 | **seed 节点**(P2) | 对齐 AGR 种子协议 |
+| **移动候选** | **当前位置全部邻居(完整图)** | **当前位置的 frontier 邻居** | 原版用未观测结构(P1/P3 违规);限缩后为深度型揭示(与 random-walk 候选结构等价,构成"均匀随机 vs 学习型选点分布"控制变量对照) |
+| 往返/停留 | self-loop stay + back 偏置,可任意往返 | 已揭示区内**BSEU 打分导航**(不消耗预算,步数上限 4n);揭示步=frontier 候选 argmax | 移动语义保留;区域内移动不消耗预算(原则 3);rollout_strategy 不瞬移,导航耗尽返回 None 结束 |
+| 训练 | TU 数据端到端分类 NLL(游走 gumbel 可微) | 完整图同款端到端监督(单图 batch),自环归一 | 原则 2;评测切换可见子图(分布漂移属基线设定) |
+| 图对称化 | TU 对称图 | **无向化重建并保留边特征**(`symmetrize_with_feat`;dgl.to_bidirected 丢 edata) | cifar10 DGL 图为单向边,移动/卷积按无向语义查边,与协议无向 frontier 语义对齐 |
+| 确定性 | test_argmax(τ→1e-6) | argmax + 平分取小 id(原则 4) | 无 gumbel 噪声 |
+| 终判 | 模型自身读出头 | 冻结上界分类器(P5) | 与全部基线同口径 |
+
+## 8. 已否决选项(决策记录,防止重复讨论)
 
 | 选项 | 否决理由 |
 |---|---|

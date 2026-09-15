@@ -4,10 +4,13 @@
 arXiv 2206.11010，用户本地 `AgentNet-main`，PyG 官方参考实现）的原版
 端到端工作流，以及移植为 AGR 协议基线的接入方案。
 
-**状态：方案设计，未实现。** AgentNet 是二者中唯一的**原生序贯模型**
-（多智能体逐显式移动选点），与 AGR 的揭示循环同构度远高于 SAGPool/
-Soft-Mask 这类打分层；但它的移动假设完整图可见、可往返、无预算语义，
-接入是"策略直译"而非"打分器移植"，改造面比 SAGPool 大。
+**状态：已实现（2026-09-15，cifar10 冒烟通过）。** 实现落点：
+`baseline/agentnet.py`（AgentNetModel 单 agent DGL 移植 + AgentnetStrategy）+
+`baseline/run_agentnet.py`；决策表见 `protocol-adaptation.md` §7。
+AgentNet 是二者中唯一的**原生序贯模型**（多智能体逐显式移动选点），与
+AGR 的揭示循环同构度远高于 SAGPool/Soft-Mask 这类打分层；但它的移动假设
+完整图可见、可往返、无预算语义，接入是"策略直译"而非"打分器移植"，
+改造面比 SAGPool 大。
 
 ---
 
@@ -82,8 +85,9 @@ eval.py --strategy agentnet → AgentnetStrategy(BaseReader)
        decay 状态为策略内部状态，合法）；评测态 τ→0 取 argmax（确定性）
     4) 返回得分最高的候选 frontier 节点 → reveal_node，agent 移动过去
   预算记账：reveal_node 首次揭示才消耗（原则 3）；agent 空步/停留不消耗
-  死角处理：N(v_t) ∩ frontier 为空（走到局部死角）→ teleport_if_stuck
-  （复用主仓机制，语义 = 撤回到可继续生长的位置，不消耗预算）
+  死角处理：N(v_t) ∩ frontier 为空（走到局部死角）→ 在已揭示区内用
+  BSEU 打分导航（区域内移动不消耗预算，步数上限 4n；rollout 契约不瞬移，
+  瞬移实际会揭示节点并消耗预算），导航耗尽返回 None 结束 rollout
   终判：读满预算 → 冻结分类器（P5）→ 统一 eval_fixed.json
 ```
 
@@ -109,7 +113,7 @@ eval.py --strategy agentnet → AgentnetStrategy(BaseReader)
 | BSEU/visited          | 保留，作为策略内部状态               | visited ⊆ 已揭示区 + 历史位置，不引入未观测信息（原则 1）                                                                                                                                                                                                                                           |
 | gumbel 噪声           | 评测关闭（argmax）                   | 原则 4 确定性；训练档 1 保留原版 τ=2/3                                                                                                                                                                                                                                                              |
 | 初始位置              | seed 节点                            | 对齐 AGR 种子协议（P2），弃用原版随机/注意力选址                                                                                                                                                                                                                                                     |
-| 死角                  | teleport_if_stuck                    | 游走模型特有问题（random-walk 同款处理），瞬移不消耗预算                                                                                                                                                                                                                                             |
+| 死角                  | 已揭示区内 BSEU 导航                 | 局部死角在区域内移动（不计预算，上限 4n）到有 frontier 候选处；瞬移会揭示节点并消耗预算，rollout_strategy 亦不调用瞬移，导航耗尽返回 None 结束（与固定策略契约一致）                                                                                                                                                          |
 | 已知风险              | 无文献先例                           | 原版每步更新的是"被占据节点"的表征，限 frontier 后节点更新范围缩小，分类器输入分布变化更大；属基线设定，结果须如实呈现                                                                                                                                                                               |
 
 ### 2.4 复现命令（实现后）
