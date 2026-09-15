@@ -2,13 +2,21 @@
 
 ## Reader 结构
 
-1.base：只有GNN、MLP决策头。训练时按照前沿节点分数分布温度采样，预算使用完后得到子图。最后使用冻结分类器分类
+### base
 
-![1789463173933](images/Summaryofresults/1789463173933.png)2.attention：使用注意力机制维护信念，辅助决策。在base reader的基础上，在决策前加入注意力机制改变前沿节点的编码再给MLP决策。由于设计上的冗余导致性能与base reader没有区分度，不展示评估数据
+只有GNN、MLP决策头。训练时按照前沿节点分数分布温度采样，预算使用完后得到子图。最后使用冻结分类器分类
 
-![1789463376735](images/Summaryofresults/1789463376735.png)3.evidence：拥有决策头与分类头，而这共用一个GNN。决策头：MLP；分类头使用LSTM状态+attention池化层+MLP分类。这样设计的reader 可以突破分类器的限制
+![base-reader](figures/base-reader.png)
 
-![1789462920172](figures/evidence-reader-1.png)
+### attention
+
+使用注意力机制维护信念，辅助决策。在base reader的基础上，在决策前加入注意力机制改变前沿节点的编码再给MLP决策。由于设计上的冗余导致性能与base reader没有区分度，不展示评估数据
+
+![attention-reader](figures/attention-reader.png)
+
+### evidence
+
+拥有决策头与分类头，而这共用一个GNN。决策头：MLP；分类头使用LSTM状态+attention池化层+MLP分类。这样设计的reader 可以突破分类器的限制![1789462920172](figures/evidence-reader-1.png)
 
 ## Reader 两阶段训练
 
@@ -96,12 +104,53 @@ SAGPool：原版 SAGPool 是分类模型内部的可微池化层。可学习打�
 
 SAGPool适应协议：两阶段：全图 scorer 训练 → 协议选点策略。推理中，每步在可见子图上重打分、选 1 个 frontier 节点
 
+Soft-Mask：原版 Soft-Mask（WWW 2021）同样是分类模型内部的池化层（软掩码版）。掩码生成器每层给每个节点输出软掩码 $m_v\in(0,1)$，消息传递被掩码调制（$x\odot m$ 参与聚合），端到端分类监督下逐层软提取子结构。
+
+- 掩码每层动态重算、软连续（sigmoid 概率），不是排序/选点——全节点保留、按权重缩放；
+- 掩码生成的邻域聚合在**完整图**上进行（评测态不可见的信息）；
+- 掩码仅由分类损失间接监督；无预算/时序概念。
+
+Soft-Mask适应协议（方案设计）：与 SAGPool 同构的两阶段：全图 scorer 训练 → 推理中每步在可见子图上重算第一层掩码分数、选 1 个 frontier 节点。与 SAGPool 构成"软加权 vs 硬 top-k"的成对对照
+
+AgentNet：原版 AgentNet（ICLR 2023）是多智能体图游走分类器：K 个 agent 带可学习嵌入，每步在当前位置的邻居上做注意力（+可学习 BSEU 探索偏置）经 gumbel-softmax 选边移动，逐步读出累加分类。整条游走端到端可微，训练信号只有分类 NLL。
+
+- 移动候选是当前位置的**全部邻居**——完整图结构，评测态不可见；
+- agent 可往返/停留（self-loop、back 偏置），无预算概念（K agent × 16 步 ≫ 5%~15% 节点预算）；
+- 初始选址用全图信息（随机选址除外）。
+
+AgentNet适应协议（方案设计）：策略直译而非打分器移植：单 agent 游走一步 ≙ 揭示 1 个 frontier 节点；候选限缩为当前位置的 frontier 邻居，初始位置 = seed，死角用 teleport 兜底。候选结构与 Random-Walk 等价（深度型），构成"DFS式均匀随机 vs DFS式学习型选点分布"的控制变量对照
+
+## 协议
+
+Active Graph Reading（AGR）：预算受限的图读取任务。模型不接触完整图，从 seed 节点出发逐步"揭示"节点，预算耗尽后对已揭示部分做图分类。
+
+| #  | 约束     | 内容                                                                                                                                                   |
+| -- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| P1 | 预算     | Budget = 揭示节点数（**不含 seed**）；按图取比例 $B=\mathrm{round}(ratio \times n_{nodes})$；预算档 cifar10/ppa = 5/10/15%，COLLAB = 10/15/20% |
+| P2 | 种子     | 确定性伪随机公式$(idx \times 31 + seed_i \times 17 + 7) \bmod n_{nodes}$，idx 为图索引；每图多种子（n_seeds）取平均                                  |
+| P3 | 选点约束 | 每步只能从当前**frontier**（与已揭示区相邻的未揭示节点）中选 → 揭示区域与 seed 始终连通                                                         |
+| P4 | 可见信息 | 已揭示节点特征 + 已揭示边（含特征）+ frontier 边的**one-ended 特征（免费可见）**；frontier 节点的身份可见、节点特征不可见                        |
+| P5 | 终判     | 读满预算后对最终揭示子图分类：base reader 与全部基线用冻结上界分类器；evidence reader 用自身证据头终判（冻结分类器判定作参照）                         |
+| P6 | 自环     | 揭示子图构图时每节点恰好 1 条自环（remove+add 归一）                                                                                                   |
+
+补充规则：
+
+- **预算记账**：只有首次揭示消耗预算；重访、瞬移不消耗。frontier 为空但预算未耗尽（seed 落入孤立小分量）时瞬移（teleport）到未揭示节点继续，不消耗预算；
+- **Visible ≠ Revealed**：frontier 边特征在揭示前即可查询（`state.get_frontier_edge_feat(u, v)`，不计预算）——v1 协议的核心区分点，选点可以"先看边再决定揭谁"；
+- **评估确定性**：同一 (图, seed_i) 必须产出同一轨迹；策略内部随机源按 (seed_node, n_nodes) 播种；分数平分取小 id；评估用 argmax（训练时按分布采样）。
+
+单步循环：
+
+```
+观察（已揭示区 + frontier 边特征）→ 策略从 frontier 选 1 点 → reveal
+→ 预算记账（首次揭示 -1）→ 预算耗尽或 frontier 空（teleport）→ 循环 → 终判
+```
+
 ## 实验设置
 
 1. 冻结分类器：reader 和 基线 读出的子图在冻结分类器上评估可以判断是否阅读到关键的特征。工程上可用联合训练于提升系统的指标，但是无法评估是否获取到关键的特征。
-2. RL阶段的seed使用伪随机公式生成：deterministic formula: (idx\*31 + seed\_i\*17 + 7) % n\_nodes。其中idx为图在数据集中的索引
-3. Reader在RL阶段训练时采用分布采样，评估时使用argmax
-4. 基线选择前沿节点都是采取argmax，相同分数取id小的节点
+2. Reader在RL阶段训练时采用分布采样。
+3. 基线和reader在评估时都使用argmax选择前沿节点，相同分数取id小的节点
 
 ---
 
