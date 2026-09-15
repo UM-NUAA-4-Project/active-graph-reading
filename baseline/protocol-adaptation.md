@@ -56,6 +56,8 @@ Budget check),架构决策见 `docs/decisions.md`;本文不重复协议定义,�
 复刻官方实现骨架(用户本地 SAGPool-master,PyG 版):3×(conv → gate →
 top-k 门控池化) 层级结构、逐层 mean+max 读出求和、3 层 MLP 头;超参对齐
 原默认(hidden 128 / pool_ratio 0.5 / dropout 0.5 / lr 5e-4 / wd 1e-4)。
+**端到端工作流(原版训练管线 → 两阶段改造:全图 scorer 训练 + 协议合规
+评测)的逐步对照见 `sagpool-workflow.md`**;本节只记录决策与理由。
 
 | 维度 | 原文设定 | 本实现 | 理由 |
 |---|---|---|---|
