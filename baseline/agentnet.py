@@ -415,7 +415,7 @@ class AgentnetStrategy(BaseReader):
                     visit, is_prev)
                 nxt = nbrs[self._model.move_choice_eval(logits)]
                 h = self._apply_move(graph_state, g, ids, h, edge_emb, edge_map,
-                                     id_to_row, nxt)
+                                     id_to_row, nxt, g_nbrs)
                 cand = self._cand_from_frontier(graph_state)
             if not cand:
                 return None
