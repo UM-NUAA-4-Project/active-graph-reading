@@ -39,4 +39,14 @@ _ssh*.py
 code/result/**/*.json
 
 #paper
-paper/
+paper/check
+paper/scripts
+*.sty
+*.bst
+*.log
+*.out
+*.aux
+*.bat
+paper/README.md
+paper/iclr_draft/README.md
+
