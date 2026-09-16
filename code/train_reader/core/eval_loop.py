@@ -8,6 +8,10 @@ evidence reader：rollout 走 forward_states_evidence（选点仍与 base 一致
 终判 = 读满预算后补充一次证据前向的 ev_logits argmax（决策-分类一体，
 含最后一次 reveal 的证据）；冻结上界分类器对同一批最终子图的判定写为
 参照键 acc_clf_*（并落盘 acc_clf_reference）。
+
+固定策略侧的 agentnet 基线自带读出分类头（不依赖外部分类器，与 evidence
+同类）：协议终判仍为冻结分类器（与其他基线同口径），另经 own_predict
+记录自身头判定 acc_own_*（落盘 acc_own_reference_{split}）。
 """
 
 import random
@@ -237,6 +241,10 @@ def evaluate_fixed(strategy, classifier, builder, graphs, labels,
     per_seed_outcomes = {i: defaultdict(list) for i in range(n_seeds)}
     per_seed_per_class = {i: defaultdict(lambda: defaultdict(list))
                           for i in range(n_seeds)}
+    # 自带读出头的策略（agentnet）：额外记录自身头对同一揭示子图的判定
+    own_fn = getattr(agent, 'own_predict', None)
+    per_budget_own_correct = defaultdict(int)
+    per_budget_own_outcomes = defaultdict(list)
     all_subgraphs, all_labels, all_budgets, all_seed_ids = [], [], [], []
     for local_i in tqdm(range(len(graphs)), desc="  Rolling"):
         g_raw = graphs[local_i]
@@ -268,15 +276,23 @@ def evaluate_fixed(strategy, classifier, builder, graphs, labels,
             per_budget_outcomes[budget].append(correct)
             per_seed_outcomes[seed_i][budget].append(correct)
             per_seed_per_class[seed_i][budget][label].append(correct)
+            if own_fn is not None:
+                own_logits = own_fn(all_subgraphs[i + j])
+                own_correct = 1.0 if own_logits.argmax(dim=-1).item() == label else 0.0
+                per_budget_own_correct[budget] += own_correct
+                per_budget_own_outcomes[budget].append(own_correct)
 
     return _summarize(budget_options, graphs, per_budget_correct,
                       per_budget_total, per_budget_outcomes,
-                      per_seed_outcomes, per_seed_per_class)
+                      per_seed_outcomes, per_seed_per_class,
+                      own_correct=(per_budget_own_correct if own_fn is not None else None),
+                      own_outcomes=(per_budget_own_outcomes if own_fn is not None else None))
 
 
 def _summarize(budget_options, graphs, per_budget_correct, per_budget_total,
                per_budget_outcomes, per_seed_outcomes, per_seed_per_class,
-               clf_correct=None, clf_outcomes=None):
+               clf_correct=None, clf_outcomes=None,
+               own_correct=None, own_outcomes=None):
     results = {}
     for b in budget_options:
         results[f'acc_{int(b * 100)}%'] = per_budget_correct[b] / max(per_budget_total[b], 1)
@@ -289,6 +305,13 @@ def _summarize(budget_options, graphs, per_budget_correct, per_budget_total,
         results['acc_clf_overall'] = (sum(clf_correct.values()) /
                                       max(sum(per_budget_total.values()), 1))
         results['clf_outcomes'] = {b: list(clf_outcomes[b]) for b in budget_options}
+    if own_correct is not None:
+        # 自带头策略（agentnet）：自身读出头对同一批揭示子图的判定
+        for b in budget_options:
+            results[f'acc_own_{int(b * 100)}%'] = own_correct[b] / max(per_budget_total[b], 1)
+        results['acc_own_overall'] = (sum(own_correct.values()) /
+                                      max(sum(per_budget_total.values()), 1))
+        results['own_outcomes'] = {b: list(own_outcomes[b]) for b in budget_options}
     results['n_graphs'] = len(graphs)
     results['outcomes'] = {b: list(per_budget_outcomes[b]) for b in budget_options}
     n_seeds = len(per_seed_outcomes)
@@ -360,6 +383,10 @@ def merge_eval_json(parts, on_conflict=None):
                 split = next((s for s in _SPLIT_KEYS if s in part), None)
                 if split is not None:
                     out[f'acc_clf_reference_{split}'] = value
+            elif key == 'acc_own_reference':
+                split = next((s for s in _SPLIT_KEYS if s in part), None)
+                if split is not None:
+                    out[f'acc_own_reference_{split}'] = value
             elif key == 'config':
                 cfg = out.setdefault('config', {})
                 for ck, cv in value.items():
@@ -419,6 +446,12 @@ def build_eval_json(results, split: str, key: str, n_seeds: int,
         # evidence 参照指标落盘：冻结分类器对最终揭示子图的判定
         out['acc_clf_reference'] = {
             f'{b:.2f}': budget_stats(results['clf_outcomes'][b])
+            for b in budget_options
+        }
+    if 'own_outcomes' in results:
+        # 自带头策略（agentnet）参照指标落盘：自身读出头对揭示子图的判定
+        out['acc_own_reference'] = {
+            f'{b:.2f}': budget_stats(results['own_outcomes'][b])
             for b in budget_options
         }
     return out

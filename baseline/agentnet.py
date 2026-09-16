@@ -330,6 +330,16 @@ class AgentnetStrategy(BaseReader):
     def reset(self) -> None:
         self._reset_walk()
 
+    def own_predict(self, sub_g):
+        """自身读出头对揭示子图的分类（评测双口径记录，对齐 evidence 的
+        acc_* / acc_clf_* 惯例：协议终判仍为冻结分类器，本头为参照）。
+
+        输入 SubgraphBuilder 产出的揭示子图（已双向+自环+特征）；按训练
+        约定重整构图后从头走一遍 agent 游走读出 → [1, n_classes] logits。
+        """
+        g = dgl.add_self_loop(symmetrize_with_feat(dgl.remove_self_loop(sub_g)))
+        return self._model(g.to(self._device))
+
     def on_new_frontier(self, edges) -> None:
         """rollout 开始时经 initial_frontier 推断 seed，初始化 walk 状态。"""
         if self._pos is None and edges:
