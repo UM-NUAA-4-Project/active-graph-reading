@@ -45,6 +45,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--root', required=True, help='数据集根目录')
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='每 split 图数上限（0=全部；PPA 必配）')
+    parser.add_argument('--stratified', action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help='max_graphs 截断用分层采样（按类别比例、固定种子，'
+                             'train/test 各自分层）；--no-stratified 退回前缀截断')
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--lr', type=float, default=5e-4)
     parser.add_argument('--weight-decay', type=float, default=1e-4)
@@ -76,7 +80,8 @@ def main():
     print(f"Device: {device}")
 
     ds = get_dataset(args.dataset, root=args.root,
-                     splits=['train', 'test'], max_graphs=args.max_graphs)
+                     splits=['train', 'test'], max_graphs=args.max_graphs,
+                     stratified=args.stratified)
     spec = ds.spec
     print(f"Dataset {spec.name}: train={len(ds.train_graphs)} test={len(ds.test_graphs)}")
 
@@ -147,6 +152,7 @@ def main():
                'config': {'hidden': args.hidden, 'n_layers': args.layers,
                           'dropout': args.dropout,
                           'max_graphs': args.max_graphs,
+                          'stratified': args.stratified,
                           'epochs': args.epochs}},
               out_path.with_suffix('.history.json'))
     print(f"Best test_acc={best_acc:.4f} → {out_path}")

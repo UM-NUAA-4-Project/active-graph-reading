@@ -110,7 +110,7 @@ Soft-Mask：原版 Soft-Mask（WWW 2021）同样是分类模型内部的池化�
 - 掩码生成的邻域聚合在**完整图**上进行（评测态不可见的信息）；
 - 掩码仅由分类损失间接监督；无预算/时序概念。
 
-Soft-Mask适应协议（方案设计）：与 SAGPool 同构的两阶段：全图 scorer 训练 → 推理中每步在可见子图上重算第一层掩码分数、选 1 个 frontier 节点。与 SAGPool 构成"软加权 vs 硬 top-k"的成对对照
+Soft-Mask适应协议（已实现）：与 SAGPool 同构的两阶段：全图 scorer 训练 → 推理中每步在可见子图上重算第一层掩码分数、选 1 个 frontier 节点。与 SAGPool 构成"软加权 vs 硬 top-k"的成对对照
 
 AgentNet：原版 AgentNet（ICLR 2023）是多智能体图游走分类器：K 个 agent 带可学习嵌入，每步在当前位置的邻居上做注意力（+可学习 BSEU 探索偏置）经 gumbel-softmax 选边移动，逐步读出累加分类。整条游走端到端可微，训练信号只有分类 NLL。
 
@@ -118,7 +118,7 @@ AgentNet：原版 AgentNet（ICLR 2023）是多智能体图游走分类器：K �
 - agent 可往返/停留（self-loop、back 偏置），无预算概念（K agent × 16 步 ≫ 5%~15% 节点预算）；
 - 初始选址用全图信息（随机选址除外）。
 
-AgentNet适应协议（方案设计）：策略直译而非打分器移植：单 agent 游走一步 ≙ 揭示 1 个 frontier 节点；候选限缩为当前位置的 frontier 邻居，初始位置 = seed，死角用 teleport 兜底。候选结构与 Random-Walk 等价（深度型），构成"DFS式均匀随机 vs DFS式学习型选点分布"的控制变量对照
+AgentNet适应协议（已实现）：策略直译而非打分器移植：单 agent 游走一步 ≙ 揭示 1 个 frontier 节点；候选限缩为当前位置的 frontier 邻居，初始位置 = seed；死角（frontier 候选为空）时在已揭示区内按 BSEU 分数导航回有候选的位置，不消耗预算。候选结构与 Random-Walk 等价（深度型），构成"DFS式均匀随机 vs DFS式学习型选点分布"的控制变量对照。评测按双口径记录：协议终判（冻结分类器）+ 其自身读出头准确率（acc_own_*，参照口径）
 
 ## 协议
 
@@ -194,13 +194,15 @@ SuperPixel算法将像素图片转为图，其算法原理导致了每个节点�
 
 #### baseline: test    Full-Graph: 60.5
 
-|     | Random | BFS   | Max-Frontier-Degree | Random-walk | SAGPool | Best                     |
-| --- | ------ | ----- | ------------------- | ----------- | ------- | ------------------------ |
-| 5%  | 16.32  | 16.32 | 16.09               | 16.30       | 15.49   | 16.32（Random/BFS 并列） |
-| 10% | 18.69  | 18.06 | 17.31               | 19.03       | 16.91   | 19.03（Random-walk）     |
-| 15% | 20.57  | 19.59 | 18.98               | 21.36       | 18.10   | 21.36（Random-walk）     |
+|     | Random | BFS   | Max-Frontier-Degree | Random-walk | SAGPool | Soft-Mask | AgentNet | Best                     |
+| --- | ------ | ----- | ------------------- | ----------- | ------- | --------- | -------- | ------------------------ |
+| 5%  | 16.32  | 16.32 | 16.09               | 16.30       | 15.49   | 16.12     | 16.23    | 16.32（Random/BFS 并列） |
+| 10% | 18.69  | 18.06 | 17.31               | 19.03       | 16.91   | 18.45     | 18.78    | 19.03（Random-walk）     |
+| 15% | 20.57  | 19.59 | 18.98               | 21.36       | 18.10   | 21.07     | 21.55    | 21.55（AgentNet）        |
 
 这里基于拓扑结构的Max-Frontier-Degree、BFS被random系列反超，足以说明拓扑结构贡献微小
+
+注：Soft-Mask/AgentNet 为协议适配版（冻结分类器终判，GIN-plus，test 10000 图全量）；AgentNet 为 2 seeds（其余 4 seeds）。两个学习型基线均未超过最优固定策略太多，15% 预算下 AgentNet（21.55）小幅领先 Random-walk（21.36）。AgentNet 自身读出头在所有预算下恒输出同一类（acc_own=10.0%，即 10 类的频率水平），未形成判别能力——协议终判口径下它只是"学习型选点顺序"，分类仍靠冻结分类器。
 
 #### Base Reader BC-RL: test
 
@@ -264,13 +266,13 @@ code\result\cifar10\experiments\ev1\evidence\rl\eval_heldout_test_reader.json
 
 #### baseline: valid/test
 
-|     | Random      | BFS         | Max-Frontier-Degree | Random-walk | SAGPool     | Best                                                    |
-| --- | ----------- | ----------- | ------------------- | ----------- | ----------- | ------------------------------------------------------- |
-| 10% | 15.43/15.57 | 15.53/15.57 | 15.63/15.57         | 15.43/15.57 | 15.43/15.57 | 15.63/15.57（Max-Frontier-Degree/并列）                 |
-| 15% | 15.43/15.57 | 15.73/15.57 | 15.83/15.72         | 15.43/15.57 | 15.43/15.57 | 15.83/15.72（Max-Frontier-Degree/Max-Frontier-Degree）  |
-| 20% | 15.43/15.57 | 15.98/15.72 | 16.03/15.87         | 15.43/15.57 | 15.43/15.57 | 16.03//15.87（Max-Frontier-Degree/Max-Frontier-Degree） |
+|     | Random      | BFS         | Max-Frontier-Degree | Random-walk | SAGPool     | Soft-Mask   | AgentNet    | Best                                                    |
+| --- | ----------- | ----------- | ------------------- | ----------- | ----------- | ----------- | ----------- | ------------------------------------------------------- |
+| 10% | 15.43/15.57 | 15.53/15.57 | 15.63/15.57         | 15.43/15.57 | 15.43/15.57 | 15.43/15.57 | 15.43/15.57 | 15.63/15.57（Max-Frontier-Degree/并列）                 |
+| 15% | 15.43/15.57 | 15.73/15.57 | 15.83/15.72         | 15.43/15.57 | 15.43/15.57 | 15.43/15.57 | 15.43/15.57 | 15.83/15.72（Max-Frontier-Degree/Max-Frontier-Degree）  |
+| 20% | 15.43/15.57 | 15.98/15.72 | 16.03/15.87         | 15.43/15.57 | 15.43/15.57 | 15.48/15.57 | 15.63/15.57 | 16.03//15.87（Max-Frontier-Degree/Max-Frontier-Degree） |
 
-注：全部固定策略被钉死在多数类附近（子图塌缩区），固定策略路线在 COLLAB 上失效。
+注：全部固定策略（含 Soft-Mask、AgentNet）被钉死在单一类别输出上（子图塌缩区，数值≈该类在 split 中的占比），固定策略路线在 COLLAB 上失效。Soft-Mask/AgentNet 评估用 finetune 冻结分类器（其余策略为 cw_balanced）。AgentNet 自身读出头同为常数输出（恒判 test 占比 51.9% 的类，acc_own=51.9%），亦无判别能力。
 
 #### Base Reader BC-RL: valid/test   Full-Graph: 71.54/69.06
 
