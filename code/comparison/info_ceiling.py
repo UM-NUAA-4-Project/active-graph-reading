@@ -92,6 +92,41 @@ def evaluate(clf, graphs, labels, device, batch_size=256):
     return correct / max(total, 1), ce_sum / max(total, 1), counts
 
 
+@torch.no_grad()
+def collect_logits(clf, graphs, labels, device, batch_size=256):
+    """→ (logits[N,K] cpu, labels[N])。温度校准用（需逐样本 logits）。"""
+    clf.eval()
+    chunks, ys = [], []
+    for start in range(0, len(graphs), batch_size):
+        idx = range(start, min(start + batch_size, len(graphs)))
+        batch_g = dgl.batch([graphs[i] for i in idx]).to(device)
+        nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
+        chunks.append(clf(batch_g, nids).float().cpu())
+        ys.append(labels[start:start + len(idx)])
+    return torch.cat(chunks), torch.cat(ys)
+
+
+def nll_at(logits: torch.Tensor, y: torch.Tensor, tau: float) -> float:
+    return float(F.cross_entropy(logits / tau, y, reduction='mean').item())
+
+
+def fit_temperature(logits: torch.Tensor, y: torch.Tensor) -> float:
+    """在 calib split 上最小化 NLL 的 τ（一维凸，粗网格 + 黄金分割细化）。"""
+    grid = [0.2 * t for t in range(1, 51)]          # 0.2 .. 10.0
+    best = min(grid, key=lambda t: nll_at(logits, y, t))
+    a, b = max(best - 0.2, 1e-3), best + 0.2
+    gr = (math.sqrt(5) - 1) / 2
+    c, d = b - gr * (b - a), a + gr * (b - a)
+    for _ in range(60):
+        if nll_at(logits, y, c) < nll_at(logits, y, d):
+            b, d = d, c
+            c = b - gr * (b - a)
+        else:
+            a, c = c, d
+            d = a + gr * (b - a)
+    return 0.5 * (a + b)
+
+
 def main():
     parser = argparse.ArgumentParser(description='全图信息天花板（紧 Fano 反演）')
     parser.add_argument('--dataset', default='',
@@ -102,6 +137,15 @@ def main():
                         help='口径 split（默认 test，与 reader eval 对齐）')
     parser.add_argument('--max-graphs', type=int, default=0,
                         help='split 图数上限（0=全部；PPA 全量建议设 2 万级采样）')
+    parser.add_argument('--fit-temperature', action='store_true',
+                        help='在校准 split 上拟合温度 τ 后重报天花板'
+                             '（校准假设被违反时的标准补救，见 A.6）')
+    parser.add_argument('--calib-split', default='valid', choices=['train', 'valid', 'test'],
+                        help='温度拟合 split（默认 valid，禁用 test 防泄漏）')
+    parser.add_argument('--calib-max-graphs', type=int, default=0,
+                        help='校准 split 图数上限（0=全部；单参数拟合无需全量）')
+    parser.add_argument('--calib-stratified', action='store_true',
+                        help='校准 split 按类别比例分层抽样（默认前 N 截断）')
     parser.add_argument('--batch-size', type=int, default=256)
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--output-dir', default='',
@@ -152,6 +196,35 @@ def main():
     if 1 - e_tight > 1.0 or e_tight < 0:
         print("  ⚠ 数值越界，检查 CE/H 计算")
 
+    temp_out = {}
+    if args.fit_temperature:
+        calib = get_dataset(ds_name, root=args.root, splits=[args.calib_split],
+                            max_graphs=args.calib_max_graphs,
+                            stratified=args.calib_stratified)
+        calib_graphs = getattr(calib, f'{args.calib_split}_graphs')
+        calib_labels = getattr(calib, f'{args.calib_split}_labels')
+        test_logits, test_y = collect_logits(clf, graphs, labels, device,
+                                             args.batch_size)
+        cal_logits, cal_y = collect_logits(clf, calib_graphs, calib_labels,
+                                           device, args.batch_size)
+        tau = fit_temperature(cal_logits, cal_y)
+        ce_tau = nll_at(test_logits, test_y, tau)
+        target_tau = h_y - (math.log(k) - ce_tau)
+        e_tau = invert_fano(target_tau, k)
+        ceil_tau = 1 - e_tau
+        print(f"  [温度校准] τ = {tau:.4f}（{args.calib_split} 拟合）  "
+              f"CE_test(τ) = {ce_tau:.4f} nats  T(τ) = {target_tau:.4f}")
+        print(f"  ceiling(calibrated-Fano, τ) = {ceil_tau:.4f}"
+              + ('' if ceil_tau >= acc else
+                 f"   ⚠ 仍 < acc({acc:.4f})，校准假设依旧被违反"))
+        temp_out = {
+            'temperature': round(tau, 6),
+            'calib_split': args.calib_split,
+            'ce_test_nats_calibrated': round(ce_tau, 6),
+            'target_nats_calibrated': round(target_tau, 6),
+            'ceiling_calibrated_fano_temperature': round(ceil_tau, 6),
+        }
+
     out = {
         'dataset': ds_name, 'split': args.split, 'n': n, 'K': k,
         'test_acc': round(acc, 6),
@@ -162,6 +235,7 @@ def main():
         'target_nats': round(target, 6),
         'ceiling_calibrated_fano': round(1 - e_tight, 6),
         'ceiling_loose_same_assumption': round(1 - e_coarse, 6),
+        **temp_out,
         'config': {
             'checkpoint': str(ckpt_path),
             'max_graphs': args.max_graphs,

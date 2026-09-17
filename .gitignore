@@ -49,4 +49,5 @@ paper/scripts
 *.bat
 paper/README.md
 paper/iclr_draft/README.md
+paper/iclr_draft/v2_render/
 
