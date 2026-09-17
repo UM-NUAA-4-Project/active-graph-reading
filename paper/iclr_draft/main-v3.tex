@@ -1,0 +1,710 @@
+\documentclass{article}
+\usepackage{iclr2027_conference}
+\usepackage{times}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{multirow}
+\usepackage[hidelinks]{hyperref}
+
+% NOTE: compiled against an ICLR-2025-derived style file renamed to
+% iclr2027_conference.sty. Replace it with the official iclr2027_conference.sty
+% when ICLR releases the 2027 template; the preamble should not need changes.
+
+% Citation placeholder: the references section is intentionally omitted for now.
+\newcommand{\refadd}[1]{\textcolor{blue}{[REF: #1]}}
+% End-of-proof marker for the appendix proofs.
+\providecommand{\qed}{\hfill$\square$}
+
+% 投稿版保持下面一行注释状态（页眉显示 Under review）；-camera-ready 时取消注释
+% \iclrfinalcopy
+
+\title{Learning Where to Read: Adaptive Node-Revealing Policies for\\ Budget-Limited Graph Classification}
+
+\author{Anonymous authors\\ Paper under double-blind review}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Graph classification methods almost universally assume that the entire graph is available at prediction time, yet on large graphs discriminative evidence is often concentrated in a small region while node-by-node inspection carries real cost. We study \emph{budget-limited active graph reading}: an agent starts from a single seed node, repeatedly selects frontier nodes to reveal under a fixed node budget, and then classifies the revealed subgraph. We first give a leak-proof formalization of the problem and prove that optimal reading is computationally intractable --- NP-complete in the deterministic case and PSPACE-hard under succinct randomized graph models --- so learning an amortized policy is a complexity-theoretic necessity rather than an engineering compromise. We further prove that task-agnostic greedy reading carries a $(1-1/e)$ optimality guarantee in a conditionally independent world, but that evidence correlation and reachability blockade on graphs make the guarantee necessarily fail. Empirically, the learned policy recovers about $81\%$ of full-graph test accuracy on COLLAB under a $20\%$ node budget, exceeds the best fixed policy by up to $11.3$ percentage points on CIFAR10, and does not yet surpass the best fixed policy on PPA, which marks the clear boundary of the current method.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+Graph classification supports applications from security provenance to molecular screening, yet the dominant paradigm trains and evaluates on fully observed graphs. This assumption fails systematically in real settings: observation itself has a cost, and discriminative evidence is often concentrated in a small region (\S\ref{sec:background}). Once only part of the graph can be inspected, the order of inspection matters --- a breadth-first scan squanders the budget on irrelevant neighborhoods, a degree greedy ignores the task entirely, and each revealed node changes what the frontier makes visible and what is worth revealing next, so ``where to read next'' is a sequential decision problem. This paper formally brings this evidence-acquisition perspective into graph classification: we study \emph{budget-limited active graph reading}, learning a policy that decides where to read under a budget and predicts using only the revealed subgraph.
+
+Existing lines of work each provide part of the answer but stop short of this setting: graph pooling answers ``which nodes matter'' on the \textbf{complete} graph \refadd{graph-pooling, sagpool}, graph explanation finds reasons for a prediction \textbf{after} it is made \refadd{subgraphx, graph-explainability}, and active learning and active feature acquisition on graphs budget training labels and node attributes respectively \refadd{active-learning-graphs, feature-acquisition} (\S\ref{sec:related} discusses each in turn). What is missing is twofold: an evaluation protocol that makes partial graph observation leak-proof and reproducible, and evidence that a learned policy indeed beats fixed policies under matched budgets.
+
+Our contributions unfold along four lines. \textbf{Protocol.} We give a three-tier visibility model: T0 preserves frontier attachment structure; T1 makes frontier edge features freely visible; T2 permanently disables all content of unvisited nodes. \textbf{Theory.} We prove that optimal reading is computationally intractable: NP-complete in the deterministic case and PSPACE-hard under succinct randomized graph models; task-agnostic greedy carries a $(1-1/e)$ guarantee in a conditionally independent world and necessarily fails on graphs due to evidence correlation and reachability blockade. \textbf{Method.} Behavior cloning distills an initial policy from successful teacher trajectories; reinforcement learning fine-tunes it with an asymmetric reward judged by a frozen classifier; the evidence reader accumulates what has been read in a recurrent state decoupled from node selection (\S\ref{sec:method}). \textbf{Experiments.} On COLLAB all fixed policies collapse to the majority-class level, and the learned policy recovers about $81\%$ of full-graph test accuracy with a $20\%$ budget; on CIFAR10 it exceeds the best fixed policy by up to $11.3$ percentage points; on PPA it does not yet surpass the best fixed policy, marking the clear boundary of the current method (\S\ref{sec:experiments}).
+
+\section{Background}
+\label{sec:background}
+
+In several realistic graph-classification scenarios the default assumption ``the whole graph is available at prediction time'' fails systematically, and it fails in different ways. In security provenance, evidence graphs are large and noise-heavy, with the discriminative signal often hidden in a very small subgraph \refadd{evidence-concentration}; biological networks are highly redundant, multi-source evidence and near-duplicate patterns repeat extensively, and undiscriminating additional observation mostly injects noise rather than new information; in financial anti-fraud, due-diligence and KYC queries are billed per call, so investigation budgets are naturally limited. The three scenarios share one premise: \textbf{acquiring the graph itself has a cost}. The effective question is therefore how to extract discriminative features efficiently under a small budget.
+
+The way LLM agents work under a context budget offers a direct analogy \refadd{llm-agent-context}: they do not read the entire codebase; they retrieve relevant fragments, accumulate context, and stop when the information suffices to answer. Bringing this ``evidence acquisition'' idea into graph classification yields \textbf{budget-limited active graph reading} (AGR): with only a small node budget, a policy actively decides step by step ``where to look'', and once the budget is exhausted, classification uses only the revealed subgraph.
+
+\section{Related Work}
+\label{sec:related}
+
+\textbf{Graph classification and pooling under full-graph observation.} Message-passing classifiers such as GIN consume the entire graph \refadd{gin}, and pooling methods score nodes on the complete graph with task-aware attention and sparsify computation accordingly, from differentiable cluster assignments to self-attention top-$k$ selection \refadd{diffpool, sagpool, pooling-survey}. All of these answer ``which nodes matter after the whole graph has been read''; under a node budget the same question must be answered \textbf{before} the graph is visible, from frontier information alone.
+
+\textbf{Graph explanation.} Explanation methods identify reasons for a trained model's prediction on an \textbf{already observed} graph. Our setting reverses the direction of this step: evidence must be acquired \textbf{before} there is a prediction to explain, and explanation-style scoring is unavailable under partial observation by construction.
+
+\textbf{Learned sequential readers.} Closest to our setting are agents that ``selectively read graphs within a budget''. GAM trains a recurrent walker with reinforcement learning for budgeted whole-graph classification: a rank network inspects neighbors and samples the next step while an LSTM integrates the reading history \refadd{gam}; RWE-SGNN switches to a DQN rewarded by the decrease of downstream loss, using a \textbf{sampler--predictor split} of two models to generate class-relevant substructures \refadd{rwesgnn}; AgentNet uses straight-through Gumbel transitions to let a population of identity-carrying agents walk differentiably, exchanging state with the visited node at every step \refadd{agentnet}; RAW formulates walking as a POMDP for semi-supervised \textbf{node} classification and incorporates edge content into observations \refadd{raw}. The four tasks bracket ours --- RAW protects the label of a single node with the rest of the graph observable by default, while the other three share our graph-level objective --- yet all of them, to varying degrees, violate the discipline our protocol enforces. First, unrevealed content enters decisions and even predictive representations: GAM inspects neighbor contents before moving, RAW aggregates features of never-visited neighbors, and AgentNet absorbs neighbor states each step, with differentiable transitions back-propagating into the embeddings of unvisited candidates. Second, none maintains a ``single-seed, monotonically growing revealed set'': budgets are accounted by walk steps or agent counts, GAM may revisit nodes, RWE-SGNN launches multiple walks from globally top-scored entries, and AgentNet spreads agents across the whole graph. Third, GAM, RAW and AgentNet all read out the prediction from the same recurrent state that drives selection; RWE-SGNN's two-model split points the same way as our decoupling but has no revelation discipline. Our reader guarantees by construction that the prediction path is a function of the revealed set only.
+
+\section{Problem Setup}
+\label{sec:setup}
+
+\subsection{Protocol}
+\label{subsec:protocol}
+
+The AGR protocol fixes how the budget is accounted, what is visible at each step, and how the final judgment is made; its design goal is to rule out information leakage under partial observation. We describe these aspects in turn.
+
+\textbf{Budget and seed.} The budget $B$ is the number of revealed nodes, \textbf{excluding} the seed, and is reported as a fraction of the graph's node count (main experiments 5/10/15\%; COLLAB 10/15/20\%); all comparisons are made at matched budgets, averaged over multiple deterministic seeds. The seed $s_0$ is produced by a deterministic pseudo-random formula from the graph index.
+
+\textbf{Revelation process.} The agent reveals step by step from the seed: at each step exactly one node from the current \textbf{frontier} may be selected for revelation, so the revealed set grows monotonically and never revisits. When the frontier is empty but budget remains (e.g., the seed falls in an isolated small component), a teleport to an unrevealed node is allowed, consuming one unit of budget.
+
+\textbf{Visibility.} Visibility has three tiers: revealed node features, revealed edges (with features), and the existence and attachment structure of the frontier (T0) are visible to all methods; the \textbf{features of frontier edges} --- edges with one revealed and one unrevealed endpoint (T1) --- are freely queryable before revelation and consume no budget, so a policy may ``look at the edge first, then decide whom to reveal''; all content of unvisited nodes (T2) is permanently disabled for the predictor.
+
+\subsection{Problem Formalization}
+\label{subsec:formal}
+
+This section writes the protocol of \S\ref{subsec:protocol} as mathematical objects. Let $\omega_G=(Y,V,E,X,Z)$: $Y\in[K]$ is the graph label, $V=[n]$ a fixed vertex set, $E$ the edge set, and $X,Z$ node and edge features respectively. The revealed set starts from $S_0=\{s_0\}$; at each step an action $a_t$ is chosen from the frontier $F_t=N(S_t)\setminus S_t$, and after revelation $S_{t+1}=S_t\cup\{a_t\}$; the transition is deterministic and $|S_t|=t+1$.
+
+\textbf{Observation.} A protocol $p\in\{0,1\}$ is given by a family of measurable maps $\Phi^p_t:\mathcal G\times 2^V\to\mathcal O^p_t$, with $o^p_t=\Phi^p_t(\omega_G,S_t)$. The observation $o_t$ consists of the ordered action history, the edges associated with $S_t$ (the structure of revealed and frontier edges), the features of revealed nodes, and the features of edges with both endpoints revealed; under protocol $p{=}1$ it additionally contains frontier edge features $Z_e\ (e\in\partial_t)$, where $\partial_t$ is the frontier edge set.
+
+\textbf{Objective.} A policy is a family of kernels mapping observation histories to distributions on $F_t$ (randomization allowed); a terminal classifier $f$ outputs a label from $o_B$, and the value function is
+\[
+V^*(B)\;=\;\sup_{\pi,f}\ \Pr\big[f(o_B)=Y\big],
+\]
+with $V^{*,p}(B)$ under protocol $p$. The belief is defined as $b_t=\Pr(\omega_G\in\cdot\mid o_t)$.
+
+\subsection{Theoretical Results}
+\label{subsec:theory}
+
+This subsection states four theoretical results together with the support each provides for this paper; precise statements and full proofs are in Appendices~\ref{app:prop1}--\ref{app:thm3}.
+
+\textbf{Conclusion 1: optimal reading is intrinsically hard (Proposition~1, Theorem~1; Appendices~\ref{app:prop1}, \ref{app:thm1}).} Deciding ``does there exist a legal revelation sequence making the terminal classifier output $y$'' (OPT-READ) is NP-complete; under a succinct graph model of ``polynomial-size deterministic skeleton + independent random bits'' it is PSPACE-hard. \textbf{Support}: the optimal policy is a policy tree of depth $B$ with branching controlled by the frontier size, and exact solution is infeasible --- amortizing the per-instance search cost into one-time cross-graph policy learning (teachers $\to$ BC $\to$ RL, \S\ref{sec:method}) is a complexity-theoretic necessity rather than an engineering compromise.
+
+\textbf{Conclusion 2: the greedy guarantee (Theorem~2; Appendix~\ref{app:thm2}).} If node evidence is conditionally independent given the label (CI), the information gain $f(S)=I(Y;X_S)$ is adaptive monotone and adaptive submodular, and the greedy that stepwise maximizes expected marginal gain achieves $(1-1/e)\cdot\mathrm{OPT}$. \textbf{Support}: this gives the benchmark of what task-agnostic reading can attain in an ideal evidence world, and calibrates the contrast with its failure below.
+
+\textbf{Conclusion 3: the necessary failure of the guarantee (Proposition~2; Appendix~\ref{app:prop2}).} On graphs, evidence correlation (an XOR structure) breaks submodularity, and reachability blockade under the frontier constraint keeps high-information nodes out of the action space, so any stepwise marginal-scoring policy is permanently attracted by weak-signal decoy nodes --- on the constructed instance, greedy's terminal accuracy is at most $0.757$ while the optimal policy achieves $1$, a gap of at least $0.24$ that does not vanish with budget. \textbf{Support}: this explains the collapse of fixed policies to the majority class in \S\ref{sec:experiments}, and why a task-aware reading policy must be learned.
+
+\textbf{Conclusion 4: the evidence reader is an amortized Bayesian filter (Theorem~3; Appendix~\ref{app:thm3}).} Under the protocol of \S\ref{subsec:protocol}: (a) the optimal policy and attainable conditional values depend only on the belief state $(b_t,S_t)$, reducing the problem to a belief MDP; (b) the optimal terminal readout is the posterior mode $\arg\max_k\Pr(Y{=}k\mid o_B)$, and the posterior is independent of the deployment policy that produced $o_B$ --- cumulative nesting encodes ``why reading stopped here'' into $o_B$, so the selection effect cannot survive the Bayesian update; (c) under CI the log-posterior obeys a stepwise additive recursion at per-step cost $O(K)$, independent of $t$; (d) the LSTM cell family contains this additive filter, and an $\varepsilon$-implementation with finite gates incurs excess classification error at most $e^{2B\varepsilon}-1$. \textbf{Support}: this supplies the design rationale for the evidence path of \S\ref{subsec:evidence} --- recurrent integration matches the filtering form a priori, and the readout decoupled from selection estimates a policy-invariant quantity exactly on the deployment visitation distribution; the ablations of \S\ref{subsec:ablation} test it component by component, and the selection/calibration decomposition of \S\ref{subsec:limitations} rests on it.
+
+\section{Method}
+\label{sec:method}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/evidence-reader-1.png}
+\caption{Evidence reader architecture. Top: stateless selection path; bottom: recurrent evidence path; both share one GINE encoder.}
+\label{fig:arch}
+\end{figure}
+
+\subsection{Overview}
+\label{subsec:overview}
+
+Figure~\ref{fig:arch} gives the overall architecture of the evidence reader. The revealed subgraph, together with T1 frontier edge features, is fed to a shared GINE encoder; the selection head is an MLP that scores all frontier nodes. During training the reader randomizes revelation with a temperature; at evaluation it takes the argmax. Each step's evidence stream consists of four actions. The encoder produces an embedding $\Delta_t$ for the node newly revealed at step $t$ (step 0 is the seed); an LSTM integrator merges it into the history state, $h_t=\mathrm{LSTM}(\Delta_t,h_{t-1})$; history-guided attention pooling uses $h_t$ as query and revealed node embeddings as K/V, producing a readout vector $z_t$; the evidence head $\mathrm{MLP}([z_t;h_t])$ outputs a per-step class distribution. The evidence head's final-step output carries the terminal readout.
+
+\subsection{Selection Head}
+\label{subsec:selector}
+
+Motivation. The protocol restricts what the selection head may use to $o_t$: candidate nodes are unrevealed with no readable features, and any scoring that depends on global structure (e.g., whole-graph top-$k$ pooling, \S\ref{sec:related}) is unavailable. The selection head is therefore designed as a lightweight scorer over visible information, not a heavy reasoning module.
+
+Mechanism. The shared encoder runs message passing on the visible subgraph (the revealed part, frontier attachment structure, and T1 frontier edge features), producing embeddings for all nodes; for each frontier candidate $v$, it concatenates
+\[
+u_v=\big[\,h_v\ ;\ \rho_t\ ;\ \phi_v\,\big],
+\]
+where $h_v$ is its embedding, $\rho_t\in[0,1]$ is the remaining budget fraction (shared by all candidates, letting the score perceive the remaining steps), and $\phi_v\in\mathbb R^3$ are structural features computable within the visible subgraph: normalized revealed degree (connections of $v$ to the revealed subgraph), signed normalized frontier degree (distinguishing ``exits on the revealed side'' from ``frontier candidates''), and the local clustering coefficient among revealed neighbors. The selection head $\mathrm{MLP}$ outputs a scalar score, normalized by a softmax over the frontier into a policy
+\[
+\pi_\theta(a_t{=}v\mid o_t)\;=\;\frac{\exp s_\theta(u_v)}{\sum_{v'\in F_t}\exp s_\theta(u_{v'})}.
+\]
+
+This path is entirely stateless: each candidate's score is a function of the current visible state only, independent of how the history came about.
+
+\subsection{Evidence Path}
+\label{subsec:evidence}
+
+The terminal judgment needs a readout from $o_B$ to a label. Two naive options each have flaws: encoding and reading out the final revealed subgraph in one shot has capacity limited by the encoder's receptive field, and message passing cannot let distant pieces of read evidence interact; looking only at the last step discards all history. The evidence path instead accumulates new evidence step by step in a recurrent state, so information transfer between any two steps is carried by an explicit state.
+
+\textbf{Mechanism.} Each step's evidence stream consists of four actions (Figure~\ref{fig:arch}, lower half). (i) The encoder produces an embedding $\Delta_t$ for the node newly revealed at step $t$ (step 0 is the seed), taken from the same forward pass as the selection path; (ii) an LSTM integrator merges it into the history state, $h_t=\mathrm{LSTM}(\Delta_t,h_{t-1})$; (iii) history-guided attention pooling uses $h_t$ as query and revealed node embeddings as K/V, with single-head scaled dot-product producing the readout $z_t=\sum_i\alpha_i v_i$, $\alpha=\mathrm{softmax}(Kq/\sqrt d)$ --- the accumulated state decides ``what to look back at now''; (iv) the evidence head $\mathrm{MLP}([z_t;h_t])$ outputs a per-step class distribution, and the terminal judgment takes the step-$B$ output.
+
+\textbf{Role.} Two design disciplines decouple prediction from selection: the evidence stream never enters the selection scores, and the gradients of the LSTM and attention pooling come only from the stepwise supervision $\mathcal L_{ev}$, never from the policy gradient --- so the policy updates in the RL stage cannot corrupt the readout. Evaluation reports both the evidence head's terminal judgment and the reference head --- the frozen classifier reading the same revealed subgraph --- whose gap distinguishes ``selecting well'' from ``reading well''.
+
+\subsection{Training Objective}
+\label{subsec:objective}
+
+\textbf{Teacher trajectories and behavior cloning.} Teachers generate reading trajectories by gradient saliency, information gain, structural heuristics, and their hybrid combinations \refadd{teacher-details-SI}; trajectories are scored by the frozen classifier's correctness on the final revealed subgraph, filtered for successes, and class-balanced, yielding $\mathcal{D}=\big\{(o_t^{\tau},\,a_t^{\tau})\big\}$ ($\tau$ indexes trajectories, $t=0,\dots,B_\tau{-}1$). Behavior cloning minimizes the per-step negative log-likelihood of actions
+\[
+\mathcal{L}_{act}=\frac{1}{N_{\mathrm{act}}}\sum_{\tau\in\mathcal{D}}\sum_{t=0}^{B_\tau-1}-\log\,\pi_\theta\big(a_t^{\tau}\mid o_t^{\tau}\big),
+\]
+where $N_{\mathrm{act}}=\sum_\tau B_\tau$ is the total number of actions; simultaneously the evidence head is supervised by a stepwise cross-entropy ($\ell_\theta^{\tau}(t)$ denotes the evidence head's logits at step $t$; $N_{\mathrm{ev}}=\sum_\tau(B_\tau+1)$ is the total number of stepwise predictions, including the step-0 seed prediction):
+\[
+\mathcal{L}_{ev}=\frac{1}{N_{\mathrm{ev}}}\sum_{\tau\in\mathcal{D}}\sum_{t=0}^{B_\tau}\mathrm{CE}\big(\ell_\theta^{\tau}(t),\,y_\tau\big),
+\qquad
+\mathcal{L}_{BC}=\mathcal{L}_{act}+\lambda_{ev}\,\mathcal{L}_{ev}.
+\]
+$\mathcal L_{ev}$ is the only training signal of the evidence path (\S\ref{subsec:evidence}); for the selection path it is an auxiliary task, providing a stepwise shaping signal of ``does what has been read support some class'' during rollouts.
+
+\textbf{Reinforcement fine-tuning.} BC inherits the teachers' biases; RL uses the frozen classifier $f$'s judgment on the final revealed subgraph $o_B$ as the reward, compressing each trajectory into a single scalar. The reward takes the asymmetric form: $R(\tau)=+1$ if $f(o_B^{\tau})=y_\tau$ and $-0.1$ otherwise. Advantages are standardized within a batch with the negative side down-weighted: $A_\tau=(R_\tau-\hat\mu)/(\hat\sigma+\varepsilon)$, and negative advantages are additionally multiplied by $\eta<1$ ($\hat\mu,\hat\sigma$ are batch statistics; $\eta$ suppresses gradient noise from failed trajectories). The policy gradient weights the whole trajectory's log-likelihood by the advantage:
+\[
+\nabla_\theta J(\theta)\;=\;\mathbb{E}_{\tau\sim\pi_\theta}\Big[\sum_{t=0}^{B-1}A_\tau\,\nabla_\theta\log\pi_\theta\big(a_t^{\tau}\,\big|\,o_t^{\tau}\big)\Big].
+\]
+The terminal reward is a single-shot event with large across-trajectory variance, so the RL stage keeps $\mathcal L_{ev}$ as a dense auxiliary supervision to reduce policy-gradient variance ($\mathcal B$ is the current rollout batch; the loss is batch-averaged):
+\[
+\mathcal{L}_{RL}= -\frac{1}{|\mathcal{B}|}\sum_{\tau\in\mathcal{B}}A_\tau\sum_{t=0}^{B-1}\log\pi_\theta\big(a_t^{\tau}\mid o_t^{\tau}\big),
+\qquad
+\mathcal{L}^{total}=\mathcal{L}_{RL}+\lambda_{ev}\,\mathcal{L}_{ev}.
+\]
+
+\subsection{Algorithm}
+\label{subsec:algo}
+
+Inference and training share the same rollout loop: one forward pass on the visible subgraph per step, with cost $O(|E(G_t)|)$ determined by the subgraph induced by the revealed set and the frontier (usually far smaller than the whole graph); a $B$-step trajectory costs linearly in $B$. Rollouts for training and evaluation run in lockstep batches across graphs. The three-stage pipeline is given in Algorithm~1.
+
+\begin{center}
+\begin{minipage}{0.96\linewidth}
+\small
+\textbf{Algorithm 1: Three-stage training pipeline.}
+
+\smallskip
+\begin{verbatim}
+Algorithm 1  Three-stage training pipeline
+Input : training graphs {G_i}; frozen classifier f_hat;
+        budget tiers B; teachers {gradient, info-gain,
+        structural, hybrid}
+Output: policy and evidence-head parameters theta
+
+# Stage A: teacher trajectories
+for G_i, seed s0, teacher T:
+    S <- {s0}
+    while |S| - 1 < B:       # budget = reveals, excl. seed
+        F <- N(S) \ S
+        if F = empty then teleport (costs 1 budget)
+        a <- T(observation); reveal a; S <- S union {a}
+        # record (o_t, a_t) stepwise
+    if f_hat(G_S) = y: D <- D union {this trajectory}
+Class-balance D
+
+# Stage B: behavior cloning
+repeat: sample a batch from D, reproduce observations
+        by temperature rollout; gradient descent on L_BC
+
+# Stage C: reinforcement fine-tuning
+repeat: rollout with theta at temperature;
+        R <- +1 if f_hat(o_B)=y else -0.1
+        standardize advantages; gradient descent on L^total
+\end{verbatim}
+\end{minipage}
+\end{center}
+
+Implementation details (architecture, optimization, and seed conventions) are given in Appendix~\ref{app:impl}.
+
+\section{Experiments}
+\label{sec:experiments}
+
+\subsection{Experimental Setup}
+\label{subsec:exp-setup}
+
+We evaluate on three large-scale graph classification benchmarks: OGBG-PPA \refadd{ogbg}, CIFAR10 superpixels \refadd{lrgb}, and COLLAB \refadd{tudataset}. The three cover different structural regimes the protocol must face: CIFAR10 superpixels are node-feature-centric, near-grid, and bounded-diameter; PPA has only 7-dimensional edge features and averages 243 nodes; COLLAB has only topology. The metric is accuracy (\%). Fixed baselines comprise four revelation strategies --- Random, BFS, Max-Frontier-Degree, Random-Walk --- plus the adapted SAGPool; the frozen full-graph classifier provides each dataset's upper bound, and its accuracy on the revealed subgraph is reported as the reference head ($\mathrm{acc\_clf}$).
+
+\textbf{How baselines enter the protocol.} The four fixed strategies share one protocol interface --- at each step they select exactly one unrevealed endpoint from the current frontier, with budget accounting, seed formulas, and terminal judgment identical to the learned methods; they differ only in the \textbf{sequential heuristic} that orders reading. Random samples uniformly over frontier edges and reveals their unrevealed endpoint; BFS reveals in first-in-first-out order of frontier-edge discovery; Max-Frontier-Degree reveals the frontier node with the most connections to the revealed subgraph; Random-Walk walks along random edges from the current node and reveals the first unrevealed node it arrives at. SAGPool requires substantive adaptation to enter the protocol: its original form performs one-shot top-$k$ selection on the complete graph, consuming unobserved global structure and guaranteeing neither connectivity to the seed. The adapted version turns its scorer into a stepwise static selector --- at each step it recomputes gating scores on the visible subgraph only (revealed $\cup$ frontier, with frontier node features zeroed) and reveals the highest-scoring frontier node (ties broken by smaller id, deterministic); the scorer itself is still trained on complete graphs with standard supervision, and the resulting distribution shift at evaluation is part of that baseline's setting. All methods share the same terminal judgment, upper bound, and reference-head protocol.
+
+\begin{table}[t]
+\centering
+\caption{CIFAR10 superpixels, test accuracy (\%). The reference head is the frozen classifier on RL-revealed subgraphs; BC is the main comparison configuration, and the evidence reader's BC variants are in Table~\ref{tab:ablation}.}
+\label{tab:cifar10}
+\begin{tabular}{lcccccccc}
+\toprule
+Budget & Random & BFS & Max-Fr.-Deg. & RW & SAGPool & BC & RL & RL-Ref \\
+\midrule
+5\%  & 16.32 & 16.32 & 16.09 & 16.30 & 15.49 & 16.91 & \textbf{25.32} & 16.68 \\
+10\% & 18.69 & 18.06 & 17.31 & 19.03 & 16.91 & 17.87 & \textbf{30.03} & 19.78 \\
+15\% & 20.57 & 19.59 & 18.98 & 21.36 & 18.10 & 18.39 & \textbf{32.68} & 22.98 \\
+\bottomrule
+\end{tabular}
+
+\smallskip
+{\footnotesize Full-graph classifier (upper bound) 60.5.}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{COLLAB, accuracy (\%), all cells validation/test. Fixed policies are pinned at the majority-class level.}
+\label{tab:collab}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lcccccccc}
+\toprule
+Budget & Random & BFS & Max-Fr.-Deg. & RW & SAGPool & BC & RL & RL-Ref \\
+\midrule
+10\% & 15.43/15.57 & 15.53/15.57 & 15.63/15.57 & 15.43/15.57 & 15.43/15.57 & 16.78/16.42 & \textbf{52.20/51.90} & 15.88/15.72 \\
+15\% & 15.43/15.57 & 15.73/15.57 & 15.83/15.72 & 15.43/15.57 & 15.43/15.57 & 20.24/19.96 & \textbf{54.56/53.44} & 18.09/18.21 \\
+20\% & 15.43/15.57 & 15.98/15.72 & 16.03/15.87 & 15.43/15.57 & 15.43/15.57 & 27.56/25.60 & \textbf{58.02/55.74} & 20.64/20.26 \\
+\bottomrule
+\end{tabular}%
+}
+
+\smallskip
+{\footnotesize Full-graph classifier (upper bound) valid 71.54 / test 69.06.}
+\end{table}
+
+\subsection{Main Results}
+\label{subsec:results}
+
+The results answer three questions: can the learned policy beat all fixed baselines at matched budgets (Tables~\ref{tab:cifar10}--\ref{tab:ppa}); is the gain cashed by ``selecting well'' or by ``reading well'' --- the contrast between the RL and RL-Ref columns, the former being the evidence head's terminal judgment and the latter the frozen classifier reading the same revealed subgraph; and where the method's boundary of applicability lies (the negative result on PPA).
+
+On CIFAR10 superpixels (Table~\ref{tab:cifar10}), fixed policies concentrate in a narrow 16--21 band and behavior cloning falls in the same band --- imitating task-agnostic teachers alone does not beat the best heuristics. Reinforcement fine-tuning pushes the policy far out of this band: the three budget tiers reach 25.32, 30.03, and 32.68, exceeding the best fixed policy at the same budget by 9.0--11.3 percentage points and BC by up to 14.3. The gap between RL and the reference head (32.68 vs 22.98 at 15\% budget) shows the policy reveals subgraphs the frozen classifier reads \textbf{better}, not merely ``reveals more''. Against the full-graph upper bound, at 15\% budget RL reaches 32.7 with the full-graph classifier at 60.5, recovering about 54\% of full-graph accuracy: reinforcement fine-tuning captures most of the increment beyond the fixed-policy band, but substantial headroom remains.
+
+On COLLAB (Table~\ref{tab:collab}), all fixed policies and SAGPool stay at 15.4--16.0 on both splits --- the majority-class level of this imbalanced dataset --- where the greedy failure appears in its most extreme form: task-agnostic selection never escapes collapse. Behavior cloning improves to valid 16.8--27.6 and test 16.4--25.6; reinforcement fine-tuning reaches 51.90, 53.44, and 55.74 on test, recovering 75.2--80.7\% of full-graph test accuracy (69.06) --- the remaining gap is mainly bounded by the full-graph classifier's own accuracy, not by the reading policy. The reference head sharpens the mechanism: the frozen classifier reading RL-revealed subgraphs achieves only 15.7--20.3, so it is the evidence head that converts revealed evidence into prediction, not the frozen readout.
+
+\begin{table}[t]
+\centering
+\caption{OGBG-PPA, accuracy (\%), all cells validation/test. Learned policies do not yet beat the best fixed policy; BC collapses to near random.}
+\label{tab:ppa}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lcccccccc}
+\toprule
+Budget & Random & BFS & Max-Fr.-Deg. & RW & SAGPool & BC & RL & RL-Ref \\
+\midrule
+5\%  & 18.86/20.16 & 23.45/24.45 & 25.31/26.20 & 19.71/21.46 & 26.08/27.28 & 3.90/3.97 & 23.53/26.90 & 19.65/20.73 \\
+10\% & 31.14/33.07 & 30.06/35.68 & 36.33/37.28 & 32.34/34.54 & 36.25/37.92 & 7.23/7.37 & 28.12/32.34 & 26.83/27.41 \\
+15\% & 39.37/41.88 & 40.84/42.92 & 42.94/44.52 & 40.21/42.99 & 43.03/45.08 & 9.04/9.03 & 30.76/35.05 & 31.87/32.99 \\
+\bottomrule
+\end{tabular}%
+}
+
+\smallskip
+{\footnotesize Full-graph classifier (upper bound) valid 64.2 / test 65.6.}
+\end{table}
+
+On PPA the fixed policies separate cleanly with budget, and SAGPool is the strongest fixed baseline on test. In stark contrast to the other two datasets, the learned policies are not yet competitive: behavior cloning collapses to 3.9--9.0, well below all fixed policies; reinforcement fine-tuning consistently beats its reference head (20.7--33.0) yet trails the best fixed baseline by 0.4--10.0 percentage points at every budget tier. The policy gradient's signal-to-noise ratio is naturally low at low success rates, consistent with this observation --- but a complete attribution (reward sparsity, PPA's budget granularity, class imbalance) is not yet established, and we draw no conclusion about adaptive reading from this negative result.
+
+\subsection{Ablation and Analysis}
+\label{subsec:ablation}
+
+\begin{table}[t]
+\centering
+\caption{BC ablation, test accuracy (\%). no-pool removes history-guided attention pooling, no-lstm removes the recurrent accumulator, v1 removes both; COLLAB budgets are 10/15/20\%.}
+\label{tab:ablation}
+\begin{tabular}{llccc}
+\toprule
+Dataset (budget tiers) & Variant & Tier 1 & Tier 2 & Tier 3 \\
+\midrule
+CIFAR10 (5/10/15\%) & full    & 18.35 & 20.07 & 20.45 \\
+CIFAR10             & no-pool & 17.16 & 18.09 & 19.01 \\
+CIFAR10             & no-lstm & 17.56 & 18.26 & 19.15 \\
+CIFAR10             & v1      & 16.91 & 18.58 & 19.38 \\
+COLLAB (10/15/20\%) & full    & 16.42 & 19.96 & 25.60 \\
+COLLAB              & no-pool & 15.72 & 18.41 & 21.11 \\
+COLLAB              & no-lstm & 15.72 & 18.21 & 20.11 \\
+COLLAB              & v1      & 15.88 & 18.04 & 20.64 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Tables~\ref{tab:ablation} ablate the evidence path's two components item by item (\S\ref{subsec:evidence}): no-pool removes the history-guided readout, no-lstm removes the recurrent accumulator, and v1 removes both --- the terminal judgment degenerates to an unguided mean pooling of revealed embeddings. The recurrent accumulator is the largest contributor on COLLAB: removing the LSTM costs 5.5 percentage points of accuracy at the 20\% budget, and removing both costs 5.0 with the sharpest degradation at the largest budget tier. On CIFAR10 each effect is smaller but directionally consistent: attention pooling contributes 1.0--1.4 percentage points, and the full variant leads at every tier.
+
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Limitations}
+\label{subsec:limitations}
+
+\textbf{Mechanistic decomposition of the gains.} RL's gains contain two components, ``selection'' and ``calibration'', and the reference head separates them. On CIFAR10 the RL terminal judgment is far above the frozen classifier's accuracy on typical revealed subgraphs, indicating selection (finding evidence-richer regions) is the dominant mechanism; on COLLAB the opposite holds --- the frozen classifier reads RL-revealed subgraphs at only 15.7--20.3 while the evidence head judges 51.9--55.7, so the gain is cashed mainly by the evidence head's advantage over the frozen readout. Completely ruling out calibration effects would require matched-training controls, which we leave to future work.
+
+\textbf{Boundary of current evidence.} Our conclusions are bounded by two limits. First, the gains narrow at the smallest budgets: at CIFAR10's 5\% budget RL recovers less than half of full-graph accuracy, so the method currently applies to settings that allow moderate inspection fractions. Second, per-class accuracy is uneven: CIFAR10's hardest class is near random on test, the best and worst classes differ by 71.7 percentage points, and class-balanced filtering barely helps --- a capability boundary rather than a data-volume issue.
+
+\subsection{Future Work}
+\label{subsec:future}
+
+\textbf{Frontier attention filtering and selection cost.} On hub-dominated graphs such as PPA and COLLAB the frontier swells rapidly with revelation, and hundreds of candidates dilute both the per-step scoring cost and the supervision signal of the selection head. A direct extension places a lightweight \textbf{frontier attention filter} before the selection head: using the current recurrent state as query, it attention-ranks the frontier candidates and passes only a shortlist to the selection head for precise scoring. The filter only reorders or truncates the candidates of $F_t$ and consumes no budget, so the protocol semantics are unchanged; its risk is that high-value nodes may be filtered out prematurely, which calls for coverage guarantees (e.g., $\varepsilon$-coverage, or widening the shortlist with budget) and an analysis of the ``filtering error vs.\ budget gain'' trade-off. This is compatible with the belief-level reduction of Theorem~3 --- filtering is only an approximate compression of the $(b_t,S_t)\mapsto a_t$ map.
+
+\textbf{Adaptive stopping, anytime validity, and protocol extensions.} The current protocol fixes the budget in fractional tiers, yet ``how much to read'' is itself a decision. Protocol extensions in the same direction include: multi-label and regression objectives, generalizing the budget from ``node-count fractions'' to heterogeneous inspection costs, and letting the policy learn when to stop reading under cost awareness.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented a leak-proof formalization and evaluation benchmark for budget-limited active graph reading, and established a set of theoretical results around it: optimal reading is intrinsically hard (NP-complete, PSPACE-hard), task-agnostic greedy carries a provable guarantee as well as a provable failure, and the evidence reader is an amortized Bayesian filter of the policy-invariant posterior mode. On the method side, behavior cloning followed by reinforcement fine-tuning (with an asymmetric reward) turns task-agnostic reading into task-aware reading: on COLLAB a 20\% node budget recovers about 81\% of full-graph test accuracy, on CIFAR10 the learned policy beats the best fixed policy by up to 11.3 percentage points, and ablations confirm the recurrent evidence accumulator carries the main gains.
+
+\appendix
+\renewcommand{\thesection}{A.\arabic{section}}
+\setcounter{section}{-1}
+
+\section{Common Preliminaries}
+\label{app:prelim}
+
+This appendix gives \textbf{self-contained proofs} of all theoretical results in \S\ref{sec:setup}, assuming only undergraduate probability and linear algebra.
+
+Conventions: entropy and mutual information are in \textbf{bits} (logarithms base 2); likelihood ratios and Gaussian computations use $\ln$ (the softmax exponent must match the log base: with base 2 the exponent is $2^{\Lambda}$, equivalent to the natural-base version). $[K]=\{1,\dots,K\}$. Measure-theoretic ``modulo null sets'' qualifications are omitted throughout; they do not affect any almost-sure (a.s.) statement. [Cite] marks standard results and their sources; [Assumption] marks explicit modeling choices (these assumptions are models the paper must declare).
+
+\subsection{Six facts about probability}
+
+\textbf{(P1) Total probability and Bayes' rule.} If events $B_1,\dots,B_m$ are mutually exclusive and cover the whole space, then for any event $A$: $\Pr[A]=\sum_i\Pr[A\mid B_i]\Pr[B_i]$. Treating ``each value of a random variable $X$'' as such a partition gives \textbf{Bayes' rule}:
+\[
+\Pr[Y{=}y\mid X{=}x]=\frac{\Pr[X{=}x\mid Y{=}y]\,\Pr[Y{=}y]}{\Pr[X{=}x]},\quad \Pr[X{=}x]=\sum_{y'}\Pr[X{=}x\mid Y{=}y']\Pr[Y{=}y'].
+\]
+Intuition: $\Pr[Y{=}y]$ is the prior (before seeing evidence), $\Pr[Y{=}y\mid X{=}x]$ the posterior (after); the posterior-to-prior ratio is determined by the likelihood ratio of the evidence under the two classes.
+
+\textbf{(P2) Conditional expectation and the tower property.} $\mathbb E[X\mid\mathcal G]$ is ``the average of $X$ computed with the information in $\mathcal G$''; it is a function of $\mathcal G$: it takes the same value where the $\mathcal G$-information is the same. \textbf{Tower property}: for $\mathcal G_0\subseteq\mathcal G_1$,
+\[
+\mathbb E\big[\,\mathbb E[X\mid\mathcal G_1]\,\big|\,\mathcal G_0\big]=\mathbb E[X\mid\mathcal G_0].
+\]
+Intuition: averaging first within fine-information groups and then averaging the group means with coarse information equals averaging directly with the coarse information (average by day then by week = average by week). We repeatedly use two corollaries: (i) if $X$ is a function of $\mathcal G$ then $\mathbb E[X\mid\mathcal G]=X$; (ii) if $Z$ is independent of $(X,\mathcal G)$, $\mathbb E[X\mid\mathcal G]$ can be computed by first conditioning on $(\mathcal G,Z)$ and then integrating out $Z$.
+
+\textbf{(P3) Joint independence is preserved under conditioning.} If $X$ is \textbf{jointly} independent of $(Y,Z)$, then given $Z$, $X$ and $Y$ remain independent, so for any function $g$, $I(Y;X\mid Z)=0$. Proof: by joint independence, $\Pr[X{\in}A,Y{\in}B\mid Z{=}z]=\Pr[X{\in}A\mid Z{=}z]\,\Pr[Y{\in}B\mid Z{=}z]$ (product factorization); summing over $B$, the denominator $\Pr[Y{\in}B\mid Z{=}z]$ cancels exactly, giving $\Pr[X{\in}A\mid Z{=}z,Y{\in}B]=\Pr[X{\in}A\mid Z{=}z]$. \qed{} \textbf{Conditional independence} is written $X\perp Y\mid Z$: independent given $Z$ --- precisely, ``$Z$ already contains all the association between $X$ and $Y$''.
+
+\textbf{(P4) Randomized policy = deterministic policy + independent uniform randomness.} Let independent uniform variables $U_t\sim U[0,1]$, independent of the graph, be drawn at each step. Any randomized policy (sampling an action from a distribution $\mu(\cdot\mid h)$ over candidates) can be written as a deterministic function:
+\[
+a(h,U)=\min\Big\{a:\ \textstyle\sum_{a'\le a}\mu(a'\mid h)\ge U\Big\},
+\]
+i.e., cut $[0,1]$ into segments by the action probabilities and pick the action whose segment $U$ falls into (segment length = probability, so the hit probability is correct). \textbf{Everything below uses this representation}: the policy's randomness is externalized into uniform variables, everything else is a deterministic function of observations --- reasoning ``conditional on the history'' thereby reduces to conditioning on deterministic functions.
+
+\textbf{(P5) The optimum is attained at deterministic policies.} Fixing the history, a randomized policy's value is a convex combination (weighted by the action distribution) of its deterministic sub-policies' values; a convex combination does not exceed the largest component, so the deterministic policy that takes the optimal branch stepwise is no worse than any randomized policy. \qed{} Hence in A.2 and A.5 only deterministic policies need be considered without loss of generality.
+
+\textbf{(U2) Measurability of parametrized integrals [technical note, may be skipped].} Several places below involve ``a quantity obtained by integrating over a belief $b$ is a measurable function of $(b,S)$''. Measurability guarantees these quantities are in principle representable by some function (hence belong to a learnable object class); the proof uses the monotone class theorem and is standard technique \refadd{parametrized integrals on standard Borel spaces}. On first reading it may be accepted as a technical assumption; it takes no part in the logical content of the arguments.
+
+\subsection{Five facts about entropy and mutual information}
+
+\textbf{(I1) Definitions.} $H(Y)=-\sum_k p_k\log_2 p_k$: the optimal average code length for encoding $Y$ under its true distribution (bits). $H(Y\mid Z)=\mathbb E_z[H(Y\mid Z{=}z)]$: the average remaining code length after seeing $Z$. $I(Y;Z)=H(Y)-H(Y\mid Z)$: the code length $Z$ saves; symmetric, and $I(Y;Z)=0\iff Y\perp Z$.
+
+\textbf{(I2) Chain rule.} $I(Y;Z_1,Z_2)=I(Y;Z_1)+I(Y;Z_2\mid Z_1)$, extended variable by variable: $I(Y;Z_{1:m})=\sum_i I(Y;Z_i\mid Z_{1:i-1})$. Proof: expand both entropies by definition and merge like terms with (P1) --- ``total information = sum of marginal information as each variable joins''. \qed{}
+
+\textbf{(I3) Conditioning reduces entropy.} $H(Y\mid Z,W)\le H(Y\mid Z)$: on average, knowing one more quantity never increases remaining uncertainty \refadd{Cover--Thomas ch.2, two lines via Jensen}. \qed{}
+
+\textbf{(I4) Data-processing inequality (DPI).} If $Z$ is a (random) function of $W$, then $I(Y;Z)\le I(Y;W)$: processing data creates nothing from nothing. Proof: the chain rule gives $I(Y;W,Z)=I(Y;Z)+I(Y;W\mid Z)=I(Y;W)+I(Y;Z\mid W)$; the Markov property $Y-W-Z$ makes $I(Y;Z\mid W)=0$, and comparing the two expressions yields the claim. \qed{}
+
+\textbf{(I5) Binary entropy.} $h_2(p)=-p\log_2p-(1-p)\log_2(1-p)$: maximal at $h_2(1/2)=1$, zero at $h_2(0)=h_2(1)=0$, \textbf{strictly decreasing} on $[1/2,1]$. Proof: $h_2'(p)=\log_2\frac{1-p}{p}<0$ for $p>1/2$. \qed{} Numerical values used (4 decimals): $h_2(0.7)=0.8813$, $h_2(0.52)=0.9989$, $h_2(0.7164)\approx0.860$, $h_2(0.6829)\approx0.901$; $h_2^{-1}(0.8)=0.2429$ (inverted numerically from strict monotonicity: $h_2(0.24)=0.7950<0.8<h_2(0.25)=0.8113$, linear interpolation).
+
+\subsection{Fano's inequality}
+
+\textbf{(Proposition F) Fano's inequality.} Let $Y$ be uniform on $[K]$ and $\hat Y$ any judge of $Y$ based on any observation, with error rate $p_e=\Pr[\hat Y\ne Y]$. Then
+\[
+H(Y\mid \hat Y)\;\le\;h_2(p_e)+p_e\log_2(K-1),
+\]
+in particular for $K=2$, $H(Y\mid\hat Y)\le h_2(p_e)$: if $H(Y\mid\hat Y)\ge t\ge\tfrac12$ then $p_e\ge h_2^{-1}(t)$ (by the strict monotonicity of (I5) and inversion).
+
+\textbf{Proof.} Let $E=\{\hat Y\ne Y\}$ be the error event ($E$ is determined by $(Y,\hat Y)$). The chain:
+\[
+\begin{aligned}
+H(Y\mid\hat Y)\;&\overset{(a)}{=}\;H(Y,E\mid\hat Y)\;=\;H(E\mid\hat Y)+H(Y\mid E,\hat Y)\\
+&\overset{(b)}{\le}\;h_2(p_e)+p_e\log_2(K-1).
+\end{aligned}
+\]
+(a): the chain rule gives $H(Y,E\mid\hat Y)=H(Y\mid\hat Y)+H(E\mid Y,\hat Y)$, and the last term is 0 because $E$ is determined by $(Y,\hat Y)$. (b): $H(E\mid\hat Y)\le H(E)=h_2(p_e)$ ((I3); a Bernoulli variable's entropy is bounded by $h_2$); given $(E,\hat Y)$: when correct ($E{=}0$), $Y=\hat Y$ so there is no uncertainty, contributing 0; when wrong ($E{=}1$), $Y$ is one of the $K-1$ values other than $\hat Y$, with conditional entropy $\le\log_2(K-1)$; taking expectation over $E$ gives $p_e\log_2(K-1)$. For $K=2$, after an error $Y$ is uniquely determined and the second term is 0. \qed{}
+
+\section{Proof of Proposition 1 (OPT-READ is NP-complete)}
+\label{app:prop1}
+
+\textbf{Preliminaries.}
+\begin{itemize}
+\item \textbf{Decision vs optimization}: ``how well can one do'' plus a threshold becomes ``can one do at least this well'': solving the optimization solves the decision (compute the optimum and compare), so decision-hardness $\Rightarrow$ optimization at least as hard.
+\item \textbf{P / NP / certificates}: P = solvable in polynomial time; NP = decisions with short (polynomial-length) certificates that can be \textbf{verified} in polynomial time. Verification is easier than solving (checking a filled sudoku is easy, solving from scratch is hard).
+\item \textbf{NP-hard / NP-complete}: NP-hard if every NP problem reduces to it; NP-complete if in addition it is itself in NP.
+\item \textbf{Karp reduction} $A\le_p B$: a polynomial-time computable map $R$ with $x\in A\iff R(x)\in B$. Hardness flows upstream: if $B$ has a fast algorithm so does $A$ ($x\mapsto R(x)$ then solve $B$); contrapositive: $A$ hard $\Rightarrow$ $B$ hard.
+\item \textbf{Set Cover (decision version)}: input a universe $U=\{1,\dots,N\}$, sets $S_1,\dots,S_m\subseteq U$, budget $B$; ask whether at most $B$ sets cover $U$. One of Karp's 21 NP-complete problems (1972) \refadd{Karp 1972}.
+\item \textbf{Boolean circuits}: acyclic networks of AND/OR/NOT gates; size = number of gates; ``polynomial size'' = gate count polynomial in the input length.
+\end{itemize}
+
+\textbf{The decision problem OPT-READ.} Input: an explicit graph $G$, seed $s_0$, budget $B$, a terminal classifier $f$ given as a Boolean circuit, label $y$, threshold $\tau=1$. Question: does there exist a legal revelation sequence $a_1,\dots,a_B$ ($a_t\in F_t$) such that $f(G_{S_B})=y$.
+
+\textbf{Proof (Set Cover $\le_p$ OPT-READ, five steps).}
+
+\textbf{Step 1 (gadget construction).} Given a Set Cover instance $(U,S_1,\dots,S_m,B)$, construct:
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Object & Construction \\
+\midrule
+Nodes & seed $s_0$; set nodes $c_1,\dots,c_m$; element nodes $u_j$ ($j\in U$) \\
+Edges & each $c_i$ adjacent to $s_0$; $u_j$ adjacent to every $c_i$ containing $j$ \\
+Features & feature of $c_i$ = the 0/1 indicator of $S_i$ (dim.\ $N$); features of $u_j$ constant \\
+Circuit $f$ & input revelation indicator $\mathbf r\in\{0,1\}^m$ ($r_i=1\iff c_i$ revealed); \\
+ & output 1 iff $\bigcup_{i:r_i=1}S_i\supseteq U$ \\
+Label & $y=1$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Circuit implementation: for each $j$ one OR gate with fan-in $\{r_i:j\in S_i\}$ (``is $j$ covered?''); the $N$ OR gates feed one AND gate; gate count $O(\sum_i|S_i|)$, polynomial.
+
+\textbf{Step 2 (frontier-constraint failure lemma).} The difficulty for a general reduction is that ``each step may only pick frontier nodes'' prunes candidate combinations. In this gadget all set nodes are adjacent to the seed, so at $t=1$, $F_1\supseteq\{c_1,\dots,c_m\}$: \textbf{the constraint excludes no set-node combination exactly where it would need to}, and the problem degenerates to pure set selection. Note the graph diameter is $\le2$ --- the failure occurs on the most mundane structure; the reduction relies on no exotic graph.
+
+\textbf{Step 3 (WLOG lemma).} Revealing an element node $u_j$ does not change $\mathbf r$ (which records only set nodes), so $f$'s output is unchanged; hence from any successful sequence one may delete $u_j$-type actions (or replace them with arbitrary unrevealed $c_i$) and remain successful. Conclusion: a successful sequence of length $\le B$ exists $\iff$ a successful sequence of length $\le B$ \textbf{containing only set nodes} exists.
+
+\textbf{Step 4 (equivalence chain, both directions).}
+\begin{itemize}
+\item ($\Leftarrow$) If Set Cover is yes, take a covering family $\{S_{i_1},\dots,S_{i_{B'}}\}$ ($B'\le B$) and reveal $c_{i_1},\dots,c_{i_{B'}}$ in order: by Step 2 they are always in the frontier --- legal; $\mathbf r$ indicates a cover, so $f=1$.
+\item ($\Rightarrow$) Given a legal successful sequence, by Step 3 assume it contains only set nodes $\{c_{i_1},\dots,c_{i_{B'}}\}$; $f=1$ means $\bigcup_k S_{i_k}\supseteq U$, i.e., this family is a cover.
+\end{itemize}
+
+\textbf{Step 5 (size accounting and NP membership).} Nodes $O(m+N+B)$, feature dimension $N$, circuit gates $O(\sum|S_i|)$: construction is polynomial time. Certificate = the revelation sequence ($\le B\lceil\log_2 m\rceil$ bits); verification = stepwise simulation of the deterministic frontier update (scanning adjacency lists) + circuit evaluation, polynomial time $\Rightarrow$ OPT-READ $\in$ NP. Together: NP-complete; the optimization version (maximizing success probability) is NP-hard thereby; all statements hold with $B$ part of the input. \qed{}
+
+\textbf{Corollary (randomized generalization).} The general case with non-degenerate $P(G)$ and noisy observations is at least as hard: deterministic point masses are a special case, and a polynomial algorithm for the general problem would have to be correct on that special case, contradicting NP-completeness. \qed{}
+
+\section{Proof of Theorem 1 (PSPACE-hardness)}
+\label{app:thm1}
+
+\textbf{Preliminaries.}
+\begin{itemize}
+\item \textbf{PSPACE}: the class of decision problems solvable in polynomial \textbf{space} (time may be exponential). $\mathrm{NP}\subseteq\mathrm{PSPACE}$: a polynomial-time algorithm's intermediate record is itself polynomial space. Games and planning often live in PSPACE: backtracking needs an exponentially deep tree but only polynomial information per level.
+\item \textbf{SSAT (stochastic quantified Boolean formulas)}. The variables of a formula $\psi$ form a prefix $\mathcal Q_1x_1\cdots\mathcal Q_nx_n$, $\mathcal Q_i\in\{\exists,\mathcal R\}$: $\mathcal R$-variables are independent fair coins, \textbf{tossed once at the start}; an $\exists$-variable's value is a \textbf{strategy} --- a function of all prior coin values. An assignment = coin values (the $\mathcal R$ part) + strategy choices (the $\exists$ part); the value $V_{\text{SSAT}}(\varphi)=\sup_\sigma\Pr[\psi(\text{assignment})=1]$. Deciding $V_{\text{SSAT}}\ge\theta$ is PSPACE-complete \refadd{Papadimitriou, Games against Nature, JCSS 1985}. Semantics: sequential decision-making against nature (coin tosses) --- exactly AGR's world of ``secrets fixed at the start, adaptively purchased observations''.
+\item \textbf{Why the PSPACE-completeness of finite-horizon POMDPs cannot be cited directly} \refadd{Papadimitriou--Tsitsiklis 1987}: AGR's world is written once and revelation is only reading, whereas a POMDP's hidden state evolves in real time with actions --- different semantics; one must first rule out direct embedding (Lemma~A.1), then route through SSAT.
+\end{itemize}
+
+\textbf{Lemma A.1 (static-secret obstruction) and proof.} Claim: the ``time-unrolled star'' gadget --- pre-placed observation nodes for each (time, action) pair, all adjacent to the seed, realizing the POMDP's prediction law via conditional feature distributions --- admits \textbf{no} consistent joint distribution for general POMDPs.
+
+Proof: take two layers and actions $\{1,2\}$, and consider the node $v_{2,1}$ for ``action 1 at step 2''. Consistency requires
+\[
+\Pr[X_{2,1}{=}o\mid X_{1,1}{=}o_1]=P(o_2{=}o\mid a_1{=}1,\,o_1),\quad \Pr[X_{2,1}{=}o\mid X_{1,2}{=}o_1]=P(o_2{=}o\mid a_1{=}2,\,o_1),
+\]
+where $P$ is the POMDP's prediction law; the first layer also requires $\Pr[X_{1,a}{=}o_1]=P(o_1\mid a_1{=}a)$. Marginalizing both left-hand sides over $o_1$ --- the left sides are \textbf{the same quantity} $\Pr[X_{2,1}{=}o]$ (the marginal feature distribution of the same node) --- so we must have (total probability, (P1))
+\[
+\sum_{o_1}P(o_1\mid a_1{=}1)\,P(o_2{=}o\mid 1,o_1)\;=\;\sum_{o_1}P(o_1\mid a_1{=}2)\,P(o_2{=}o\mid 2,o_1),
+\]
+i.e., the POMDP's prediction of $o_2$ must agree under the two first actions --- false for general POMDPs. Counterexample: states $\{0,1\}$, known start 0, action 1 = stay, action 2 = flip, observation = state itself. Then the left sum $=P(o_2{=}1\mid a_1{=}1)=0$ (stay at 0) and the right sum $=P(o_2{=}1\mid a_1{=}2)=1$ (flip to 1), $0\ne1$ --- contradiction. \qed{}
+
+A tree expansion ``one node per information history'' restores consistency, but the node count $\sum_{t\le h}|A|^t$ is exponential and is not a polynomial reduction. Conclusion: AGR is correctly characterized as a ``partially observed system whose secret is fixed at the start''; the hardness anchor is SSAT.
+
+\textbf{Reduction (SSAT $\le_p$ OPT-READ, four steps).} Given an instance (prefix, $\psi$, $\theta$).
+
+\textbf{Step 1 (gadget).} For each variable $i$: if $\mathcal Q_i=\exists$ build two \textbf{branch nodes} $p_{i,0},p_{i,1}$ (revealing one = assigning $x_i$); if $\mathcal Q_i=\mathcal R$ build a single \textbf{coin node} $p_i$ (features = the toss outcome, one-hot two bits). Group 1's nodes are all adjacent to the seed; adjacent variable groups are joined \textbf{complete bipartite} (every node of group $i$ adjacent to every node of group $i-1$, $i\ge2$). Branch-node features = identity code $(i,\text{branch})$; all edge features constant. $P(G)$'s sampling circuit tosses $\#\mathcal R$ independent fair coins to fill coin-node features (polynomial size). Budget $B=n$, threshold $\tau=\theta$, label identically $y=1$.
+
+\textbf{Step 2 (frontier clock lemma).} Inductive claim: if groups $1..i-1$ have each revealed exactly one node, the frontier = the unrevealed nodes of group $i$ $\cup$ all nodes of group $i{+}1$. Base: $F_0=$ group 1 (adjacent to the seed). Inductive step: group $i$'s unrevealed nodes are adjacent to the revealed group $i-1$, hence in the frontier; every node of group $i{+}1$ is adjacent to group $i$'s revealed node, hence in the frontier; farther groups are non-adjacent (complete bipartite joins adjacent groups only). Corollary: a legal policy either proceeds \textbf{in order, revealing exactly one per group} (well-formed, $n$ steps covering all variables) or wastes budget on twin nodes of some $\exists$ group --- by $B=n$ and the pigeonhole principle some group is left uncovered, and $f$'s decoding step detects the missing variable and outputs 0.
+
+\textbf{Step 3 (terminal classifier circuit).} From each revealed node's identity feature decode $(i,v_i)$ (branch index for $\exists$ groups, coin bit for $\mathcal R$ groups); check that every variable is covered exactly once, else output 0; otherwise output $\psi(v_1,\dots,v_n)$ (hardwired circuit). Gate count $O(|\psi|+n)$.
+
+\textbf{Step 4 (policy correspondence and size).} By (P5) consider deterministic policies only.
+\begin{itemize}
+\item (SSAT$\to$AGR) Given an SSAT strategy $\sigma$, build an AGR policy $\pi_\sigma$: reveal group by group in chain order; in $\exists$ groups reveal $\sigma$'s chosen branch, in $\mathcal R$ groups the unique coin node. Information correspondence: by cumulative nesting, all information visible to $\pi_\sigma$ when deciding group $i$'s action (revealed node features + structure) is exactly the information visible to $\sigma$ when assigning $x_i$ --- all coin values of the first $i-1$ groups; hence trajectory-by-trajectory the two processes produce identical assignments and identical success, $V_{\text{AGR}}(\pi_\sigma)=V_{\text{SSAT}}(\sigma)$.
+\item (AGR$\to$SSAT) A well-formed AGR policy is read out verbatim as an SSAT strategy with equal value; ill-formed policies have value $0<\tau$ by the clock lemma. Together $V^*_{\text{AGR}}=V_{\text{SSAT}}(\varphi)$, so the two decision problems are equivalent.
+\end{itemize}
+
+Size: nodes $\le 2n$; features, circuits, and the sampling circuit polynomial $\Rightarrow$ polynomial reduction; combined with SSAT's PSPACE-completeness this gives PSPACE-hardness. \qed{}
+
+\textbf{Remark (honesty clause: hardness, not completeness).} In the \textbf{explicit finite-support} model ($P(G)$ = uniform over a polynomial-size list), the decision problem is in PSPACE: depth-first Bellman evaluation over information states (revelation structure + an $M$-dimensional belief vector) keeps one $M$-dimensional belief vector per stack level, total space $O(B\cdot M)$, polynomial; time is exponential but PSPACE bounds space only. Membership under succinct models (polynomial sampling circuits) is open --- ``whether the secret can be succinctly represented'' is precisely the boundary between the two models.
+
+\section{Proof of Proposition 2 (necessary failure of greedy)}
+\label{app:prop2}
+
+\textbf{Preliminaries.} The XOR distribution: $Y\sim U\{0,1\}$, $X_a\sim U\{0,1\}$ independent, $X_b:=Y\oplus X_a$. The joint table of $(Y,X_a)$ (four cells, each $1/4$) shows they are independent ((I1): $I=0\iff$ independent); $X_b$ with them forms ``knowing any two determines the third''. Other tools: (P3), (I2)(I3), Proposition~F (A.0.3).
+
+\textbf{Construction.} Decoy nodes $d_1,\dots,d_L$ ($L\ge B$) adjacent to the seed, with $\Pr(X_{d_j}{=}Y\mid Y)=\tfrac12+\delta_j$, conditionally independent given $Y$, total information
+\[
+\sum_{j=1}^L I(Y;X_{d_j})=\sum_{j=1}^L\big[1-h_2(\tfrac12+\delta_j)\big]\ \le\ 0.2\ \text{bits}
+\]
+[\textbf{Assumption}: satisfiable --- with $L=100$, $\delta_j\equiv0.005$, each vote carries $1-h_2(0.52)=0.0011$ bits, total $0.11\le0.2$ bits]. $a$ is adjacent to the seed; $b$ is adjacent only to $a$ (two hops deep).
+
+\textbf{Step 1 (correlation breaks submodularity).} The joint table $\Rightarrow$ $I(Y;X_a)=I(Y;X_b)=0$; given $(X_a,X_b)$, $Y=X_a\oplus X_b$ is fully determined $\Rightarrow$ $H(Y\mid X_a,X_b)=0$ $\Rightarrow$ $I(Y;X_a,X_b)=1$ bit. Marginal gains: $f(\{a\})-f(\emptyset)=0$ while $f(\{a,b\})-f(\{b\})=1-0=1$ --- the same node $a$'s gain \textbf{increases} because $b$ is present; marginal gains increase and submodularity fails. The breaking point: $X_a\not\perp X_b\mid Y$ (given $Y$, $X_b$ is fully determined by $X_a$), exactly the CI structure Lemma~A.2 relies on. \qed{}
+
+\textbf{Step 2 (XOR marginal gain is identically zero).} Consider any history $D$ not containing an observation of the other XOR member ($D$ consists of the seed's constant features and some decoy votes). By construction $X_a$ is jointly independent of $(Y,D)$ ($X_a\perp Y$ and independent of the decoy votes); by (P3), conditioning yields no information: $I(Y;X_a\mid D)=0$. Similarly for $X_b$ (given $X_a$, or given $Y$, $X_b$ has a uniform marginal --- without the other piece there is no information). \qed{}
+
+\textbf{Step 3 (reachability blockade + greedy sequence).} $b$'s only neighbor is $a$, so $b\in F_t\iff a\in S_t\wedge b\notin S_t$. Greedy rule: each step choose the action with the largest expected marginal information gain. Stepwise comparison: an XOR node's gain $=0$ (Step 2) $<$ any unrevealed decoy's gain $1-h_2(\tfrac12+\delta_j)>0$; and $L\ge B$ guarantees decoys never run out before the budget. By induction: greedy picks a decoy every step, never picks $a$, so $b$ never enters the frontier. \qed{}
+
+\textbf{Step 4 (Fano closure).} First, \textbf{information subadditivity} (under CI): for observed $D$ and new $X_v$,
+\[
+\begin{aligned}
+I(Y;X_v\mid D)&=H(X_v\mid D)-H(X_v\mid Y,D)\overset{\text{CI}}{=}H(X_v\mid D)-H(X_v\mid Y)\\
+&\overset{(I3)}{\le}H(X_v)-H(X_v\mid Y)=I(Y;X_v),
+\end{aligned}
+\]
+the second equality uses conditional independence (given $Y$, $X_v$ is unrelated to $D$); then (I2) amplifies term by term: $I(Y;\text{terminal observation})\le\sum_{\text{revealed}}I(Y;X_{d_j})\le0.2$. Hence $H(Y\mid o_B)\ge H(Y)-0.2=0.8$ bits; Proposition~F gives $h_2(p_e)\ge0.8$, so $p_e\ge h_2^{-1}(0.8)=0.2429$ --- \textbf{any} terminal judge (including the optimal MAP) has accuracy $\le0.757$. \qed{}
+
+\textbf{Step 5 (optimal policy and gap).} The optimal policy takes two steps: first reveal $a$ (bringing $b$ into the frontier), then reveal $b$; at the terminal step $Y=X_a\oplus X_b$ is recovered exactly, accuracy $=1$. The gap is $\ge1-0.757=0.243$ and independent of budget (with a larger budget greedy still exhausts it on decoys --- a defect of the policy class, not of the budget). \qed{}
+
+\section{Proof of Theorem 2 (the $(1-1/e)$ guarantee in the CI world)}
+\label{app:thm2}
+
+\textbf{Preliminaries.}
+\begin{itemize}
+\item \textbf{Monotone and submodular}: $f$ is monotone if $S\subseteq T\Rightarrow f(S)\le f(T)$; submodular if marginal gains decrease, $f(S\cup\{v\})-f(S)\ge f(T\cup\{v\})-f(T)$ ($S\subseteq T,\ v\notin T$). Intuition: ``adding to scarcity is dear, adding to abundance is cheap'' --- the mathematization of why diversity is valuable.
+\item \textbf{Classical Nemhauser--Fisher--Wolsey theorem (static version)}: for monotone submodular $f$ with a cardinality constraint $|S|\le B$, the greedy that stepwise picks the largest marginal gain achieves $(1-1/e)\cdot\mathrm{OPT}$. We first give the static proof in full (fully digestible at undergraduate level), then the adaptive generalization.
+\item \textbf{The adaptive submodularity framework} \refadd{Golovin \& Krause, Adaptive Submodularity, JAIR 2011}: observations are sequential --- what can be chosen at step $t$ depends on what steps $1..t-1$ revealed. Replace ``marginal gain'' by ``\textbf{conditional expected gain given the history}'' $\mathbb E[\Delta_f(v)\mid\psi]$ ($\psi$ = the observed history so far): adaptive monotone = gains non-negative under any history; adaptive submodular = gains shrink as histories enrich.
+\end{itemize}
+
+\textbf{Lemma A.2 (CI $\Rightarrow$ adaptive monotone and adaptive submodular) and proof.} Objective $f(S)=I(Y;X_S)$. Monotone: the chain rule (I2) and non-negativity of conditional mutual information. Submodular: for $S\subseteq T$, CI makes $H(X_v\mid Y,X_S)=H(X_v\mid Y)$ (given $Y$, $X_v$ is unrelated to the conditioning set), so
+\[
+I(Y;X_v\mid X_S)=H(X_v\mid X_S)-H(X_v\mid Y),
+\]
+the second term is independent of $S$ while the first decreases as $S$ grows ((I3)), so marginal gains decrease. Adaptive version: replace the conditioning set with any history of observed values and copy verbatim (CI holds for arbitrary conditioning subsets). \qed{}
+
+\textbf{The full static Nemhauser proof (five steps).} Let $O$ be an optimal set ($|O|\le B$), $S_0\subseteq S_1\subseteq\cdots$ the greedy sequence, $\mathrm{OPT}=f(O)$.
+
+\begin{enumerate}
+\item \textbf{Potential}: $\Phi_t=\mathrm{OPT}-f(S_t)$ --- how far from optimal.
+\item \textbf{Pigeonhole}: order $O$ arbitrarily as $v_1,\dots,v_{|O|}$; the chain rule (I2) and monotonicity give
+\[
+\begin{aligned}
+\mathrm{OPT}-f(S_t)\;&\le\ f(S_t\cup O)-f(S_t)=\sum_{i=1}^{|O|}\Delta(v_i\mid S_t\cup\{v_1,\dots,v_{i-1}\})\\
+&\overset{\text{submod}}{\le}\ \sum_{i=1}^{|O|}\Delta(v_i\mid S_t)\ \le\ |O|\cdot\Delta(v_g\mid S_t),
+\end{aligned}
+\]
+where $v_g$ is the greedy's choice this step (it maximizes $\Delta(\cdot\mid S_t)$). Hence $\Delta(v_g\mid S_t)\ge\Phi_t/|O|\ge\Phi_t/B$.
+\item \textbf{Multiplicative decrease}: $\Phi_{t+1}=\Phi_t-\Delta(v_g\mid S_t)\le(1-1/B)\Phi_t$.
+\item \textbf{Geometric convergence}: $\Phi_B\le(1-1/B)^B\,\mathrm{OPT}\le\mathrm{OPT}/e$ (the standard calculus limit $(1-1/B)^B\nearrow e^{-1}$).
+\item \textbf{Conclusion}: $f(S_B)\ge\mathrm{OPT}-\mathrm{OPT}/e=(1-1/e)\,\mathrm{OPT}$. \qed{}
+\end{enumerate}
+
+\textbf{Adaptive version (two modifications + five steps copied).} Modification one: sets become histories (the observation sequence $\psi_t$ the greedy has walked; ``collected'' means the totality of revealed observations). Modification two: the potential becomes a conditional expectation $\Phi_t=\mathrm{OPT}-\mathbb E[f(S_t)\mid\psi_t]$. The pigeonhole step is replaced by the standard lemma \refadd{Golovin--Krause JAIR 2011, the pigeonhole step of the main theorem}:
+
+\begin{quote}
+After the greedy history $\psi_t$, run the optimal policy $\pi^*$: the sum of its remaining per-step conditional gains equals $\mathbb E[f(S_t\cup A_{\pi^*\circ\psi_t})\mid\psi_t]-f(S_t)$ ((I2) chain rule), which is at least $\mathrm{OPT}-f(S_t)$ --- the union contains $\pi^*$'s choices, and monotonicity guarantees no disadvantage from also seeing the greedy's observations (adaptive monotonicity). Amortizing over the $B-t$ remaining steps, some step has conditional gain $\ge\Phi_t/B$; by adaptive submodularity that action's gain under the greedy's own (earlier, poorer) history is no smaller.
+\end{quote}
+
+The remaining three steps (multiplicative decrease, geometric convergence, conclusion) are verbatim identical, giving $\mathbb E[f(A^{g}_B)]\ge(1-1/e)\,\mathrm{OPT}$. \qed{}
+
+\textbf{Tightness note.} Set Cover's $(1-1/e)$ approximation cannot be improved by polynomial algorithms \refadd{Feige 1998, unless P=NP}; the greedy guarantee is therefore ``exactly right'', and one cannot hope for a uniformly better constant.
+
+\section{Proof of Theorem 3 (the evidence head is an amortized Bayesian filter)}
+\label{app:thm3}
+
+This is the longest section. We first supply three pieces of background, then prove parts (a)--(d) in turn.
+
+\textbf{Background 1: $\sigma$-algebras and ``information''.} $\sigma(o)$ denotes ``all events whose truth can be decided from $o$''; $\sigma(o_1)\subseteq\sigma(o_2)$ reads ``$o_2$ contains all the information of $o_1$''. We use only this intuition, with no measure-theoretic development.
+
+\textbf{Background 2: beliefs.} $b_t=\Pr(\omega_G\in\cdot\mid o_t)$ --- the posterior over the complete graph given the current observation (Bayes' rule (P1); existence under continuous features is covered by the technical note after (U2)).
+
+\textbf{Background 3: the LSTM cell, piece by piece.} With input embedding $e_t$, previous hidden state $h_{t-1}$, and cell state $c_{t-1}$:
+\[
+f_t=\sigma(W_fe_t+U_fh_{t-1}+b_f),\quad i_t=\sigma(\cdots)\quad(\text{forget/input gates},\ \in(0,1)^d),
+\]
+\[
+\tilde c_t=\tanh(W_ce_t+U_ch_{t-1}+b_c),\qquad c_t=f_t\odot c_{t-1}+i_t\odot\tilde c_t,\qquad h_t=o_t\odot\tanh(c_t).
+\]
+Intuition: \textbf{the cell state $c$ is a long-term accumulator} --- the forget gate decides how much of the old accumulation to keep, the input gate how much new evidence to write; the output gate plus $\tanh$ handles the readout. Theorem~3(d) says precisely that this ``accumulator + readout'' contains the additive update of Bayesian filtering.
+
+\subsection{Two basic lemmas}
+
+\textbf{Lemma A.3 (history compression).} $\sigma(o_{1:t})=\sigma(o_t)$ --- the current observation contains all historical information. Proof: ``$\supseteq$'' is clear. ``$\subseteq$'': the action sequence is encoded in $o_t$ (each $a_j$ is a deterministic function of $o_t$'s coordinates), and $o_j=\rho_{jt}(o_t)$ (the protocol's cumulative-nesting axiom: for $\tau\le t$, $o_\tau$ is a measurable restriction of $o_t$); whoever can compute $a_j$ and $o_j$ can decide every event depending on them. \qed{}
+
+\textbf{Lemma A.4 (beliefs determine the frontier).} If two observation values $o\ne o'$ have the same $S$ and induce the same posterior ($b=b'$), we have a contradiction. Proof: let $A_o=\{\omega:\Phi_t(\omega,S)=o\}$ (the graph worlds consistent with observation $o$). The posterior definition gives $b(A_o)=1$ and $b'(A_{o'})=1$, while $A_o\cap A_{o'}=\emptyset$ for $o\ne o'$; hence $b(A_o)=b'(A_o)\le1-b'(A_{o'})=0$, contradicting $b(A_o)=1$. \qed{}
+
+\textbf{Corollary (honesty clause).} By Lemma A.3, under nesting $o\mapsto b$ is (modulo null sets) \textbf{injective}: history, observation, and belief are information-equivalent. So ``the belief is a sufficient statistic'' is \textbf{not itself a compression}; the substance of Theorem~3 lies in the one-step recursion (A.5.4) and the fixed-capacity parametric tracking (A.5.5) --- amortization is the content, compression is not. This is the source of the main-text remark that ``LSTM integration of history adds no information''.
+
+\subsection{(a) Reduction to a belief MDP}
+
+\textbf{Lemma A.5 (conditional law of the future).} Fix time $t$ and any ``continuation'' (a policy and terminal classifier from $t$ on). Then for any bounded measurable functional $\Psi$ of the future $(\omega_G,a_t,o_{t+1},\dots,o_B)$, there is a measurable function $\psi$ with
+\[
+\mathbb E[\Psi\mid\mathcal F_t]=\psi(b_t,S_t)\quad\text{a.s.},\qquad\mathcal F_t=\sigma(o_t).
+\]
+
+\textbf{Proof (four steps).}
+1. \textbf{Externalize randomness} ((P4)): write the continuation's policy as a deterministic function of $(o,U)$ with $U=(U_t,\dots,U_{B-1})$ independent and uniform.
+2. \textbf{The future is a deterministic function}: given $(\omega_G,S_t,U)$ the future unfolds deterministically --- $a_t=\pi_t(\Phi_t(\omega_G,S_t),U_t)$, $S_{t+1}=S_t\cup\{a_t\}$, $o_{t+1}=\Phi_{t+1}(\omega_G,S_{t+1})$, \dots; hence $\Psi$ can be written as $\check\Psi(\omega_G,S_t,U)$.
+3. \textbf{Triple conditional independence}: conditioned on $\mathcal F_t$, the conditional law of $\omega_G$ is exactly $b_t$ (posterior definition), $S_t$ is measurable ((P2) corollary (i)), and $U$ is independent of everything; moreover the three are conditionally independent ($U$ is independent to begin with; all information about $\omega_G$ is summarized in $b_t$).
+4. \textbf{Integration}: the conditional expectation is the integral of the deterministic function $\check\Psi$ against $(b_t,\mathrm du^{B-t})$:
+\[
+\mathbb E[\Psi\mid\mathcal F_t]=\iint\check\Psi(\omega,S_t,u)\,db_t(\omega)\,du^{B-t}=:\psi(b_t,S_t),
+\]
+and measurability of $\psi$ is exactly (U2). \qed{}
+
+\textbf{Proposition A.6 (upper bound and attainability).} Define $\mathfrak W_B(b)=\max_k b\big(Y^{-1}(k)\big)$ (terminal value: largest posterior component) and the Bellman recursion
+\[
+\mathfrak W_t(b,S)=\max_{a\in F(b,S)}Q_t(b,S,a),\qquad Q_t(b,S,a)=\int\mathfrak W_{t+1}\big(\mathfrak B(b,a,\Phi_{t+1}(\omega,S\cup\{a\}))\big)\,db(\omega),
+\]
+where $\mathfrak B$ is the Bayesian operator (prior, action, new observation $\to$ posterior). Then (i) every $(\pi,f)$ has success probability $J(\pi,f)\le\mathbb E[\mathfrak W_0(b_0)]$; (ii) a belief policy with posterior-mode readout attains equality; hence $V^*(B)=\mathbb E[\mathfrak W_0(b_0)]$ and the optimal policy may be taken to depend only on $(t,b_t,S_t)$.
+
+\textbf{Proof (three steps).}
+1. \textbf{Terminal upper bound}: $Y$ is a coordinate of $\omega_G$ and $b_B$ is the conditional law given $o_B$, so $\mathbb E[\mathbf 1\{f(o_B)=Y\}\mid\mathcal F_B]=\Pr(Y=f(o_B)\mid o_B)\le\max_k\Pr(Y{=}k\mid o_B)=\mathfrak W_B(b_B)$; take expectations.
+2. \textbf{Backward induction}: claim $\mathbb E[\mathfrak W_{t+1}(b_{t+1})\mid\mathcal F_t]\le\mathfrak W_t(b_t)$ a.s. First condition on $\mathcal F_t\vee\sigma(U_t)$: $\mathfrak W_{t+1}(b_{t+1})$ is a functional of the future, so by Lemma A.5 (with the continuation ``execute $\pi_t(\cdot,U_t)$ this step, anything after'') it equals $Q_t(b_t,S_t,\pi_t(o_t,U_t))$; the action is legal, hence in $F$, and dominated by the max: $\le\mathfrak W_t(b_t)$. Then retract $U_t$ by the tower property (P2)(ii). Descending layer by layer to $t=0$ and connecting with step 1 gives (i).
+3. \textbf{Attainability}: take the belief policy $\pi^*_t=\arg\max_a Q_t(\cdot,\cdot,a)$ (ties broken by smallest index; the deterministic version of (P5); by Lemma A.4, $(b_t,S_t)$ determines $o_t$, so this choice is indeed a function of the belief) and the terminal readout $f^*=$ posterior mode. Induct on $\pi^*$: at every layer the inequality of step 2 holds with equality (the chosen action realizes the max; the terminal readout realizes the equality condition of step 1), and chaining gives $J(\pi^*,f^*)=\mathbb E[\mathfrak W_0(b_0)]$. \qed{}
+
+\subsection{(b) Terminal readout: posterior mode and policy invariance}
+
+\textbf{Proposition A.7 (pointwise optimality of the posterior mode).} For any measurable $g$:
+\[
+\Pr\big(g(o_B)\ne Y\big)=\mathbb E\Big[\max_k\Pr(Y{=}k\mid o_B)-\Pr\big(Y=g(o_B)\mid o_B\big)\Big]\ \ge\ 0,
+\]
+with equality iff $g(o_B)$ belongs pointwise to the posterior-mode set. Proof: $\Pr(g\ne Y)=\mathbb E[\Pr(Y\ne g(o_B)\mid o_B)]=\mathbb E[1-\Pr(Y{=}g(o_B)\mid o_B)]$ ((P2) corollary (i)), pointwise dominated by $1-\max_k\Pr(Y{=}k\mid o_B)$, and the equality condition holds pointwise. \qed{}
+
+\textbf{Proposition A.8 (policy invariance of the posterior).} Let two policies $\pi,\pi'$ depend only on the current observation and exogenous independent randomness ((P4) representation). If an observation value $v$ occurs with positive probability under both policies, then
+\[
+\Pr\nolimits_\pi(Y{=}y\mid o_B{=}v)=\Pr\nolimits_{\pi'}(Y{=}y\mid o_B{=}v)\qquad\forall y.
+\]
+
+\textbf{Proof (four steps).}
+1. \textbf{Decompose the event}. Let $S(v)$, $\vec a(v)$ be the revealed set and action order encoded in $v$, and $A_v=\{\omega:\Phi_B(\omega,S(v))=v\}$ (the event that the graph world is consistent with $v$ --- \textbf{policy-independent}). The event $\{o_B=v\}$ occurs iff $A_v$ occurs \textbf{and} the policy picks exactly $\vec a(v)$ along the execution chain; call the latter the chain event $C_\pi(\xi,v)$ ($\xi$ = the policy's randomness source).
+2. \textbf{The chain event is graph-independent}. By cumulative nesting, every intermediate observation along the chain is a layer-wise restriction of $v$ (a deterministic function of $v$), so whether ``the intermediate observation equals what the chain requires'' depends only on $(\xi,v)$, not on $\omega_G$; $C_\pi$ is an event about $\xi$.
+3. \textbf{Factorization}. Since $\xi\perp\omega_G$, for every $y$:
+\[
+\Pr\nolimits_\pi(o_B{=}v\mid Y{=}y)=\frac{\Pr(A_v\cap\{Y{=}y\})\cdot\Pr\nolimits_\xi(C_\pi(\xi,v))}{\Pr(Y{=}y)}.
+\]
+4. \textbf{Cancellation}. Substituting into Bayes' rule (P1), the chain factor $\Pr_\xi(C_\pi)$ is identical in numerator and denominator and \textbf{cancels}:
+\[
+\Pr\nolimits_\pi(Y{=}y\mid o_B{=}v)=\frac{\Pr(Y{=}y)\Pr(A_v\mid Y{=}y)}{\sum_{y'}\Pr(Y{=}y')\Pr(A_v\mid Y{=}y')},
+\]
+and the right-hand side is independent of $\pi$. \qed{}
+
+\textbf{Remark (correcting a common intuition).} One usually expects the ``selection effect'' of adaptive policies to make the posterior depend on the deployment policy (the survivorship-bias analogy of questionnaire surveys). Proposition A.8 shows this fails in AGR: everything the policy saw when making its choices (including the frontier structure that drove it to stop) is already encoded in $o_B$, so the selection effect cannot survive the Bayesian update. This gives the precise meaning of ``decision and classification unified in one terminal judgment'': the Bayesian readout is a \textbf{policy invariant}; the disadvantage of a frozen external classifier is not information-theoretic but statistical --- its training distribution differs from the deployed policy's subgraph visitation distribution, whereas the evidence head is trained on the same trajectory as the policy and estimates the same invariant exactly on the deployment visitation distribution.
+
+\subsection{(c) Exact recursion and the CI additive form}
+
+\textbf{Proposition A.9.}
+(i) If $o_t\leftrightarrow(o_{t-1},\nu_t)$ is bimeasurable ($\nu_t$ = the newly visible data of this step: new node features, new frontier structure/features, newly revealed edge features; both protocols satisfy this), then wherever the marginal likelihood is positive,
+\[
+\log\frac{\Pr(Y{=}y\mid o_t)}{\Pr(Y{=}y_0\mid o_t)}=\log\frac{\Pr(Y{=}y\mid o_{t-1})}{\Pr(Y{=}y_0\mid o_{t-1})}+\log\frac{\Pr(\nu_t{=}\nu\mid Y{=}y,o_{t-1})}{\Pr(\nu_t{=}\nu\mid Y{=}y_0,o_{t-1})}.
+\]
+Proof: apply Bayes (P1) twice to the pair $(o_{t-1},\nu_t)$ --- $\Pr(Y{=}y\mid o_t)=\Pr(Y{=}y\mid o_{t-1})\Pr(\nu_t{=}\nu\mid Y{=}y,o_{t-1})/\Pr(\nu_t{=}\nu\mid o_{t-1})$ --- take ratios against the reference class $y_0$ and logarithms; the denominator $\Pr(\nu_t\mid o_{t-1})$ cancels. \qed{}
+
+(ii) \textbf{CI model} [\textbf{Assumption}: node features conditionally independent given $Y$; known likelihoods $p_v(x\mid y)$; the class-conditional distributions mutually absolutely continuous; the rest of the observation independent of $Y$]. The label-relevant information is only $\{X_v\}_{v\in S_t}$ and the likelihood factorizes:
+\[
+\begin{aligned}
+\Pr(Y{=}y\mid o_t)&=\frac{\pi_0(y)\prod_{v\in S_t}p_v(X_v\mid y)}{\sum_{y'}\pi_0(y')\prod_{v\in S_t}p_v(X_v\mid y')}=\mathrm{softmax}\Big(\Lambda_t(y)\Big)_y,\\
+\Lambda_t(y)&=\ln\pi_0(y)+\sum_{v\in S_t}\ln p_v(X_v\mid y),
+\end{aligned}
+\]
+(the denominator is independent of $y$; the softmax exponent matches the log base, see the conventions at the head of the appendix). The recursion: substituting $S_t=S_{t-1}\cup\{a_{t-1}\}$, each step adds \textbf{exactly one term} $\ln p_{a_{t-1}}(X_{a_{t-1}}\mid y)$ --- per-step update cost $O(K)$, independent of $t$ (amortized); additive terms common across classes (e.g., $-\ln p_v(X_v)$) are identical across classes in the softmax and cancel. Absolute continuity guarantees all expressions are well defined. \qed{}
+
+\subsection{(d) LSTM representation and error accumulation}
+
+\textbf{Proposition A.10.} Write $\Lambda_t$ for the target of the additive filter (A.5.4(ii), natural logarithms).
+(a) \textbf{Exact representation by an ideal additive unit}. Open all LSTM gates ($f\equiv i\equiv1$) and take the input-side compression to be the identity, giving the additive update $c_t=c_{t-1}+W_ce_t+b_c$. Let the evidence be exponential family [\textbf{Assumption}]
+\[
+p_v(x\mid y)=h_v(x)\exp\big(\langle\eta_{v,y},T(x)\rangle-A_{v,y}\big)
+\]
+($T$ sufficient statistic, $|T|\le C$, $A$ finite, $\phi_v:=\ln h_v$ bounded measurable). Take the embedding
+\[
+e_t=\mathrm{vec}\big(\mathrm{onehot}(a_{t-1})\otimes T(X_{a_{t-1}})\big)\oplus\mathrm{onehot}(a_{t-1})\oplus\phi_{a_{t-1}}(X_{a_{t-1}})\oplus\mathbf 1,
+\]
+cell dimension $K$, $c_0=(\ln\pi_0(y))_{y}$, and let the $y$-th row of $W_c$ and the $y$-th component of $b_c$ both be $\phi+\langle\mathrm{vec}(\eta_{\cdot,y}),\mathrm{onehot}\otimes T\rangle+\langle(-A_{\cdot,y}),\mathrm{onehot}\rangle$. \textbf{Inductive proof}: base case $t=0$, $c_0=\Lambda_0$. Inductive step: the $y$-coordinate of the increment = (the $\phi$ coordinate enters all classes with coefficient 1) + (the outer-product coordinate selects $\langle\mathrm{vec}(\eta_{\cdot,y}),\mathrm{onehot}(a_{t-1})\otimes T(X_{a_{t-1}})\rangle=\langle\eta_{a_{t-1},y},T(X_{a_{t-1}})\rangle$) + ($-A_{a_{t-1},y}$) $=\phi_{a_{t-1}}(X_{a_{t-1}})+\langle\eta_{a_{t-1},y},T(X_{a_{t-1}})\rangle-A_{a_{t-1},y}=\ln p_{a_{t-1}}(X_{a_{t-1}}\mid y)$ --- exactly the new term of $\Lambda$ (A.5.4(ii)). Hence coordinate-wise $c_t=\Lambda_t$, and $\mathrm{softmax}(c_t)$ equals the posterior exactly. \qed{}
+
+(b) \textbf{The tanh readout preserves the argmax exactly}. The output $h_t=\sigma(b_o)\tanh(c_t)$ (taking $W_o=0$ makes the output gate a positive constant): every coordinate passes through the \textbf{same} strictly increasing positive transform, so the ordering is unchanged and $\arg\max_y h_t(y)=\arg\max_y\Lambda_t(y)$ --- the MAP terminal judgment is implemented exactly. For calibrated probability readout $\mathrm{softmax}(\gamma h_t)$: the expansion $\gamma\tanh(x/\gamma)=x-x^3/(3\gamma^2)+O(x^5\gamma^{-4})$ gives $\sup_{|x|\le M}|\gamma\tanh(x/\gamma)-x|\le M^3/(3\gamma^2)$, and by the 1-Lipschitz property of softmax (in $\|\cdot\|_\infty$), for $\gamma\ge\sqrt{M^3/(3\varepsilon)}$ the result differs from $\mathrm{softmax}(\Lambda)$ by at most $\varepsilon$ coordinate-wise. \qed{}
+
+(c) \textbf{$\varepsilon$-implementation with finite gates}. Take $b_f=b_i=\mathrm{logit}(1-\delta)$ (i.e., $\sigma(b_f)=1-\delta$); the update becomes $\hat c_t=(1-\delta)\hat c_{t-1}+(1-\delta)(W_ce_t+b_c)$. Let $L=\sup_{v,x,y}|\ln p_v(x\mid y)|<\infty$ (from $|T|\le C$ and boundedness of $A$ and $\phi$) and $M=|\ln\pi_0|_\infty+BL$ (an upper bound for $|\Lambda_t|$). \textbf{Inductive error bound}: with $s_t:=W_ce_t+b_c$ (this step's affine increment, each coordinate $\le L$ in absolute value), $\Lambda_t=\Lambda_{t-1}+s_t$ and
+\[
+\mathrm{err}_t=\hat c_t-\Lambda_t=(1-\delta)\hat c_{t-1}+(1-\delta)s_t-\Lambda_{t-1}-s_t=(1-\delta)\,\mathrm{err}_{t-1}-\delta\,\Lambda_{t-1}-\delta\,s_t,
+\]
+so term by term $|\mathrm{err}_t|\le(1-\delta)|\mathrm{err}_{t-1}|+\delta M+\delta L\le|\mathrm{err}_{t-1}|+\delta(M+L)$. With $\mathrm{err}_0=0$, induction gives $|\mathrm{err}_t|\le t\,\delta(M+L)$, hence $\|\hat c_B-\Lambda_B\|_\infty\le B\delta(M+L)$; taking $\delta\le\varepsilon/(M+L)$ yields $\le B\varepsilon$. \qed{}
+
+(d) \textbf{From error to decisions}. Suppose $\|\hat c_B-\Lambda_B\|_\infty\le\delta'$; write $p=\mathrm{softmax}(\Lambda)$, $\hat p=\mathrm{softmax}(\hat c)$. Two steps:
+\begin{itemize}
+\item \textbf{Coordinate-wise multiplicative control}: from $\sum_je^{\hat c_j}\ge e^{-\delta'}\sum_je^{\Lambda_j}$ and $e^{\hat c_k}\le e^{\delta'}e^{\Lambda_k}$ we get $\hat p_k\le e^{2\delta'}p_k$; symmetrically $p_k\le e^{2\delta'}\hat p_k$, so $|\hat p_k-p_k|\le(e^{2\delta'}-1)p_k$ (using $e^{-2\delta'}\ge2-e^{2\delta'}$, i.e., AM--GM). Summing: $\|\hat p-p\|_{\mathrm{TV}}=\tfrac12\sum_k|\hat p_k-p_k|\le\tfrac12(e^{2\delta'}-1)$.
+\item \textbf{Decision chain}: let $\hat f=\arg\max\hat p$ and $g=\max_kp_k-p_{\hat f}$ be the per-sample optimality gap:
+\[
+g\ \le\ \big(\max_kp_k-\max_k\hat p_k\big)+\big(\hat p_{\hat f}-p_{\hat f}\big)\ \le\ 2\|p-\hat p\|_\infty\ \le\ \|p-\hat p\|_1=2\,\mathrm{TV},
+\]
+(the first term because $\max$ is 1-Lipschitz; the second because $\hat p_{\hat f}=\max\hat p$; the last since $\ell_\infty\le\ell_1$). Combining with the identity of Proposition A.7, the excess error $\Pr(\hat f\ne Y)-\Pr(f^*\ne Y)=\mathbb E[g]\le2\,\mathbb E[\mathrm{TV}]\le e^{2\delta'}-1$; substituting $\delta'=B\varepsilon$ gives the main-text claim. \qed{}
+\end{itemize}
+
+\textbf{Alignment with the architecture + honesty note.} (a)(c) say the LSTM integrator is a relaxed implementation of the additive Bayesian filter, and (c) quantifies the error budget of gate decay; attention pooling serves as readout capacity in \textbf{non-CI worlds} --- there the exact sufficient statistic is the posterior over the whole $o_t$ (corollary of Lemma A.4), and pooled readout is learned compression; the evidence head is the readout layer of Proposition A.7. Ablation mapping: no-lstm removes the accumulator, no-pool swaps the readout, v1 removes both. Honesty note: a real LSTM's input-side $\tanh$ is not the identity --- the ``exactness'' of (a) is stated for an \textbf{additive abstract unit} (all gates open + identity input compression); the deviations of input compression and finite gates together constitute the ``relaxed implementation'', with the gate-decay part quantified by (c) and the input-compression part compensated by learning. This matches the main-text wording ``the LSTM is a relaxed implementation of the additive filter''.
+
+\section{Implementation Details}
+\label{app:impl}
+
+The shared encoder is a GINE-style edge-feature convolution, by default 2 layers of width 128 with dropout 0.1 (configurable layer-wise); the selection MLP and the evidence modules (LSTM 128$\to$128, single-head attention pooling, evidence head $2d{\to}d{\to}K$) operate at the same width; the evidence modules add about 0.2M parameters over base, with forward cost comparable to base ($\Delta_t$ comes from the same forward pass --- no second encoder). Optimization uses Adam (representative configuration: learning rate $10^{-3}$, batch size 64, about 10 BC epochs, with RL fine-tuned for a few more epochs); training rollouts sample at temperature and evaluation takes the argmax, with 4 deterministic seeds per graph (\S\ref{subsec:protocol}). Budget tiers, class counts, and feature dimensions per dataset are given by the dataset registry; all hyperparameters and architectures are embedded in the corresponding checkpoints and released with the code --- per-dataset differences are not enumerated here.
+
+\section*{Reproducibility Statement}
+
+All experiments use the per-graph deterministic seed formula, fixed dataset splits, and a single evaluation mode (including per-class breakdowns and dual-readout accuracies); complete configurations are embedded in every checkpoint, and all results are averages over four seeds. Code, configurations, trajectory data, the leakage-invariant test suite, and the full theoretical derivations will be released with the paper.
+
+\section*{LLM Usage Statement}
+
+An LLM-based coding assistant was used for implementing the experimental codebase and writing support; the theoretical propositions and proofs are the authors' own work, verified by the authors, and all results, claims, and conclusions were verified by the authors, who take full responsibility. Per ICLR policy, this statement moves to the appendix in the submitted version.
+
+\end{document}

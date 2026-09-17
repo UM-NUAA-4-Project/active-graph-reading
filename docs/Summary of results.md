@@ -178,7 +178,9 @@ SAGPool依靠先验打分层，利用边特征和拓扑信息，居于首位。
 | 10% | 36.10/37.41 | -                       | -0.23/-0.51 | 39.63/41.42 | -                       | +3.53/+4.01 | 61.73/63.14   |
 | 15% | 42.34/44.42 | -                       | -1.03/-0.66 | 44.5/46.21  | -                       | +2.16/+1.79 | 69.31/70.44   |
 
-#### Evidence Reader BC-RL: valid/test   Full-Graph: 64.2/65.6
+#### Evidence Reader BC-RL: valid/test
+
+##### reward source ：reader Full-Graph: 64.2/65.6
 
 |     | BC        | BCref<br />(冻结分类器) | BC-Best | RL          | RLref<br />(冻结分类器) | RL-BC | RL/Full-Graph |
 | --- | --------- | ----------------------- | ------- | ----------- | ----------------------- | ----- | ------------- |
@@ -187,6 +189,16 @@ SAGPool依靠先验打分层，利用边特征和拓扑信息，居于首位。
 | 15% | 9.04/9.03 | 42.98/44.29             |         | 30.76/35.05 | 31.87/32.99             |       |               |
 
 这次试验错误：一开始就让 reader 自己分类。rl阶段的冻结分类器准确率相较bc阶段大幅下降可以看出，reader在训练集上拟合了噪声。
+
+##### new reward source Full-Graph: 64.2/65.6
+
+先使用 classifier 做奖励源收敛后，使用 soft-both 做奖励源收敛后，使用 both 做奖励源
+
+|     | BC        | BCref<br />(冻结分类器) | BC-Best | RL | RLref<br />(冻结分类器) | RL-BC | RL/Full-Graph |
+| --- | --------- | ----------------------- | ------- | -- | ----------------------- | ----- | ------------- |
+| 5%  | 3.90/3.97 | 26.17/27.11             |         |    |                         |       |               |
+| 10% | 7.23/7.37 | 32.50/37.45             |         |    |                         |       |               |
+| 15% | 9.04/9.03 | 42.98/44.29             |         |    |                         |       |               |
 
 ### 2.LRGB-CIFAR10SuperPixelDataset
 
@@ -224,11 +236,13 @@ code\result\cifar10\experiments\1-teacher\base\rl\eval_learnable.json
 
 将每步的信息按照时序顺序收集起来，帮助判断分类突破了分类器的限制
 
-##### evidence-best：分类器作为奖励源收敛后---reader的分类头做奖励源 Full-Graph: 60.5
+##### evidence-best： Full-Graph: 60.5
 
 code\result\cifar10\experiments\ev1\evidence\bc\eval_learnable.json
 
 code\result\cifar10\experiments\ev-R-read\evidence\rl\eval_learnable.json
+
+reward source：classifier 作为奖励源收敛后（evidence-second） reader 做奖励源
 
 |     | BC    | BCref<br />(冻结分类器) | BC-Best | RL    | RLref<br />(冻结分类器) | RL-BC  | RL/Full-Graph |
 | --- | ----- | ----------------------- | ------- | ----- | ----------------------- | ------ | ------------- |
@@ -236,11 +250,13 @@ code\result\cifar10\experiments\ev-R-read\evidence\rl\eval_learnable.json
 | 10% | 17.87 | 17.82                   | −1.16  | 30.03 | 19.78                   | +12.43 | 50.1%         |
 | 15% | 18.39 | 19.44                   | −2.97  | 32.68 | 22.98                   | +14.29 | 54.0%         |
 
-##### evidence-second：分类器作为奖励源收敛 Full-Graph: 60.5
+##### evidence-second： Full-Graph: 60.5
 
 code\result\cifar10\experiments\ev1\evidence\bc\eval_learnable.json
 
 code\result\cifar10\experiments\default\evidence\rl\eval_learnable.json
+
+reward source：classifier 作为奖励源收敛
 
 |     | BC    | BCref<br />(冻结分类器) | BC-Best | RL    | RLref<br />(冻结分类器) | RL-BC  | RL/Full-Graph |
 | --- | ----- | ----------------------- | ------- | ----- | ----------------------- | ------ | ------------- |
