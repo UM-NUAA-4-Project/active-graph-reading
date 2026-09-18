@@ -49,5 +49,6 @@ paper/scripts
 *.bat
 paper/README.md
 paper/iclr_draft/README.md
-paper/iclr_draft/*_render/
+paper/iclr_draft/*_render*/
+paper/*/*.py
 
