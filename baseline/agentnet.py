@@ -644,7 +644,7 @@ class AgentnetStrategy(BaseReader):
             raise RuntimeError("agentnet 策略需先 load(checkpoint) "
                                "（eval.py --strategy agentnet 自动完成）")
         if self._pos is None:
-            self.on_new_frontier(frontier)
+            self.on_new_frontier(sorted(frontier))
 
         m = self._model
         if self._gc_graph is not graph_state.g:

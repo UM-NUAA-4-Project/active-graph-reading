@@ -66,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--batch-size', type=int, default=32,
                         help='每步优化的图数（原版 32；>1 时梯度累积：前向保持'
                              '单图，逐图 loss/块大小反向累加，块末 clip + 统一 step）')
-    parser.add_argument('--mlp-width-mult', type=int, default=2,
+    parser.add_argument('--mlp-width-mult', type=int, default=1,
                         help='更新 MLP 隐层宽度倍数（原版 README 2；旧 ckpt 为 1）')
     parser.add_argument('--reduce', choices=['log', 'sum'], default='log',
                         help='邻域聚合归约（原版 README log=sum/log2(deg+1)；'
