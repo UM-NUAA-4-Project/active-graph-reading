@@ -1,4 +1,4 @@
-"""Soft-Mask scorer 训练：完整图上标准监督（单图 batch，对齐原实现）。
+"""Soft-Mask scorer 训练：完整图上标准监督（单图前向；--batch-size 控制每步优化图数）。
 
 训练出的 checkpoint 供 SoftmaskStrategy 协议合规评测使用：
     python code/train_reader/eval.py ... --strategy softmask \
@@ -7,6 +7,10 @@
 超参对齐原实现默认（soft-mask-gnn-main/configs，lr 5e-4 / wd 1e-4 /
 seed 777；hidden 取 128 对齐 run_sagpool 约定）。自环归一（remove+add）
 保证与 SoftmaskStrategy.build_visible_graph 的构图约定一致。
+
+batch 说明：模型前向保持单图（掩码逐层链式传递），--batch-size > 1 时按
+**梯度累积**实现（逐图 loss/块大小反向累加，块末统一 step）——模型无
+BatchNorm，累积均值梯度与真批量数学等价；batch 1 退化为旧行为。
 
 用法:
   python baseline/run_softmask.py --dataset cifar10 --root D:\\data\\superpixels \
@@ -50,6 +54,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help='max_graphs 截断用分层采样（按类别比例、固定种子，'
                              'train/test 各自分层）；--no-stratified 退回前缀截断')
     parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--batch-size', type=int, default=1,
+                        help='每步优化的图数（>1 时梯度累积：前向保持单图，'
+                             '逐图 loss/块大小反向累加，块末统一 step）')
     parser.add_argument('--lr', type=float, default=5e-4)
     parser.add_argument('--weight-decay', type=float, default=1e-4)
     parser.add_argument('--hidden', type=int, default=128)
@@ -108,16 +115,21 @@ def main():
         model.train()
         random.shuffle(order)
         correct = total = 0
-        for i in tqdm(order, desc=f'Epoch {epoch}/{args.epochs}'):
-            g = train_graphs[i].to(device)
-            y = torch.tensor([int(train_labels[i].item())], device=device)
-            logits = model(g)
-            loss = torch.nn.functional.cross_entropy(logits, y)
+        chunks = [order[i:i + args.batch_size]
+                  for i in range(0, len(order), args.batch_size)]
+        for chunk in tqdm(chunks, desc=f'Epoch {epoch}/{args.epochs}'):
             optimizer.zero_grad()
-            loss.backward()
+            chunk_correct = 0
+            for i in chunk:
+                g = train_graphs[i].to(device)
+                y = torch.tensor([int(train_labels[i].item())], device=device)
+                logits = model(g)
+                # 均值梯度：按实际块大小缩放（末块不足 batch_size 亦正确）
+                (torch.nn.functional.cross_entropy(logits, y) / len(chunk)).backward()
+                chunk_correct += int(logits.argmax(dim=-1).item() == y.item())
             optimizer.step()
-            correct += int(logits.argmax(dim=-1).item() == y.item())
-            total += 1
+            correct += chunk_correct
+            total += len(chunk)
         test_acc = evaluate(model, test_graphs, test_labels, device)
         history.append({'epoch': epoch, 'train_acc': round(correct / max(total, 1), 6),
                         'test_acc': round(test_acc, 6)})
@@ -143,7 +155,8 @@ def main():
         'config': {'dataset': spec.name, 'node_feat_dim': spec.node_feat_dim,
                    'edge_feat_dim': spec.edge_feat_dim,
                    'n_classes': spec.n_classes, 'hidden': args.hidden,
-                   'n_layers': args.layers, 'dropout': args.dropout},
+                   'n_layers': args.layers, 'dropout': args.dropout,
+                   'batch_size': args.batch_size},
         'test_acc': best_acc, 'history': history,
         'trained_at': datetime.datetime.now().isoformat(timespec='seconds'),
         'max_graphs': args.max_graphs, 'epochs': args.epochs,
@@ -151,6 +164,7 @@ def main():
     save_json({'dataset': spec.name, 'history': history, 'test_acc': best_acc,
                'config': {'hidden': args.hidden, 'n_layers': args.layers,
                           'dropout': args.dropout,
+                          'batch_size': args.batch_size,
                           'max_graphs': args.max_graphs,
                           'stratified': args.stratified,
                           'epochs': args.epochs}},

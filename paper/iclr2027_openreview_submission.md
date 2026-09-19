@@ -1,5 +1,11 @@
 # ICLR 2027 OpenReview 提交清单
 
+> **✅ 摘要已提交（2026-09-19 14:13，早于 19:59 截止）**：Submission Number **55473**，
+> forum: <https://openreview.net/forum?id=0B9JzwM8MR>，OpenReview 回执邮件已收到。
+> 已锁死：作者名单（Zhihui Huang, Meng Qu，此后只能调序）、Reciprocal Reviewing Author（Meng Qu）、
+> Exemption（We do not need an exemption）。AI Assistance 勾了 4 项（writing / retrieval /
+> ideation+execution / draft sections）——**终稿 AI 披露节必须覆盖全部 4 项**。
+
 > 表单：ICLR 2027 Conference Submission（OpenReview）
 > 表单显示窗口：Submission start Aug 19, 2026 7:59 PM — Deadline Sep 19, 2026 7:59 PM
 > 你确认的**摘要截止：今晚午夜**。带 `*` 为必填；⚠️ 标记的字段**摘要截止后锁死，今晚必须定稿**。

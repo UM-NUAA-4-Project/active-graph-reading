@@ -124,7 +124,7 @@ def rollout_partial(graph, agent, budget_ratio, graph_idx: int, seed_i: int,
     """
     state = GraphState(graph, deterministic_seed(graph_idx, seed_i,
                                                  graph.num_nodes()))
-    state._budget_limit = max(1, round(budget_ratio * state.n_nodes_total))
+    state._budget_limit = max(1, int(budget_ratio * state.n_nodes_total))   # int 截断，与 eval_loop/轨迹生成同口径
     agent.reset()
     if state._initial_frontier:
         agent.on_new_frontier(list(state._initial_frontier))

@@ -1,4 +1,4 @@
-"""SAGPool scorer 训练：完整图上标准监督（单图 batch，对齐原实现）。
+"""SAGPool scorer 训练：完整图上标准监督（单图前向；--batch-size 控制每步优化图数）。
 
 训练出的 checkpoint 供 SagpoolStrategy 协议合规评测使用：
     python code/train_reader/eval.py ... --strategy sagpool \
@@ -7,6 +7,12 @@
 超参对齐原实现默认（SAGPool-master/main.py）：hidden 128 / pool_ratio 0.5 /
 dropout 0.5 / lr 5e-4 / weight-decay 1e-4。自环归一（remove+add）保证与
 SagpoolStrategy.build_visible_graph 的构图约定一致。
+
+batch 说明：模型前向保持单图（层级 top-k 池化 + BatchNorm 按图统计，
+不可 dgl.batch），--batch-size > 1 时按**梯度累积**实现（逐图 loss/块大小
+反向累加，块末统一 step）；batch 1 退化为旧行为。注意原版官方实现为
+mini-batch 训练（args.py：D&D 128 / PROTEINS 32），与单图前向的 BN 统计
+口径不同——本脚本维持单图口径以对齐协议评测时的可见子图形态。
 
 用法:
   python baseline/run_sagpool.py --dataset cifar10 --root D:\\data\\superpixels \
@@ -50,6 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help='max_graphs 截断用分层采样（按类别比例、固定种子，'
                              'train/test 各自分层）；--no-stratified 退回前缀截断')
     parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--batch-size', type=int, default=1,
+                        help='每步优化的图数（>1 时梯度累积：前向保持单图，'
+                             '逐图 loss/块大小反向累加，块末统一 step）')
     parser.add_argument('--lr', type=float, default=5e-4)
     parser.add_argument('--weight-decay', type=float, default=1e-4)
     parser.add_argument('--hidden', type=int, default=128)
@@ -109,16 +118,21 @@ def main():
         model.train()
         random.shuffle(order)
         correct = total = 0
-        for i in tqdm(order, desc=f'Epoch {epoch}/{args.epochs}'):
-            g = train_graphs[i].to(device)
-            y = torch.tensor([int(train_labels[i].item())], device=device)
-            logits = model(g)
-            loss = torch.nn.functional.cross_entropy(logits, y)
+        chunks = [order[i:i + args.batch_size]
+                  for i in range(0, len(order), args.batch_size)]
+        for chunk in tqdm(chunks, desc=f'Epoch {epoch}/{args.epochs}'):
             optimizer.zero_grad()
-            loss.backward()
+            chunk_correct = 0
+            for i in chunk:
+                g = train_graphs[i].to(device)
+                y = torch.tensor([int(train_labels[i].item())], device=device)
+                logits = model(g)
+                # 均值梯度：按实际块大小缩放（末块不足 batch_size 亦正确）
+                (torch.nn.functional.cross_entropy(logits, y) / len(chunk)).backward()
+                chunk_correct += int(logits.argmax(dim=-1).item() == y.item())
             optimizer.step()
-            correct += int(logits.argmax(dim=-1).item() == y.item())
-            total += 1
+            correct += chunk_correct
+            total += len(chunk)
         test_acc = evaluate(model, test_graphs, test_labels, device)
         history.append({'epoch': epoch, 'train_acc': round(correct / max(total, 1), 6),
                         'test_acc': round(test_acc, 6)})
@@ -131,9 +145,12 @@ def main():
 
     # 中间产物固定在 baseline/artifacts/{ds}/（相对路径按仓库根解析，
     # 不经 tools.paths.resolve——其 code/ 优先规则会误解析）
-    out = Path(args.output)
-    out_path = out if out.is_absolute() else (
-        REPO_ROOT / 'baseline' / 'artifacts' / spec.name / 'sagpool.pt')
+    out = Path(args.output) if args.output else None
+    out_path = out if (out is not None and out.is_absolute()) else (
+        out if out is not None
+        else REPO_ROOT / 'baseline' / 'artifacts' / spec.name / 'sagpool.pt')
+    if not out_path.is_absolute():
+        out_path = REPO_ROOT / out_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
     torch.save({
         'model_state_dict': best_state if best_state is not None
@@ -142,7 +159,7 @@ def main():
                    'edge_feat_dim': spec.edge_feat_dim,
                    'n_classes': spec.n_classes, 'hidden': args.hidden,
                    'n_layers': args.layers, 'pool_ratio': args.pool_ratio,
-                   'dropout': args.dropout},
+                   'dropout': args.dropout, 'batch_size': args.batch_size},
         'test_acc': best_acc, 'history': history,
         'trained_at': datetime.datetime.now().isoformat(timespec='seconds'),
         'max_graphs': args.max_graphs, 'epochs': args.epochs,
@@ -151,6 +168,7 @@ def main():
                'config': {'hidden': args.hidden, 'n_layers': args.layers,
                           'pool_ratio': args.pool_ratio,
                           'dropout': args.dropout,
+                          'batch_size': args.batch_size,
                           'max_graphs': args.max_graphs,
                           'stratified': args.stratified,
                           'epochs': args.epochs}},

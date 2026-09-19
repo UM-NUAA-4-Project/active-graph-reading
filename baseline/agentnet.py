@@ -1,12 +1,25 @@
 """AgentNet 基线（AGR 协议适配版，单 agent）。
 
 复现自 AgentNet 官方实现（ICLR 2023 "Agent-based Graph Neural Networks"，
-arXiv 2206.11010，用户本地 AgentNet-main，PyG 版）的单 agent 移植：
+arXiv 2206.11010，本地 AgentNet-main 逐行对照）的**单 agent** 移植（AGR
+接入约束：协议每步揭示 1 个节点）：
 移动头 = Q·K 注意力（[邻居 ‖ 当前 ‖ 边] 编码）+ BSEU 探索偏置
 （back/stay/explored/unexplored 可学习标量，visited 衰减 0.9），
 gumbel-softmax(hard, straight-through) 选边；节点/agent 残差更新 +
-逐步读出累加平均 → 分类。超参对齐原版 README（hidden 128 / steps 16 /
-lr 1e-4 / wd 0.01 / clip 1.0 / visited-decay 0.9 / gumbel τ=2/3）。
+逐步读出累加平均 → 分类。
+
+2026-09-19 源码/论文审查后恢复的原版机制（此前未声明丢失，导致分类头
+训练坍缩——见 docs/decisions.md）：
+- mlp_width_mult：更新 MLP 隐层宽度倍数（原版 README 2）；
+- reduce='log'：邻域卷积聚合 sum/log2(deg+1) 度归一化（原版 README）；
+- 训练配置：batch 32（原版）/ epochs 100（原版 350）/ Adam 保留；
+- 游走步数按预算比例现场计算 steps=max(1,int(ratio×n))（ratio 逐样本采样，
+  训练与 own_predict 读出游走同式）——模型无 time conditioning、读出按
+  1/(T+1) 归一，天然支持变步数。
+明确接受的单 agent 代价：论文 Theorem 12 证明存在 1 agent 任意倍步数
+无法解决、2 agent 可解的结构——多 agent 表达力损失为协议约束下的已知
+局限；global_agent_pool（agent 间全局通信，附录 C.2）在 K=1 下退化为
+自环广播，无信息增益，不实现。
 
 协议适配决策（详见 protocol-adaptation.md §7）：
 1. num_agents=1（原版 K=18~26）：训练/评测同构，预算语义逐字节对齐
@@ -26,9 +39,10 @@ lr 1e-4 / wd 0.01 / clip 1.0 / visited-decay 0.9 / gumbel τ=2/3）。
 input_proj/edge_input_proj 编码 + 无向邻接）+ 行 gather 构造可见表征，
 去掉每步 build_visible_graph/DGL 构图/全量重编码/全边 Python 循环；
 own_predict 走 forward_batch 批图 lockstep 游走（eval_loop 按 512 批调用）。
-选点行为与旧实现逐位一致；own_predict 确定性化（argmax 移动 + 每图首
-节点起点，对齐 §7 test_argmax/原则 4——旧实现走训练 forward，gumbel +
-未播种随机起点，acc_own 不可复现）。
+选点行为与旧实现逐位一致（legacy ckpt 回归 12/12 + logits 逐位）；
+own_predict 确定性化（argmax 移动 + seed 行起点，对齐 §7 test_argmax/
+原则 4——旧实现走训练 forward，gumbel + 未播种随机起点，acc_own 不可
+复现；另注：原版 test_argmax 的选择仍含 gumbel 噪声，我们更严格）。
 """
 
 import math
@@ -99,7 +113,8 @@ class AgentNetModel(nn.Module):
     def __init__(self, node_feat_dim: int, edge_feat_dim: int, n_classes: int,
                  hidden: int = 128, num_steps: int = 16, dropout: float = 0.0,
                  visited_decay: float = 0.9, input_mlp: bool = True,
-                 gumbel_tau: float = 2.0 / 3.0):
+                 gumbel_tau: float = 2.0 / 3.0, mlp_width_mult: int = 1,
+                 reduce: str = 'sum'):
         super().__init__()
         self.edge_feat_dim = edge_feat_dim
         self.hidden = hidden
@@ -108,8 +123,15 @@ class AgentNetModel(nn.Module):
         self.visited_decay = visited_decay
         self.gumbel_tau = gumbel_tau
         self.with_edge = edge_feat_dim > 0
+        # 原版对齐项（2026-09-19 审查后恢复）：MLP 隐层宽度倍数与聚合归约。
+        # 默认值 = 旧版单 agent 结构（旧 checkpoint 严格加载兼容）；新训练
+        # 配方经 run_agentnet.py 传 width=2 / reduce='log'（原版 README）。
+        self.mlp_width_mult = int(mlp_width_mult)
+        self.reduce = reduce
+        assert self.reduce in ('sum', 'log'), f"未知 reduce: {reduce}"
 
         act = nn.LeakyReLU(0.01)
+        w = self.mlp_width_mult
         if node_feat_dim > 0:
             if input_mlp:
                 self.input_proj = nn.Sequential(
@@ -135,17 +157,17 @@ class AgentNetModel(nn.Module):
         self.stay_param = nn.Parameter(torch.tensor(-1.0))
         self.explored_param = nn.Parameter(torch.tensor(0.0))
         self.unexplored_param = nn.Parameter(torch.tensor(5.0))
-        # 更新 MLP（pre-LN，对齐原版 post_ln=False）
+        # 更新 MLP（pre-LN，对齐原版 post_ln=False；隐层宽度 = hidden*2*w）
         ed = hidden if self.with_edge else 0
         self.agent_node_lin = (nn.Sequential(
             nn.LayerNorm(hidden + ed), nn.Linear(hidden + ed, hidden), act)
             if self.with_edge else nn.Identity())
-        self.node_mlp = _mlp(hidden * 2, hidden * 2, hidden, dropout)
+        self.node_mlp = _mlp(hidden * 2, hidden * 2 * w, hidden, dropout)
         self.message_val = (nn.Sequential(
             nn.LayerNorm(hidden + ed), nn.Linear(hidden + ed, hidden), act)
             if self.with_edge else None)
-        self.conv_mlp = _mlp(hidden * 2, hidden * 2, hidden, dropout)
-        self.agent_mlp = _mlp(hidden * 2 + ed, hidden * 2, hidden, dropout)
+        self.conv_mlp = _mlp(hidden * 2, hidden * 2 * w, hidden, dropout)
+        self.agent_mlp = _mlp(hidden * 2 + ed, hidden * 2 * w, hidden, dropout)
         self.step_readout = nn.Sequential(
             nn.LayerNorm(hidden), nn.Linear(hidden, hidden * 2),
             nn.Dropout(dropout))
@@ -209,6 +231,17 @@ class AgentNetModel(nn.Module):
         ret = onehot - y_soft.detach() + y_soft      # straight-through
         return idx, ret[idx]
 
+    def _reduce(self, agg: torch.Tensor, count):
+        """聚合归约（原版 util.scatter reduce 语义）。'log' = sum/log2(count+1)
+        （度归一化；count≤1 时除数为 1，恒等）——count 为聚合进该节点的
+        消息条数（卷积 = 邻居数）。'sum' 恒等（旧版行为）。"""
+        if self.reduce != 'log':
+            return agg
+        if isinstance(count, int):
+            return agg / (math.log2(count + 1) if count > 0 else 1.0)
+        cnt = count.clamp_min(1).float().unsqueeze(-1)
+        return agg / torch.log2(cnt + 1.0)
+
     # ------------------------------------------------------------------
     # 步进更新：agent→node 消息 + 邻域卷积（边感知消息）+ agent 更新
     # ------------------------------------------------------------------
@@ -230,6 +263,7 @@ class AgentNetModel(nn.Module):
                     torch.cat([h[conv_nbr], conv_edge], dim=-1)).sum(dim=0)
             else:
                 agg = h[conv_nbr].sum(dim=0)
+            agg = self._reduce(agg, int(conv_nbr.numel()))
         else:
             agg = torch.zeros(self.hidden, device=h.device)
         new_h_pos = new_h_pos + self.conv_mlp(torch.cat([new_h_pos, agg]))
@@ -245,7 +279,8 @@ class AgentNetModel(nn.Module):
     # ------------------------------------------------------------------
     # 训练前向（完整图；start=None 时随机起点，random 已播种）
     # ------------------------------------------------------------------
-    def forward(self, g: dgl.DGLGraph, start: int = None) -> torch.Tensor:
+    def forward(self, g: dgl.DGLGraph, start: int = None,
+                steps: int = None) -> torch.Tensor:
         h = self.init_hidden(g)
         edge_emb = self.init_edge_emb(g)
         n = g.num_nodes()
@@ -270,7 +305,8 @@ class AgentNetModel(nn.Module):
             if self.with_edge else None
         out = None
 
-        for i in range(self.num_steps + 1):
+        T = self.num_steps if steps is None else int(steps)
+        for i in range(T + 1):
             if i > 0:
                 cand = sorted(nbrs.get(cur, set()))      # 含自环 stay
                 cand_t = torch.tensor(cand, dtype=torch.long, device=device)
@@ -300,19 +336,21 @@ class AgentNetModel(nn.Module):
                                         moved_edge, attn_val)
             layer_out = self.fc(self.step_readout(agent))
             out = layer_out if out is None else out + layer_out
-        return (out / (self.num_steps + 1)).unsqueeze(0)   # [1, n_classes]
+        return (out / (T + 1)).unsqueeze(0)   # [1, n_classes]
 
     # ------------------------------------------------------------------
     # 批图 lockstep 游走前向（own_predict_batch 评测用）
     # ------------------------------------------------------------------
     @torch.no_grad()
-    def forward_batch(self, g: dgl.DGLGraph) -> torch.Tensor:
+    def forward_batch(self, g: dgl.DGLGraph, starts=None,
+                      steps: int = None) -> torch.Tensor:
         """块对角批图（dgl.batch 产物，自环需已加）的确定性评测读出。
 
         对齐协议 test_argmax(τ→1e-6)/原则 4（protocol-adaptation.md §7）：
-        移动 = argmax + 平分取小 id（无 gumbel 噪声），起点 = 每图首节点
-        （dgl.batch 保序，即揭示子图最小原图 id），attn_val ≡ 1（τ→0 硬
-        one-hot 的 straight-through 极限，与训练路径 ret[idx]≈1 一致）。
+        移动 = argmax + 平分取小 id（无 gumbel 噪声），起点 = 每图首节点，
+        或调用方给定的各图起点行号（AGR 传 seed 在揭示子图中的行号），
+        attn_val ≡ 1（τ→0 硬 one-hot 的 straight-through 极限，与训练路径
+        ret[idx]≈1 一致）。
         与 forward 单图数学逐式对齐，差异仅是批内按图 padding——pad 位经
         -inf 掩蔽不参与 argmax、经 mask 乘零不参与邻域聚合。同一输入必产
         出同一 logits（旧 own_predict 走训练 forward，gumbel+未播种随机
@@ -358,13 +396,17 @@ class AgentNetModel(nn.Module):
         bnn = g.batch_num_nodes()
         cur_t = torch.zeros(B, dtype=torch.long, device=device)
         cur_t[1:] = torch.cumsum(bnn, 0)[:-1]     # 每图首节点（确定性起点）
+        if starts is not None:
+            cur_t = cur_t + torch.as_tensor(starts, dtype=torch.long,
+                                            device=device)
         visit[cur_t] = 1.0
         cur = cur_t.tolist()
         prev_t = None
         attn_val = torch.ones(B, device=device)
         out = None
 
-        for i in range(self.num_steps + 1):
+        T = self.num_steps if steps is None else int(steps)
+        for i in range(T + 1):
             if i > 0:
                 seqs = [nbr_lists[c] for c in cur]           # 含自环 stay
                 D = max(len(s) for s in seqs)
@@ -417,6 +459,7 @@ class AgentNetModel(nn.Module):
                         * conv_valid.unsqueeze(-1)).sum(dim=1)
                 else:
                     agg = (h[conv_t] * conv_valid.unsqueeze(-1)).sum(dim=1)
+                agg = self._reduce(agg, conv_valid.sum(dim=1))
             else:
                 agg = torch.zeros(B, self.hidden, device=device)
             if self.with_edge:
@@ -439,7 +482,7 @@ class AgentNetModel(nn.Module):
             agent = agent + self.agent_mlp(agent_cat)
             layer_out = self.fc(self.step_readout(agent))
             out = layer_out if out is None else out + layer_out
-        return out / (self.num_steps + 1)                  # [B, n_classes]
+        return out / (T + 1)                  # [B, n_classes]
 
 
 class _GraphCache:
@@ -520,7 +563,9 @@ class AgentnetStrategy(BaseReader):
             edge_feat_dim=cfg['edge_feat_dim'],
             n_classes=cfg['n_classes'],
             hidden=cfg['hidden'], num_steps=cfg['num_steps'],
-            dropout=cfg['dropout'], visited_decay=cfg['visited_decay'])
+            dropout=cfg['dropout'], visited_decay=cfg['visited_decay'],
+            mlp_width_mult=cfg.get('mlp_width_mult', 1),
+            reduce=cfg.get('reduce', 'sum'))
         model.load_state_dict(ckpt['model_state_dict'], strict=True)
         self._device = torch.device(device)
         self._model = model.to(self._device).eval()
@@ -530,26 +575,48 @@ class AgentnetStrategy(BaseReader):
     def reset(self) -> None:
         self._reset_walk()
 
-    def own_predict(self, sub_g):
+    def own_predict(self, sub_g, seed_row=None, steps=None):
         """自身读出头对揭示子图的分类（评测双口径记录，对齐 evidence 的
         acc_* / acc_clf_* 惯例：协议终判仍为冻结分类器，本头为参照）。
 
         输入 SubgraphBuilder 产出的揭示子图（已双向+自环+特征）；按训练
-        约定重整构图后确定性 agent 游走读出（argmax + 首节点起点）→
-        [1, n_classes] logits。同一子图必产出同一 logits。
+        约定重整构图后确定性 agent 游走读出（argmax + seed 行起点）→
+        [1, n_classes] logits。同一子图必产出同一 logits。seed_row 为
+        seed 在子图中的行号（builder original_ids 内的下标），缺省 0。
         """
-        return self.own_predict_batch([sub_g])
+        return self.own_predict_batch([sub_g],
+                                      [seed_row] if seed_row is not None else None,
+                                      [steps] if steps is not None else None)
 
-    def own_predict_batch(self, subgraphs):
+    def own_predict_batch(self, subgraphs, seed_rows=None, steps=None):
         """own_predict 批量版：symmetrize → dgl.batch → lockstep 游走前向。
 
-        返回 [B, n_classes]；逐图语义与单图 own_predict 一致（确定性
-        argmax 游走 + 每图首节点起点，test_argmax 协议）。
+        seed_rows: 各子图内 seed 的行号（缺省 None=每图首节点）；
+        steps: 各子图读出游走步数（缺省 None=模型 num_steps）。步数不均
+        时按步数分组分别批前向（图间独立，结果与逐图一致），避免 pad 浪费。
+        返回 [B, n_classes]。
         """
         gs = [dgl.add_self_loop(symmetrize_with_feat(dgl.remove_self_loop(s)))
               for s in subgraphs]
-        bg = dgl.batch(gs).to(self._device)
-        return self._model.forward_batch(bg)
+        B = len(gs)
+        out = torch.zeros(B, self._model.fc.weight.shape[0])
+        if steps is None:
+            groups = [(None, list(range(B)))]
+        else:
+            order = sorted(range(B), key=lambda i: steps[i])
+            groups, i = [], 0
+            while i < B:
+                j = i
+                while j < B and steps[order[j]] == steps[order[i]]:
+                    j += 1
+                groups.append((int(steps[order[i]]), order[i:j]))
+                i = j
+        for st_val, idx in groups:
+            bg = dgl.batch([gs[k] for k in idx]).to(self._device)
+            sr = ([seed_rows[k] for k in idx]
+                  if seed_rows is not None else None)
+            out[torch.tensor(idx, dtype=torch.long)] =                 self._model.forward_batch(bg, starts=sr, steps=st_val)
+        return out
 
     def on_new_frontier(self, edges) -> None:
         """rollout 开始时经 initial_frontier 推断 seed，初始化 walk 状态。"""

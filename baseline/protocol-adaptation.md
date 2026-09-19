@@ -123,7 +123,9 @@ DGL 单 agent 移植):移动头 Q·K 注意力([邻居‖当前‖边])+ BSEU �
 (back/stay/explored/unexplored,visited 衰减 0.9),gumbel-softmax(hard,
 straight-through) 选边,节点/agent 残差更新 + 逐步读出累加。超参对齐
 README(hidden 128 / steps 16 / lr 1e-4 / wd 0.01 / clip 1.0 / τ=2/3 /
-seed 777)。工作流详见 `agentnet-workflow.md`。
+seed 777 / mlp_width_mult 2 / reduce log / batch 32)。2026-09-19 源码
+逐行审查:恢复此前未声明丢失的 mlp_width_mult/reduce,训练坍缩根因见
+`docs/decisions.md`。工作流详见 `agentnet-workflow.md`。
 
 | 维度 | 原文设定 | 本实现 | 理由 |
 |---|---|---|---|
@@ -132,9 +134,15 @@ seed 777)。工作流详见 `agentnet-workflow.md`。
 | 初始位置 | 随机均匀撒/注意力选址 | **seed 节点**(P2) | 对齐 AGR 种子协议 |
 | **移动候选** | **当前位置全部邻居(完整图)** | **当前位置的 frontier 邻居** | 原版用未观测结构(P1/P3 违规);限缩后为深度型揭示(与 random-walk 候选结构等价,构成"均匀随机 vs 学习型选点分布"控制变量对照) |
 | 往返/停留 | self-loop stay + back 偏置,可任意往返 | 已揭示区内**BSEU 打分导航**(不消耗预算,步数上限 4n);揭示步=frontier 候选 argmax | 移动语义保留;区域内移动不消耗预算(原则 3);rollout_strategy 不瞬移,导航耗尽返回 None 结束 |
-| 训练 | TU 数据端到端分类 NLL(游走 gumbel 可微) | 完整图同款端到端监督(单图 batch),自环归一 | 原则 2;评测切换可见子图(分布漂移属基线设定) |
+| 训练 | TU 数据端到端分类 NLL(游走 gumbel 可微) | 完整图同款端到端监督(自环归一) | 原则 2;评测切换可见子图(分布漂移属基线设定) |
+| MLP 宽度 | mlp_width_mult=2(README) | **已恢复**(2026-09-19 审查;此前未声明丢失,分类头坍缩主因之一) | 忠实性 |
+| 聚合归约 | reduce='log'(sum/log2(deg+1), README) | **已恢复**(此前用 sum) | 忠实性;尺度差部分被 MLP 前置 LN 吸收 |
+| global_agent_pool | README 开启(agent 间全局通信,附录 C.2) | 不实现 | K=1 下退化为自环广播,无信息增益 |
+| batch/优化器 | batch 32 / AdamW+cosine / 350 epochs | batch 32(梯度累积,前向单图)/ Adam / 100 epochs | 原版配方;前向含序列 gumbel 采样不可 dgl.batch |
+| 单 agent 表达力 | Theorem 12:存在 2 agent 可解、1 agent 任意倍步数不可解的结构 | **接受为已知局限** | 协议每步 1 节点约束下的必然取舍;acc_own 参照口径如实记录 |
+| 游走步数 | 固定 num_steps(16) | 训练/own_predict 读出游走 **steps=max(1,int(ratio×n))** 逐样本按预算档采样 | 与评测预算驱动的策略游走长度对齐;模型无 time conditioning、读出按 1/(T+1) 归一,天然支持变步数 |
 | 图对称化 | TU 对称图 | **无向化重建并保留边特征**(`symmetrize_with_feat`;dgl.to_bidirected 丢 edata) | cifar10 DGL 图为单向边,移动/卷积按无向语义查边,与协议无向 frontier 语义对齐 |
-| 确定性 | test_argmax(τ→1e-6) | argmax + 平分取小 id(原则 4) | 无 gumbel 噪声 |
+| 确定性 | test_argmax(τ→1e-6) | argmax + 平分取小 id(原则 4) | 注意:原版 test_argmax 的选择仍含 gumbel 噪声(τ 只影响直通值),本实现比原版更严格确定 |
 | 终判 | 模型自身读出头 | 冻结上界分类器(P5) | 与全部基线同口径 |
 
 ## 8. 已否决选项(决策记录,防止重复讨论)

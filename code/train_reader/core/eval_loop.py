@@ -275,6 +275,7 @@ def evaluate_fixed(strategy, classifier, builder, graphs, labels,
     per_budget_own_correct = defaultdict(int)
     per_budget_own_outcomes = defaultdict(list)
     all_subgraphs, all_labels, all_budgets, all_seed_ids = [], [], [], []
+    all_seed_rows, all_steps = [], []
     for local_i in tqdm(range(len(graphs)), desc="  Rolling"):
         g_raw = graphs[local_i]
         label = int(labels[local_i].item())
@@ -289,17 +290,21 @@ def evaluate_fixed(strategy, classifier, builder, graphs, labels,
                                    edge_key_to_id=ek2id)
                 state._budget_limit = B
                 rollout_strategy(agent, state)
-                sub_g, _ = builder.build(state)
+                sub_g, sub_ids = builder.build(state)
                 all_subgraphs.append(sub_g)
                 all_labels.append((y, label))
                 all_budgets.append(budget_ratio)
                 all_seed_ids.append(seed_i)
+                all_seed_rows.append(sub_ids.index(state.seed_node))
+                all_steps.append(B)   # 读出游走步数 = 预算（与策略游走一致）
     for i in range(0, len(all_subgraphs), 512):
         chunk_sub = all_subgraphs[i:i + 512]
         batch_g = dgl.batch(chunk_sub).to(device)
         nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
         logits = classifier(batch_g, nids)
-        own_logits = own_batch_fn(chunk_sub) if own_batch_fn is not None else None
+        own_logits = (own_batch_fn(chunk_sub, all_seed_rows[i:i + 512],
+                                   all_steps[i:i + 512])
+                      if own_batch_fn is not None else None)
         for j, (y, label) in enumerate(all_labels[i:i + 512]):
             budget = all_budgets[i + j]
             seed_i = all_seed_ids[i + j]
@@ -313,7 +318,8 @@ def evaluate_fixed(strategy, classifier, builder, graphs, labels,
                 if own_logits is not None:
                     own_pred = own_logits[j].argmax(dim=-1).item()
                 else:
-                    own_pred = own_fn(chunk_sub[j]).argmax(dim=-1).item()
+                    own_pred = own_fn(chunk_sub[j], all_seed_rows[i + j],
+                                      all_steps[i + j]).argmax(dim=-1).item()
                 own_correct = 1.0 if own_pred == label else 0.0
                 per_budget_own_correct[budget] += own_correct
                 per_budget_own_outcomes[budget].append(own_correct)
