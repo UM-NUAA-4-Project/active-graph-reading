@@ -122,3 +122,27 @@ This file is an append-only record of project decisions.
 - Historical eval JSONs are treated as merge sources, never deleted by default; conflicts (same split+strategy from multiple files) resolve to the newest mtime with a printed warning.
 - `plot_three_stage.py` / `plot_eval_results.py` now bootstrap `sys.path` and resolve relative input paths against `code/` (previously only the output dir was resolved).
 - Known legacy quirk surfaced by the migration report: collab fixed-strategy evals used budgets 0.05/0.10/0.15 while collab reader evals used 0.10/0.15/0.20 — three-stage plots on collab need `--budgets 0.10 0.15` (the intersection).
+
+## 2026-09-19
+
+### Eval entry-point split (reader vs baselines)
+
+**Decision**: Split `train_reader/eval.py` into `eval_reader.py` (--checkpoint mode → `<checkpoint dir>/eval_learnable.json`, plus `--export-confidence` calibration export) and `eval_baselines.py` (--strategy mode → `result/{ds}/fixed/eval_fixed.json`, owning the baseline/ strategy registration and scorer-checkpoint wiring). Shared plumbing (common CLI args, per-split on-demand dataset loading, incremental JSON save, memory release) lives in `train_reader/core/eval_common.py` with an `eval_split(split, graphs, labels) -> [(key, results)]` callback contract. The old `eval.py` remains as a dispatch-only shim (reads `--checkpoint` vs `--strategy` from argv) so existing docs/commands keep working; new code should call the dedicated entry points.
+
+**Rationale**: The unified script had grown to carry two unrelated argument families (reader chunking/calibration vs baseline scorer checkpoints/MCTS knobs), and every baseline-affecting change (e.g. agentnet fast path) forced edits into a file whose reader half was untouched. Splitting keeps CLI surfaces honest while the JSON schema, output paths, and `merge_eval_json` stay byte-identical.
+
+**Implications**:
+
+- `config` in each eval JSON is now written by its own entry point (`mode: 'reader' | 'fixed'`); the `{split} → {strategy_key}` schema and `full_graph_ref`/`n_graphs` accumulation are unchanged.
+- `AGENTS.md` usage examples now point at the two new entries.
+
+### Protocol audit of the eval chain (RNG discipline)
+
+**Decision**: Three reproducibility / evaluation-correctness violations found and fixed during a protocol audit of the eval chain: (1) `RandomStrategy` (`--strategy random`) drew from the unseeded global `random` module, making random-baseline results differ run-to-run — it now seeds a per-rollout RNG as `random.Random(seed_node * 1_000_003 + n_nodes_total)` (same formula as random-walk, principle 4) and picks from the sorted frontier; (2) `evaluate_reader` reseeded a shared `random.Random(0)` per chunk for teleports, so a state's teleport depended on its position inside the chunk — teleports now draw from a per-state RNG seeded by `(seed_node, budget_limit)`, invariant to `--chunk-size` and chunk composition; (3) `AttentionReader` did not override `train`/`eval`, so `reader.eval()` (MRO: `BaseReader.eval` shadows `nn.Module.eval`, which only toggles `_training`) never reached its GNN submodules — **dropout stayed active during all attention-reader evaluations**, making reader eval nondeterministic run-to-run and systematically degraded. `AttentionReader` now overrides `train`/`eval` exactly like `LearnableReader` (`nn.Module.eval(self)` + `_training` flag).
+
+**Rationale**: Principle 4 ("the same (graph, seed_i) must produce the same trajectory") applies to stochastic baselines and reader rollouts alike; a chunk-position-dependent stream silently changes results when `--chunk-size` changes, and an unseeded baseline cannot be re-run for the paper.
+
+**Implications**:
+
+- Random-baseline, reader-teleport, and **all attention/evidence reader** results shift vs JSONs produced before 2026-09-19; affected rows need re-running (reader rows because dropout no longer fires at eval — accuracy typically moves up slightly and becomes reproducible). bfs / max-frontier-degree / agentnet / sagpool / softmask / subgraphx pick-paths are deterministic and unaffected.
+- Known, documented asymmetry (not changed): fixed-strategy rollouts end when the frontier empties (`rollout_strategy` never teleports), while reader rollouts teleport on empty frontiers with budget remaining — on disconnected graphs baselines may spend less budget than readers; interpretation caveat, see `baseline/protocol-adaptation.md`.

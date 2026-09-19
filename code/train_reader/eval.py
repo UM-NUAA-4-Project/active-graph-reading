@@ -1,35 +1,13 @@
-"""统一评估：reader checkpoint（base/attention/evidence）或固定策略（random/bfs）。
+"""统一评估入口（兼容分发 shim，自 2026-09-19 拆分为两个专用脚本）。
 
-自 m5/base/analysis/eval.py → m6/attention/eval_heldout.py → m7/eval.py
-三代收敛。reader 结构完全由 checkpoint 内嵌 config 重建（无需 CLI 传
-模型参数）。
+reader 评估与 baseline 评估的实现已分别迁移至：
+  - eval_reader.py    --checkpoint 模式 → <checkpoint 同目录>/eval_learnable.json
+  - eval_baselines.py --strategy 模式  → result/{ds}/fixed/eval_fixed.json
 
-一次运行覆盖全部可用 held-out split（默认 valid+test；无验证集的数据集
-如 cifar10 自动检测并跳过 valid），结果合并为**单个**统一 schema JSON
-（comparison 脚本直接可用）：
-  - 固定策略：--strategy random bfs → result/{ds}/fixed/eval_fixed.json
-    （顶层 valid/test 各含 random/bfs 键）
-  - reader：--checkpoint <pt> → <checkpoint 同目录>/eval_learnable.json
-    （顶层 valid/test 各含 learnable 键）
-config.full_graph_ref 由冻结分类器在各 split 全量图上现场评估填入
-（plot_three_stage 的上界虚线不再需要 --ref-valid/--ref-test）。
-
-内存策略：**逐 split 按需加载**——先加载并评估 valid（无则跳过），
-释放后（缓存摘除 + gc + empty_cache）再加载评估 test；JSON 在每个
-split 评估完即增量落盘，后续 split 崩溃不丢已完成结果。
-
-用法:
-  # 固定策略基线（一次跑 random+bfs × valid+test）→ result/{ds}/fixed/eval_fixed.json
-  python code/train_reader/eval.py --dataset cifar10 --root D:\\data\\superpixels \
-      --strategy random bfs --classifier <上界分类器>
-  # reader 评估（valid+test 合并 → checkpoint 同目录 eval_learnable.json）
-  python code/train_reader/eval.py --dataset cifar10 --root D:\\data\\superpixels \
-      --checkpoint result/cifar10/experiments/exp1/attention/rl/checkpoint_epoch5.pt \
-      --classifier result/cifar10/classifier/best_cifar10_classifier.pt
+本文件只做参数分发，保持既有命令/文档/脚本不破坏。新代码请直接使用
+两个专用入口。
 """
 
-import argparse
-import gc
 import sys
 from pathlib import Path
 
@@ -38,270 +16,30 @@ sys.path.insert(0, str(_CODE_DIR))
 sys.path = [p for p in sys.path
             if Path(p).resolve() != Path(__file__).resolve().parent]
 
-import torch  # noqa: E402
-
-from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder  # noqa: E402
-from active_graph_reader.reader.fixed import create_fixed_reader  # noqa: E402
-from datasets import get_dataset, release_dataset  # noqa: E402
-from tools.config import save_json  # noqa: E402
-from tools.paths import CODE_DIR  # noqa: E402
-from tools.seeds import SEED_METHOD_STR  # noqa: E402
-from train_reader.core import (build_eval_json, evaluate_classifier_full,  # noqa: E402
-                               evaluate_fixed, evaluate_reader, load_classifier_frozen,
-                               load_reader_from_checkpoint, merge_eval_json)
-
-
-def resolve(p) -> Path:
-    from tools.paths import resolve as _resolve
-    return _resolve(p)
-
 
 def main():
-    parser = argparse.ArgumentParser(description='统一评估（reader/固定策略）')
-    parser.add_argument('--dataset', default='cifar10')
-    parser.add_argument('--root', required=True, help='数据集根目录')
-    parser.add_argument('--checkpoint', default='',
-                        help='reader checkpoint；与 --strategy 二选一')
-    parser.add_argument('--strategy', nargs='+', default=None,
-                        choices=['random', 'bfs', 'max-frontier-degree',
-                                 'random-walk', 'sagpool', 'subgraphx',
-                                 'softmask', 'agentnet'],
-                        help='固定策略名（可同时多个，默认用法 --strategy random bfs；'
-                             'random-walk/sagpool/subgraphx/softmask/agentnet 为 '
-                             'baseline/ 协议适配基线；softmask/agentnet 需 scorer '
-                             'checkpoint，--strategy-ckpt 单值故每命令只跑一个）')
-    parser.add_argument('--strategy-ckpt', default='',
-                        help='sagpool scorer checkpoint'
-                             '（默认 baseline/artifacts/{ds}/sagpool.pt）')
-    parser.add_argument('--search-rollouts', type=int, default=20,
-                        help='subgraphx MCTS rollout 数（对齐官方默认 20）')
-    parser.add_argument('--search-expand', type=int, default=12,
-                        help='subgraphx 每次扩展的子节点上限（官方 expand_atoms=12）')
-    parser.add_argument('--search-max-evals', type=int, default=2048,
-                        help='subgraphx 单次规划的唯一 coalition 评估数上限（算力上限）')
-    parser.add_argument('--classifier', required=True, help='上界分类器 checkpoint')
-    parser.add_argument('--splits', nargs='+', default=['valid', 'test'],
-                        choices=['train', 'valid', 'test'],
-                        help='评估的 split（数据集缺少的 split 自动跳过并告警）')
-    parser.add_argument('--max-graphs', type=int, default=0,
-                        help='每个 split 的评估图数限制（0=全部；PPA 必配）')
-    parser.add_argument('--stratified', action='store_true',
-                        help='--max-graphs 按类别比例分层抽样（默认前 N 截断；'
-                             '与训练侧同种子同选择，保证子集一致）')
-    parser.add_argument('--chunk-size', type=int, default=32,
-                        help='reader 评估时的图批量大小')
-    parser.add_argument('--argmax', action=argparse.BooleanOptionalAction, default=True,
-                        help='argmax 选择（默认开启；--no-argmax 改为按分布采样）')
-    parser.add_argument('--n-seeds', type=int, default=4,
-                        help='每图确定性 seed 数（默认 4，取平均）')
-    parser.add_argument('--export-confidence', action='store_true',
-                        help='导出逐样本 [最大类置信度, 正误] → checkpoint 同目录 '
-                             'calibration.json（校准/可靠性分析，预测 5.3c；'
-                             '仅 reader 模式，ev=证据头终判 / clf=冻结分类器）')
-    parser.add_argument('--ref-batch-size', type=int, default=256,
-                        help='full-graph 参照评估的批量（大图数据集如 collab 在'
-                             '显存有限的 GPU 上 OOM 时调小，如 32）')
-    parser.add_argument('--device', default='cuda:0')
-    parser.add_argument('--output-dir', default='',
-                        help='输出目录（默认：reader → checkpoint 同目录；'
-                             'strategy → result/{ds}/fixed）')
-    args = parser.parse_args()
-
-    assert bool(args.checkpoint) != bool(args.strategy), \
-        "--checkpoint 与 --strategy 必须二选一"
-
-    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
-    print(f"Device: {device}")
-
-    # spec 只读探针：splits=() 的缓存项永不访问数据字段，不触发加载
-    spec = get_dataset(args.dataset, root=args.root, splits=(),
-                       max_graphs=args.max_graphs,
-                       stratified=args.stratified).spec
-    budget_options = spec.budget_options
-
-    classifier = load_classifier_frozen(resolve(args.classifier), device)
-    print(f"Classifier: {args.classifier}")
-    builder = SubgraphBuilder()
-
-    is_fixed = bool(args.strategy)
-    strategies = list(args.strategy) if is_fixed else ['learnable']
-    agents = []
-    if is_fixed:
-        print(f"Strategies: {' '.join(args.strategy)}")
-        if any(s in ('random-walk', 'sagpool', 'subgraphx',
-                     'softmask', 'agentnet') for s in args.strategy):
-            # baseline/ 位于仓库根：注册协议适配基线策略
-            import sys as _sys
-            from tools.paths import REPO_ROOT
-            if str(REPO_ROOT) not in _sys.path:
-                _sys.path.insert(0, str(REPO_ROOT))
-            from baseline.strategies import register_baseline_strategies
-            register_baseline_strategies()
-        for strategy in args.strategy:
-            if strategy == 'sagpool':
-                from baseline.sagpool import SagpoolStrategy
-                ckpt = (resolve(args.strategy_ckpt) if args.strategy_ckpt
-                        else CODE_DIR.parent / 'baseline' / 'artifacts'
-                             / spec.name / 'sagpool.pt')
-                if not ckpt.exists():
-                    raise SystemExit(
-                        f"sagpool scorer checkpoint 不存在: {ckpt}\n"
-                        f"先训练: python baseline/run_sagpool.py "
-                        f"--dataset {spec.name} --root <root>")
-                agent = SagpoolStrategy()
-                agent.load(str(ckpt), device)
-                print(f"SAGPool scorer: {ckpt}")
-            elif strategy in ('softmask', 'agentnet'):
-                if strategy == 'softmask':
-                    from baseline.softmask import SoftmaskStrategy
-                    agent = SoftmaskStrategy()
-                else:
-                    from baseline.agentnet import AgentnetStrategy
-                    agent = AgentnetStrategy()
-                ckpt = (resolve(args.strategy_ckpt) if args.strategy_ckpt
-                        else CODE_DIR.parent / 'baseline' / 'artifacts'
-                             / spec.name / f'{strategy}.pt')
-                if not ckpt.exists():
-                    raise SystemExit(
-                        f"{strategy} scorer checkpoint 不存在: {ckpt}\n"
-                        f"先训练: python baseline/run_{strategy}.py "
-                        f"--dataset {spec.name} --root <root>")
-                agent.load(str(ckpt), device)
-                print(f"{strategy} scorer: {ckpt}")
-            elif strategy == 'subgraphx':
-                from baseline.subgraphx import SubgraphXStrategy
-                agent = SubgraphXStrategy(
-                    n_rollout=args.search_rollouts,
-                    expand_atoms=args.search_expand,
-                    max_evals=args.search_max_evals)
-                agent.configure(classifier, device)
-                print(f"SubgraphX planner: rollouts={args.search_rollouts} "
-                      f"expand={args.search_expand} "
-                      f"max_evals={args.search_max_evals}（planner 口径，"
-                      f"详见 baseline/protocol-adaptation.md §5）")
-            else:
-                agent = create_fixed_reader(strategy)
-            agents.append(agent)
+    argv = sys.argv[1:]
+    has_ckpt = any(a == '--checkpoint' or a.startswith('--checkpoint=')
+                   for a in argv)
+    has_strategy = any(a == '--strategy' or a.startswith('--strategy=')
+                       for a in argv)
+    if not has_ckpt and not has_strategy:
+        if '-h' in argv or '--help' in argv or not argv:
+            print(__doc__.strip())
+            return
+        raise SystemExit(
+            "eval.py 已拆分：--checkpoint 模式 → eval_reader.py，"
+            "--strategy 模式 → eval_baselines.py（二者恰好传其一）")
+    if has_ckpt and has_strategy:
+        raise SystemExit(
+            "eval.py 已拆分：--checkpoint 与 --strategy 不可同时传入；"
+            "请直接使用 eval_reader.py / eval_baselines.py")
+    if has_ckpt:
+        from train_reader.eval_reader import main as reader_main
+        reader_main()
     else:
-        ckpt_path = resolve(args.checkpoint)
-        print(f"Checkpoint: {ckpt_path}")
-        reader = load_reader_from_checkpoint(ckpt_path, device,
-                                             stochastic=False, temperature=1.0)
-        print(f"Reader: kind={reader.config.kind} "
-              f"hidden={reader.config.encoder_hidden_dims} "
-              f"m={reader.config.m} n_heads={reader.config.n_heads} "
-              f"(from checkpoint config)")
-
-    parts = []
-    # 校准导出（--export-confidence，仅 reader 模式）：split → budget → ev/clf 样本对
-    calibration = {} if (args.export_confidence and not is_fixed) else None
-    if args.export_confidence and is_fixed:
-        print("[warn] --export-confidence 仅支持 reader 模式，本次忽略")
-
-    def _warn_conflict(path):
-        print(f"[warn] 合并冲突：{path}（后者覆盖前者）")
-
-    # reader 模式无 agent（reader 自身就是策略），补 None 对齐 zip
-    iter_agents = agents if is_fixed else [None] * len(strategies)
-
-    if args.output_dir:
-        out_dir = resolve(args.output_dir)
-    elif is_fixed:
-        out_dir = CODE_DIR / 'result' / spec.name / 'fixed'
-    else:
-        out_dir = ckpt_path.parent
-    out_path = out_dir / ('eval_fixed.json' if is_fixed else 'eval_learnable.json')
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    config = {
-        'dataset': spec.name,
-        'mode': 'fixed' if is_fixed else 'reader',
-        'strategies': strategies,
-        'strategy_or_checkpoint': ' '.join(args.strategy) if is_fixed else str(ckpt_path),
-        'classifier': str(resolve(args.classifier)),
-        'budgets': list(budget_options),
-        'n_graphs': {},          # 逐 split 累积
-        'n_seeds': args.n_seeds,
-        'argmax': args.argmax,
-        'seed_method': SEED_METHOD_STR,
-        'full_graph_ref': {},    # 逐 split 累积
-    }
-    if not is_fixed:
-        config['checkpoint'] = str(ckpt_path)
-    n_graphs, full_graph_ref = config['n_graphs'], config['full_graph_ref']
-
-    evaluated = []  # 已完成评估的 split（全部为空时报错退出）
-    # 逐 split 按需加载：先 valid 后 test（按 --splits 顺序），评估完释放
-    # 内存再加载下一个 split；JSON 每个 split 评估完增量落盘
-    for split in list(dict.fromkeys(args.splits)):
-        ds = get_dataset(args.dataset, root=args.root, splits=(split,),
-                         max_graphs=args.max_graphs, stratified=args.stratified)
-        graphs = getattr(ds, f'{split}_graphs')
-        labels = getattr(ds, f'{split}_labels')
-        if len(graphs) == 0:
-            print(f"[skip] 数据集 '{spec.name}' 无 {split} 划分（或为空），跳过")
-            release_dataset(ds)
-            continue
-
-        ref = evaluate_classifier_full(classifier, graphs, labels, device,
-                                       batch_size=args.ref_batch_size)
-        full_graph_ref[split] = round(ref, 6)
-        n_graphs[split] = len(graphs)
-        print(f"[{split}] 已加载 {len(graphs)} 图；"
-              f"full-graph 参照 acc = {ref:.4f}")
-
-        for strategy, agent in zip(strategies, iter_agents):
-            if is_fixed:
-                results = evaluate_fixed(None, classifier, builder,
-                                         graphs, labels, budget_options, device,
-                                         args.argmax, args.n_seeds, agent=agent)
-            else:
-                results = evaluate_reader(reader, classifier, builder,
-                                          graphs, labels, budget_options, device,
-                                          args.argmax, chunk_size=args.chunk_size,
-                                          n_seeds=args.n_seeds,
-                                          confidence_out=(calibration.setdefault(split, {})
-                                                          if calibration is not None else None))
-            parts.append(build_eval_json(results, split, strategy,
-                                         args.n_seeds, budget_options, config={}))
-            print(f"[{split}] {strategy}: "
-                  + '  '.join(f"B{int(b * 100)}%={results[f'acc_{int(b * 100)}%']:.4f}"
-                              for b in budget_options)
-                  + f"  overall={results['acc_overall']:.4f}")
-            if 'acc_clf_overall' in results:
-                print(f"[{split}] {strategy} [ref]: "
-                      + '  '.join(f"B{int(b * 100)}%={results[f'acc_clf_{int(b * 100)}%']:.4f}"
-                                  for b in budget_options)
-                      + f"  overall={results['acc_clf_overall']:.4f}"
-                      + "（evidence 终判 = 自身证据头；ref = 冻结上界分类器）")
-
-        evaluated.append(split)
-        # 增量落盘：后续 split 失败/崩溃不丢已完成结果
-        json_out = merge_eval_json(parts, on_conflict=_warn_conflict)
-        json_out['config'] = config
-        save_json(json_out, out_path)
-        print(f"[{split}] JSON saved to {out_path}")
-        if calibration:
-            save_json({'calibration': calibration,
-                       'config': {'note': '[[max_prob(4位舍入), correct], '
-                                          '...] 逐 (图, seed) 样本'}},
-                      out_dir / 'calibration.json')
-
-        # 释放本 split 的图数据：缓存摘除 + gc；GPU 侧顺带清空分配缓存
-        del graphs, labels
-        release_dataset(ds)
-        gc.collect()
-        if device.type == 'cuda':
-            torch.cuda.empty_cache()
-
-    if not evaluated:
-        raise SystemExit(f"数据集 '{spec.name}' 所请求 split {args.splits} 全部为空")
-    print(f"JSON saved to {out_path}")
-    if calibration:
-        calib_path = out_dir / 'calibration.json'
-        print(f"Calibration saved to {calib_path}")
-        print(f"绘图: python code/comparison/plot_calibration.py --json {calib_path}")
-    print(f"绘图: python code/comparison/plot_eval_results.py --json {out_path}")
+        from train_reader.eval_baselines import main as baselines_main
+        baselines_main()
 
 
 if __name__ == '__main__':

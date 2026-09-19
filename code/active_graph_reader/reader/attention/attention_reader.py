@@ -103,6 +103,22 @@ class AttentionReader(BaseReader, nn.Module):
         self._last_selected = None
 
     # ------------------------------------------------------------------
+    # train/eval 传播到 nn.Module 子模块（MRO 中 BaseReader.train/eval 只
+    # 切 _training 标志、会遮蔽 nn.Module 版本——不覆写则 encoder 等 GNN
+    # 子模块在 eval 调用后仍处 train 模式，评估时 dropout 一直生效）
+    # ------------------------------------------------------------------
+
+    def train(self, mode: bool = True):
+        nn.Module.train(self, mode)
+        self._training = mode
+        return self
+
+    def eval(self):
+        nn.Module.eval(self)
+        self._training = False
+        return self
+
+    # ------------------------------------------------------------------
     # Batched forward — used by cross-graph lockstep
     # ------------------------------------------------------------------
 

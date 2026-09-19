@@ -124,12 +124,17 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
             all_hc = reader.init_evidence(n_total, device)
             last_revealed = [s.seed_node for s in all_states]
 
-        eval_rng = random.Random(0)  # 跳转确定性可复现
+        # 跳转 RNG 逐 state 播种（(seed_node, B) 决定）：同一 (graph,
+        # budget, seed_i) 的 teleport 结果与 chunk 组合/chunk_size 无关，
+        # 完全可复现；此前每 chunk 重播种共享 random.Random(0)，teleport
+        # 依赖图在 chunk 内的位置（原则 4 纪律）
+        state_rng = [random.Random(s.seed_node * 1_000_003 + s._budget_limit)
+                     for s in all_states]
         for _step in range(max_budget):
             for j in range(n_total):
                 if active[j] and all_states[j].is_frontier_empty:
                     st = all_states[j]
-                    tp_node = teleport_if_stuck(st, rng=eval_rng)
+                    tp_node = teleport_if_stuck(st, rng=state_rng[j])
                     if tp_node is not None:
                         if use_belief:
                             all_subgraphs[j] = reader.frontier_builder.build(st)
