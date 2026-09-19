@@ -21,6 +21,14 @@ lr 1e-4 / wd 0.01 / clip 1.0 / visited-decay 0.9 / gumbel τ=2/3）。
    agent 在**已揭示区内用 BSEU 打分导航**（不消耗预算，步数上限 4n）
    到有 frontier 候选的位置再继续；导航耗尽返回 None；
 5. 评测确定性：argmax + 平分取小 id（无 gumbel 噪声）。
+
+评测性能（2026-09-19）：策略侧 per-graph 静态缓存（_GraphCache：全图
+input_proj/edge_input_proj 编码 + 无向邻接）+ 行 gather 构造可见表征，
+去掉每步 build_visible_graph/DGL 构图/全量重编码/全边 Python 循环；
+own_predict 走 forward_batch 批图 lockstep 游走（eval_loop 按 512 批调用）。
+选点行为与旧实现逐位一致；own_predict 确定性化（argmax 移动 + 每图首
+节点起点，对齐 §7 test_argmax/原则 4——旧实现走训练 forward，gumbel +
+未播种随机起点，acc_own 不可复现）。
 """
 
 import math
@@ -43,27 +51,32 @@ from active_graph_reader.engine.graph_state import GraphState  # noqa: E402
 def symmetrize_with_feat(g: dgl.DGLGraph) -> dgl.DGLGraph:
     """无向化并保留 ndata/edata['feat']（dgl.to_bidirected 会丢边特征）。
 
-    按 (min,max) 去重后每条无向边补齐双向（平行边/单向边输入均归一）；
-    边特征复制到两个方向（cifar10/ppa 边特征本身对称）。
+    张量化实现：按 (min,max) 规范键去重（每键取首见边的特征），每条无向
+    边补齐双向（平行边/单向边输入均归一）；边特征复制到两个方向
+    （cifar10/ppa 边特征本身对称）。输出边的排列为 (min,max) 字典序——
+    模型对边序置换不变（逐边独立编码 + 按节点查边聚合）。
     """
     src, dst = g.edges()
-    seen = set()
-    new_src, new_dst, feats = [], [], []
-    has_efeat = 'feat' in g.edata
-    for e in range(g.num_edges()):
-        u, v = int(src[e]), int(dst[e])
-        key = (min(u, v), max(u, v))
-        if key in seen:
-            continue
-        seen.add(key)
-        new_src += [u, v]
-        new_dst += [v, u]
-        if has_efeat:
-            feats.append(g.edata['feat'][e])
-    g2 = dgl.graph((torch.tensor(new_src), torch.tensor(new_dst)),
+    lo = torch.minimum(src, dst)
+    hi = torch.maximum(src, dst)
+    keys = torch.stack([lo, hi], dim=1)
+    uniq, inv = torch.unique(keys, dim=0, return_inverse=True)
+    # 每 key 首见边 id（对齐旧实现的 seen-set 首见语义）
+    first = torch.empty(uniq.shape[0], dtype=torch.long, device=keys.device)
+    first.scatter_reduce_(0, inv, torch.arange(keys.shape[0], device=keys.device),
+                          reduce='amin', include_self=False)
+    u, v = uniq[:, 0], uniq[:, 1]
+    g2 = dgl.graph((torch.cat([u, v]), torch.cat([v, u])),
                    num_nodes=g.num_nodes())
-    if has_efeat:
-        g2.edata['feat'] = torch.stack(feats).repeat_interleave(2, dim=0)
+    if 'feat' in g.edata:
+        # 注意：dgl.graph 不保证按传入顺序存边（连续性不同的输入可能触发
+        # 内部排序），特征须按输出边的规范键回查，不能按传入顺序赋值
+        s2, d2 = g2.edges()
+        code_u = uniq[:, 0].long() * g.num_nodes() + uniq[:, 1].long()
+        code_e = (torch.minimum(s2, d2) * g.num_nodes()
+                  + torch.maximum(s2, d2))
+        rows = torch.searchsorted(code_u, code_e)   # 输出边键必在 uniq 中
+        g2.edata['feat'] = g.edata['feat'][first[rows]]
     if 'feat' in g.ndata:
         g2.ndata['feat'] = g.ndata['feat']
     return g2
@@ -289,9 +302,191 @@ class AgentNetModel(nn.Module):
             out = layer_out if out is None else out + layer_out
         return (out / (self.num_steps + 1)).unsqueeze(0)   # [1, n_classes]
 
+    # ------------------------------------------------------------------
+    # 批图 lockstep 游走前向（own_predict_batch 评测用）
+    # ------------------------------------------------------------------
+    @torch.no_grad()
+    def forward_batch(self, g: dgl.DGLGraph) -> torch.Tensor:
+        """块对角批图（dgl.batch 产物，自环需已加）的确定性评测读出。
+
+        对齐协议 test_argmax(τ→1e-6)/原则 4（protocol-adaptation.md §7）：
+        移动 = argmax + 平分取小 id（无 gumbel 噪声），起点 = 每图首节点
+        （dgl.batch 保序，即揭示子图最小原图 id），attn_val ≡ 1（τ→0 硬
+        one-hot 的 straight-through 极限，与训练路径 ret[idx]≈1 一致）。
+        与 forward 单图数学逐式对齐，差异仅是批内按图 padding——pad 位经
+        -inf 掩蔽不参与 argmax、经 mask 乘零不参与邻域聚合。同一输入必产
+        出同一 logits（旧 own_predict 走训练 forward，gumbel+未播种随机
+        起点不可复现）。返回 [B, n_classes]。
+        """
+        h = self.init_hidden(g)
+        edge_emb = self.init_edge_emb(g)
+        device = h.device
+        B = g.batch_size
+
+        # 邻接 u → [(v, eid)] 按 v 升序；eid 取首见（对齐 forward 的
+        # edge_map.setdefault 首见语义）——每批一次 O(E) 构建
+        src, dst = g.edges()
+        nbr_eid = {}
+        for e, (u, v) in enumerate(zip(src.tolist(), dst.tolist())):
+            nbr_eid.setdefault(u, {}).setdefault(v, e)
+            nbr_eid.setdefault(v, {}).setdefault(u, e)
+        nbr_lists = {u: sorted(d.items()) for u, d in nbr_eid.items()}
+
+        def _pad(seqs, width):
+            """[(v, eid)] 序列 → (节点 id [B,W], 边 id [B,W], 有效 mask [B,W])。"""
+            rows, pos, vals, eids = [], [], [], []
+            for r, seq in enumerate(seqs):
+                rows += [r] * len(seq)
+                pos += list(range(len(seq)))
+                vals += [v for v, _ in seq]
+                eids += [e for _, e in seq]
+            t_v = torch.zeros(len(seqs), width, dtype=torch.long, device=device)
+            t_e = torch.zeros(len(seqs), width, dtype=torch.long, device=device)
+            t_m = torch.zeros(len(seqs), width, dtype=torch.bool, device=device)
+            if rows:
+                r_t = torch.tensor(rows, device=device)
+                p_t = torch.tensor(pos, device=device)
+                t_v[r_t, p_t] = torch.tensor(vals, device=device)
+                t_e[r_t, p_t] = torch.tensor(eids, device=device)
+                t_m[r_t, p_t] = True
+            return t_v, t_e, t_m
+
+        agent = self.agent_emb(torch.zeros(B, dtype=torch.long, device=device))
+        moved_edge = (torch.zeros(B, self.hidden, device=device)
+                      if self.with_edge else None)
+        visit = torch.zeros(g.num_nodes(), device=device)
+        bnn = g.batch_num_nodes()
+        cur_t = torch.zeros(B, dtype=torch.long, device=device)
+        cur_t[1:] = torch.cumsum(bnn, 0)[:-1]     # 每图首节点（确定性起点）
+        visit[cur_t] = 1.0
+        cur = cur_t.tolist()
+        prev_t = None
+        attn_val = torch.ones(B, device=device)
+        out = None
+
+        for i in range(self.num_steps + 1):
+            if i > 0:
+                seqs = [nbr_lists[c] for c in cur]           # 含自环 stay
+                D = max(len(s) for s in seqs)
+                cand_t, cand_eid, valid = _pad(seqs, D)
+                q = self.query(agent)
+                cur_feat = h[cur_t]
+                if self.with_edge:
+                    k_in = torch.cat([h[cand_t], edge_emb[cand_eid],
+                                      cur_feat.unsqueeze(1).expand(-1, D, -1)],
+                                     dim=-1)
+                else:
+                    k_in = torch.cat([h[cand_t],
+                                      cur_feat.unsqueeze(1).expand(-1, D, -1)],
+                                     dim=-1)
+                k = self.key(k_in)
+                attn = (q.unsqueeze(1) * k).sum(-1) / math.sqrt(self.hidden)
+                bias = torch.zeros_like(attn)
+                is_cur = cand_t == cur_t.unsqueeze(1)
+                s = visit[cand_t] / self.visited_decay
+                term = s * self.explored_param \
+                    + (1.0 - s) * self.unexplored_param
+                bias = bias + term * (~is_cur & valid)
+                bias = bias + self.stay_param * is_cur
+                if prev_t is not None:
+                    bias = bias + self.back_param * \
+                        ((cand_t == prev_t.unsqueeze(1)) & valid)
+                logits = (attn + bias).masked_fill(~valid, float('-inf'))
+                # test_argmax：pad 已 -inf 不会被选中；argmax 平分取最小
+                # 行号（行序 = 候选 v 升序），attn_val = τ→0 硬 one-hot 极限
+                idx = logits.argmax(dim=-1)
+                attn_val = torch.ones(B, device=device)
+                sel = idx.unsqueeze(1)
+                prev_t = cur_t
+                cur_t = cand_t.gather(1, sel).squeeze(1)
+                cur = cur_t.tolist()
+                if self.with_edge:
+                    moved_edge = edge_emb[cand_eid.gather(1, sel).squeeze(1)]
+                visit = visit * self.visited_decay
+                visit[cur_t] = 1.0
+
+            # 邻域卷积（去 stay 自环）+ agent/节点更新 + 读出累加
+            conv_seqs = [[(v, e) for v, e in nbr_lists[c] if v != c]
+                         for c in cur]
+            Dc = max(len(s) for s in conv_seqs)
+            if Dc > 0:
+                conv_t, conv_eid, conv_valid = _pad(conv_seqs, Dc)
+                if self.with_edge:
+                    agg = (self.message_val(
+                        torch.cat([h[conv_t], edge_emb[conv_eid]], dim=-1))
+                        * conv_valid.unsqueeze(-1)).sum(dim=1)
+                else:
+                    agg = (h[conv_t] * conv_valid.unsqueeze(-1)).sum(dim=1)
+            else:
+                agg = torch.zeros(B, self.hidden, device=device)
+            if self.with_edge:
+                me = moved_edge * attn_val.unsqueeze(-1)
+                a_msg = self.agent_node_lin(torch.cat([agent, me], dim=-1))
+            else:
+                a_msg = agent
+            cur_feat = h[cur_t]
+            new_h_pos = cur_feat + self.node_mlp(
+                torch.cat([cur_feat, a_msg], dim=-1))
+            new_h_pos = new_h_pos + self.conv_mlp(
+                torch.cat([new_h_pos, agg], dim=-1))
+            h = h.index_copy(0, cur_t, new_h_pos)
+            if self.with_edge:
+                agent_cat = torch.cat(
+                    [agent, new_h_pos * attn_val.unsqueeze(-1), me], dim=-1)
+            else:
+                agent_cat = torch.cat(
+                    [agent, new_h_pos * attn_val.unsqueeze(-1)], dim=-1)
+            agent = agent + self.agent_mlp(agent_cat)
+            layer_out = self.fc(self.step_readout(agent))
+            out = layer_out if out is None else out + layer_out
+        return out / (self.num_steps + 1)                  # [B, n_classes]
+
+
+class _GraphCache:
+    """单图静态量缓存（跨 rollout 共享）：全图编码 + 无向邻接。
+
+    select 逐步重建可见图 + 全量重编码的等价替代：节点/边特征是图的静态
+    属性，input_proj/edge_input_proj 逐行独立 → 全图一次前向后按行 gather，
+    与逐步重前向一致；frontier 节点特征置零的编码是全节点同一常数行
+    （input_proj(0)）。换图重建（eval 逐图连续跑全部 rollout，天然命中）。
+    """
+
+    __slots__ = ('adj', 'x_proj', 'e_proj', 'zero_row')
+
+    def __init__(self, model: 'AgentNetModel', state: GraphState, device):
+        g = state.g
+        # 无向邻接（去自身/并行边去重；原图 id 升序）——一次 O(E) 构建
+        # 替代 select 内逐步的全边 Python 循环
+        src, dst = g.edges()
+        adj = {}
+        for u, v in zip(src.tolist(), dst.tolist()):
+            if u == v:
+                continue
+            adj.setdefault(u, set()).add(v)
+            adj.setdefault(v, set()).add(u)
+        self.adj = {k: sorted(s) for k, s in adj.items()}
+        if model.input_proj is not None:
+            self.x_proj = model.input_proj(g.ndata['feat'].to(device))
+            self.zero_row = model.input_proj(
+                torch.zeros(1, state.node_feat_dim, device=device))
+        else:
+            self.x_proj = None
+            self.zero_row = None
+        self.e_proj = (model.edge_input_proj(g.edata['feat'].to(device))
+                       if model.with_edge else None)
+
+    def edge_id(self, state: GraphState, u: int, v: int) -> int:
+        """(u,v) 的原图边 id（键与 GraphState._edge_key_to_id 同为 min/max 规范）。"""
+        return state._edge_key_to_id[(min(u, v), max(u, v))]
+
 
 class AgentnetStrategy(BaseReader):
-    """单 agent 游走 → 逐点揭示（协议合规评测形态；有状态，reset 重建）。"""
+    """单 agent 游走 → 逐点揭示（协议合规评测形态；有状态，reset 重建）。
+
+    评测快速路径：per-graph 静态缓存（_GraphCache）+ 行 gather 构造可见
+    表征，不再每步经 build_visible_graph 重建 DGL 图/重编码/重建邻接，
+    选点行为与旧实现逐位一致（见各方法内等价性说明）。
+    """
 
     NAV_CAP_FACTOR = 4   # 已揭示区内导航步数上限 = 4 × n_nodes（对齐 random-walk）
 
@@ -299,6 +494,8 @@ class AgentnetStrategy(BaseReader):
         super().__init__()
         self._model = None
         self._device = None
+        self._gc_graph = None    # 缓存对应的图对象（identity 判定换图）
+        self._gc = None          # _GraphCache
         self._reset_walk()
 
     def _reset_walk(self):
@@ -308,6 +505,7 @@ class AgentnetStrategy(BaseReader):
         self._h_cache = {}        # orig_id → 更新后的节点嵌入
         self._agent = None
         self._nav_steps = 0
+        # 注意：不清 _gc/_gc_graph——同图多个 rollout 共享静态缓存
 
     @property
     def name(self) -> str:
@@ -326,6 +524,8 @@ class AgentnetStrategy(BaseReader):
         model.load_state_dict(ckpt['model_state_dict'], strict=True)
         self._device = torch.device(device)
         self._model = model.to(self._device).eval()
+        self._gc_graph = None   # 权重变了，静态缓存失效
+        self._gc = None
 
     def reset(self) -> None:
         self._reset_walk()
@@ -335,10 +535,21 @@ class AgentnetStrategy(BaseReader):
         acc_* / acc_clf_* 惯例：协议终判仍为冻结分类器，本头为参照）。
 
         输入 SubgraphBuilder 产出的揭示子图（已双向+自环+特征）；按训练
-        约定重整构图后从头走一遍 agent 游走读出 → [1, n_classes] logits。
+        约定重整构图后确定性 agent 游走读出（argmax + 首节点起点）→
+        [1, n_classes] logits。同一子图必产出同一 logits。
         """
-        g = dgl.add_self_loop(symmetrize_with_feat(dgl.remove_self_loop(sub_g)))
-        return self._model(g.to(self._device))
+        return self.own_predict_batch([sub_g])
+
+    def own_predict_batch(self, subgraphs):
+        """own_predict 批量版：symmetrize → dgl.batch → lockstep 游走前向。
+
+        返回 [B, n_classes]；逐图语义与单图 own_predict 一致（确定性
+        argmax 游走 + 每图首节点起点，test_argmax 协议）。
+        """
+        gs = [dgl.add_self_loop(symmetrize_with_feat(dgl.remove_self_loop(s)))
+              for s in subgraphs]
+        bg = dgl.batch(gs).to(self._device)
+        return self._model.forward_batch(bg)
 
     def on_new_frontier(self, edges) -> None:
         """rollout 开始时经 initial_frontier 推断 seed，初始化 walk 状态。"""
@@ -357,13 +568,7 @@ class AgentnetStrategy(BaseReader):
     def _cand_from_frontier(self, state: GraphState):
         return sorted({v for (u, v) in state.frontier_edges if u == self._pos})
 
-    def _visible_adjacency(self, state: GraphState, node: int):
-        """node 在原图中的无向邻居（去自身）。"""
-        nbrs = (set(state.g.successors(node).tolist())
-                | set(state.g.predecessors(node).tolist()))
-        nbrs.discard(node)
-        return nbrs
-
+    @torch.no_grad()
     def select(self, graph_state: GraphState) -> 'int | None':
         frontier = graph_state.frontier_edges
         if not frontier:
@@ -374,111 +579,127 @@ class AgentnetStrategy(BaseReader):
         if self._pos is None:
             self.on_new_frontier(frontier)
 
-        from baseline.sagpool import build_visible_graph
-        g, ids = build_visible_graph(graph_state)
-        g = g.to(self._device)
-        h = self._model.init_hidden(g)      # frontier 特征已置零（P4）
-        edge_emb = self._model.init_edge_emb(g)
-        id_to_row = {old: i for i, old in enumerate(ids)}
-        # 游走记忆：已访问节点用更新后的嵌入覆盖初始嵌入
+        m = self._model
+        if self._gc_graph is not graph_state.g:
+            self._gc_graph = graph_state.g
+            self._gc = _GraphCache(m, graph_state, self._device)
+        cache = self._gc
+
+        # 可见表征行序与 build_visible_graph 一致：revealed 升序在前、
+        # frontier 升序在后。h 初始行 = 全图编码按行 gather（frontier 行
+        # 用置零特征编码 zero_row）+ 游走记忆覆盖 —— 与旧实现"重建可见图
+        # → init_hidden 全量重前向 → 覆盖 _h_cache"逐位一致（同输入同权重
+        # 的 Linear 逐行独立），但无任何逐步前向/DGL 构图。
+        revealed = graph_state.get_revealed_sorted()
+        frontier_nodes = graph_state.get_frontier_nodes()
+        ids = revealed + frontier_nodes
+        row_of = {old: i for i, old in enumerate(ids)}
+        if cache.x_proj is not None:
+            h = torch.cat([
+                cache.x_proj[revealed] if revealed else
+                torch.zeros(0, m.hidden, device=self._device),
+                cache.zero_row.expand(len(frontier_nodes), -1)])
+        else:
+            h = m.node_token.repeat(len(ids), 1)
         for old, hv in self._h_cache.items():
-            h[id_to_row[old]] = hv
-        src, dst = g.edges()
-        edge_map = {}
-        for e in range(g.num_edges()):
-            edge_map.setdefault((int(src[e]), int(dst[e])), e)
+            h[row_of[old]] = hv
 
         cand = self._cand_from_frontier(graph_state)
-        # 可见图邻接（agent 只知道可见边：已揭示边 + frontier one-ended 边；
-        # frontier–frontier 的原图边不可见，不得进入卷积/移动）
-        g_nbrs = {}
-        gs, gd = g.edges()
-        for e in range(g.num_edges()):
-            u, v = int(gs[e]), int(gd[e])
-            g_nbrs.setdefault(u, set()).add(v)
-            g_nbrs.setdefault(v, set()).add(u)
-        with torch.no_grad():
-            # ---- 死角：在已揭示区内用 BSEU 打分导航（不消耗预算）----
-            nav_cap = self.NAV_CAP_FACTOR * graph_state.n_nodes_total
-            while not cand and self._nav_steps < nav_cap:
-                self._nav_steps += 1
-                nbrs = self._visible_adjacency(graph_state, self._pos) \
-                    & set(graph_state.V_revealed)
-                if not nbrs:
-                    return None
-                nbrs = sorted(nbrs)
-                nbr_t = torch.tensor([id_to_row[v] for v in nbrs],
-                                     dtype=torch.long, device=self._device)
-                nbr_e = None
-                if self._model.with_edge:
-                    nbr_e = torch.stack([
-                        edge_emb[edge_map[(id_to_row[self._pos],
-                                           id_to_row[v])]]
-                        for v in nbrs])
-                visit = torch.tensor([self._visit.get(v, 0.0) for v in nbrs],
-                                     device=self._device)
-                is_prev = torch.tensor([v == self._prev for v in nbrs],
-                                       dtype=torch.bool, device=self._device) \
-                    if self._prev is not None else None
-                logits = self._model.move_logits(
-                    h, self._agent, id_to_row[self._pos], nbr_t, nbr_e,
-                    visit, is_prev)
-                nxt = nbrs[self._model.move_choice_eval(logits)]
-                h = self._apply_move(graph_state, g, ids, h, edge_emb, edge_map,
-                                     id_to_row, nxt, g_nbrs)
-                cand = self._cand_from_frontier(graph_state)
-            if not cand:
+        frontier_set = set(frontier_nodes)
+        # ---- 死角：在已揭示区内用 BSEU 打分导航（不消耗预算）----
+        nav_cap = self.NAV_CAP_FACTOR * graph_state.n_nodes_total
+        while not cand and self._nav_steps < nav_cap:
+            self._nav_steps += 1
+            nbrs = set(cache.adj.get(self._pos, ())) & graph_state.V_revealed
+            if not nbrs:
                 return None
-
-            # ---- 揭示步：frontier 候选打分 → argmax（平分取小 id）----
-            cand_t = torch.tensor([id_to_row[v] for v in cand],
-                                  dtype=torch.long, device=self._device)
-            cand_e = None
-            if self._model.with_edge:
-                cand_e = torch.stack([
-                    edge_emb[edge_map[(id_to_row[self._pos],
-                                       id_to_row[v])]]
-                    for v in cand])
-            visit = torch.tensor([self._visit.get(v, 0.0) for v in cand],
+            nbrs = sorted(nbrs)
+            nbr_t = torch.tensor([row_of[v] for v in nbrs],
+                                 dtype=torch.long, device=self._device)
+            nbr_e = None
+            if m.with_edge:
+                nbr_e = torch.stack([
+                    cache.e_proj[cache.edge_id(graph_state, self._pos, v)]
+                    for v in nbrs])
+            visit = torch.tensor([self._visit.get(v, 0.0) for v in nbrs],
                                  device=self._device)
-            is_prev = torch.tensor([v == self._prev for v in cand],
+            is_prev = torch.tensor([v == self._prev for v in nbrs],
                                    dtype=torch.bool, device=self._device) \
                 if self._prev is not None else None
-            logits = self._model.move_logits(
-                h, self._agent, id_to_row[self._pos], cand_t, cand_e,
+            logits = m.move_logits(
+                h, self._agent, row_of[self._pos], nbr_t, nbr_e,
                 visit, is_prev)
-            chosen = cand[self._model.move_choice_eval(logits)]
-            h = self._apply_move(graph_state, g, ids, h, edge_emb, edge_map,
-                                 id_to_row, chosen, g_nbrs)
+            nxt = nbrs[m.move_choice_eval(logits)]
+            h = self._apply_move(graph_state, cache, row_of, h, nxt,
+                                 frontier_set)
+            cand = self._cand_from_frontier(graph_state)
+        if not cand:
+            return None
+
+        # ---- 揭示步：frontier 候选打分 → argmax（平分取小 id）----
+        cand_t = torch.tensor([row_of[v] for v in cand],
+                              dtype=torch.long, device=self._device)
+        cand_e = None
+        if m.with_edge:
+            cand_e = torch.stack([
+                cache.e_proj[cache.edge_id(graph_state, self._pos, v)]
+                for v in cand])
+        visit = torch.tensor([self._visit.get(v, 0.0) for v in cand],
+                             device=self._device)
+        is_prev = torch.tensor([v == self._prev for v in cand],
+                               dtype=torch.bool, device=self._device) \
+            if self._prev is not None else None
+        logits = m.move_logits(
+            h, self._agent, row_of[self._pos], cand_t, cand_e,
+            visit, is_prev)
+        chosen = cand[m.move_choice_eval(logits)]
+        h = self._apply_move(graph_state, cache, row_of, h, chosen,
+                             frontier_set)
         return chosen
 
-    def _apply_move(self, state: GraphState, g, ids, h, edge_emb, edge_map,
-                    id_to_row, target: int, g_nbrs: dict):
-        """移动到 target：agent/节点更新 + visit 衰减（揭示由 reveal_node 完成）。
+    def _apply_move(self, state: GraphState, cache: _GraphCache,
+                    row_of: dict, h: torch.Tensor, target: int,
+                    frontier_set: set) -> torch.Tensor:
+        """移动到 target（原图 id）：agent/节点更新 + visit 衰减（揭示由
+        reveal_node 完成）。返回更新后的 h（functional 更新）。
 
-        返回更新后的 h（functional 更新）。卷积邻居取自可见图 g_nbrs。"""
+        卷积邻居 = target 的可见邻居（原图 id），行序 = 已揭示（升序）在
+        前、frontier（升序）在后 —— 与旧实现按可见图行号升序的聚合序列
+        逐位一致（可见图行 0..R-1 = revealed 升序，R.. = frontier 升序）：
+        - target 已揭示（导航步）：与 revealed 的边都在 revealed_edge_keys、
+          与 frontier 的真实边都是 frontier 边（一端已揭示），全部可见；
+        - target 未揭示（揭示步）：只有 frontier 边可见，即 revealed 邻居；
+          frontier–frontier 的原图边不可见，不得进入卷积。
+        无边特征图的历史行为（revealed_edge_keys 恒空 → 可见图缺
+        revealed-revealed 边）按原样保留。"""
         with torch.no_grad():
+            m = self._model
             moved_edge = None
-            if self._model.with_edge:
-                moved_edge = edge_emb[edge_map[(id_to_row[self._pos],
-                                                id_to_row[target])]]
-            conv_nbr = sorted(g_nbrs.get(id_to_row[target], set())
-                              - {id_to_row[target]})          # 行号集合
-            conv_nbr_t = torch.tensor(conv_nbr, dtype=torch.long,
-                                      device=self._device)
+            if m.with_edge:
+                moved_edge = cache.e_proj[
+                    cache.edge_id(state, self._pos, target)]
+            nbrs = cache.adj.get(target, ())
+            if target in state.V_revealed:
+                rev = ([v for v in nbrs if v in state.V_revealed]
+                       if state.has_edge_feat else [])
+                conv_orig = sorted(rev) + sorted(v for v in nbrs
+                                                 if v in frontier_set)
+            else:
+                conv_orig = sorted(v for v in nbrs if v in state.V_revealed)
+            conv_nbr = torch.tensor([row_of[v] for v in conv_orig],
+                                    dtype=torch.long, device=self._device)
             conv_e = None
-            if self._model.with_edge:
+            if m.with_edge:
                 conv_e = torch.stack([
-                    edge_emb[edge_map[(id_to_row[target], v)]]
-                    for v in conv_nbr]) \
-                    if conv_nbr else torch.zeros(
-                        0, self._model.hidden, device=self._device)
-            h, self._agent = self._model.step_update(
-                h, self._agent, id_to_row[target], conv_nbr_t, conv_e,
-                moved_edge)
-            self._h_cache[target] = h[id_to_row[target]].clone()
+                    cache.e_proj[cache.edge_id(state, target, v)]
+                    for v in conv_orig]) \
+                    if conv_orig else torch.zeros(
+                        0, m.hidden, device=self._device)
+            h, self._agent = m.step_update(
+                h, self._agent, row_of[target], conv_nbr, conv_e, moved_edge)
+            self._h_cache[target] = h[row_of[target]].clone()
             self._prev, self._pos = self._pos, target
             for k in self._visit:
-                self._visit[k] *= self._model.visited_decay
+                self._visit[k] *= m.visited_decay
             self._visit[target] = 1.0
         return h

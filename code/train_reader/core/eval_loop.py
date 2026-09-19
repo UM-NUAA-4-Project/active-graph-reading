@@ -48,6 +48,25 @@ def rollout_strategy(agent, state):
             agent.on_new_frontier(new_frontier)
 
 
+def _edge_key_to_id(g) -> dict:
+    """canonical (min,max) key → 首见边 id（与 GraphState 构造内联逻辑一致）。
+
+    每图预构建一次、同图的全部 (budget, seed) rollout GraphState 共享——
+    GraphState 逐步重建该 dict 是评估循环的主要 Python 开销之一（~3ms/次
+    × 12 rollouts/图，oracle_estimator/balance_trajectories 同款预构建惯例）。
+    """
+    if 'feat' not in g.edata:
+        return {}
+    src, dst = g.edges()
+    out = {}
+    for eid in range(g.num_edges()):
+        u, v = int(src[eid]), int(dst[eid])
+        key = (min(u, v), max(u, v))
+        if key not in out:
+            out[key] = eid
+    return out
+
+
 @torch.no_grad()  # 必需：evidence 的 (h,c) 跨 lockstep 步携带 grad_fn，开梯度会链式
                   # 保留整个 chunk 的全部前向图 → 24G OOM（2026-09-12 PPA 全量 valid）
 def evaluate_reader(reader, classifier, builder, graphs, labels,
@@ -84,11 +103,13 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
             label = int(labels[local_i].item())
             y = torch.tensor([label], device=device)
             n_nodes = g_raw.num_nodes()
+            ek2id = _edge_key_to_id(g_raw)
             for budget_ratio in budget_options:
                 B = max(1, int(budget_ratio * n_nodes))
                 for seed_i in range(n_seeds):
                     seed_node = deterministic_seed(local_i, seed_i, n_nodes)
-                    state = GraphState(g_raw, seed_node=seed_node)
+                    state = GraphState(g_raw, seed_node=seed_node,
+                                       edge_key_to_id=ek2id)
                     state._budget_limit = B
                     all_states.append(state)
                     state_info.append((y, label, budget_ratio, seed_i))
@@ -241,8 +262,11 @@ def evaluate_fixed(strategy, classifier, builder, graphs, labels,
     per_seed_outcomes = {i: defaultdict(list) for i in range(n_seeds)}
     per_seed_per_class = {i: defaultdict(lambda: defaultdict(list))
                           for i in range(n_seeds)}
-    # 自带读出头的策略（agentnet）：额外记录自身头对同一揭示子图的判定
+    # 自带读出头的策略（agentnet）：额外记录自身头对同一揭示子图的判定。
+    # 优先用批量接口 own_predict_batch（批图 lockstep 游走），无则逐个回退
     own_fn = getattr(agent, 'own_predict', None)
+    own_batch_fn = getattr(agent, 'own_predict_batch', None) \
+        if own_fn is not None else None
     per_budget_own_correct = defaultdict(int)
     per_budget_own_outcomes = defaultdict(list)
     all_subgraphs, all_labels, all_budgets, all_seed_ids = [], [], [], []
@@ -251,11 +275,13 @@ def evaluate_fixed(strategy, classifier, builder, graphs, labels,
         label = int(labels[local_i].item())
         y = torch.tensor([label], device=device)
         n_nodes = g_raw.num_nodes()
+        ek2id = _edge_key_to_id(g_raw)
         for budget_ratio in budget_options:
             B = max(1, int(budget_ratio * n_nodes))
             for seed_i in range(n_seeds):
                 seed_node = deterministic_seed(local_i, seed_i, n_nodes)
-                state = GraphState(g_raw, seed_node=seed_node)
+                state = GraphState(g_raw, seed_node=seed_node,
+                                   edge_key_to_id=ek2id)
                 state._budget_limit = B
                 rollout_strategy(agent, state)
                 sub_g, _ = builder.build(state)
@@ -264,9 +290,11 @@ def evaluate_fixed(strategy, classifier, builder, graphs, labels,
                 all_budgets.append(budget_ratio)
                 all_seed_ids.append(seed_i)
     for i in range(0, len(all_subgraphs), 512):
-        batch_g = dgl.batch(all_subgraphs[i:i + 512]).to(device)
+        chunk_sub = all_subgraphs[i:i + 512]
+        batch_g = dgl.batch(chunk_sub).to(device)
         nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
         logits = classifier(batch_g, nids)
+        own_logits = own_batch_fn(chunk_sub) if own_batch_fn is not None else None
         for j, (y, label) in enumerate(all_labels[i:i + 512]):
             budget = all_budgets[i + j]
             seed_i = all_seed_ids[i + j]
@@ -277,8 +305,11 @@ def evaluate_fixed(strategy, classifier, builder, graphs, labels,
             per_seed_outcomes[seed_i][budget].append(correct)
             per_seed_per_class[seed_i][budget][label].append(correct)
             if own_fn is not None:
-                own_logits = own_fn(all_subgraphs[i + j])
-                own_correct = 1.0 if own_logits.argmax(dim=-1).item() == label else 0.0
+                if own_logits is not None:
+                    own_pred = own_logits[j].argmax(dim=-1).item()
+                else:
+                    own_pred = own_fn(chunk_sub[j]).argmax(dim=-1).item()
+                own_correct = 1.0 if own_pred == label else 0.0
                 per_budget_own_correct[budget] += own_correct
                 per_budget_own_outcomes[budget].append(own_correct)
 
