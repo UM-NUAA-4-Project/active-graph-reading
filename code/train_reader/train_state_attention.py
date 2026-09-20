@@ -41,6 +41,7 @@ sys.path.insert(0, str(_CODE_DIR))
 
 import torch  # noqa: E402
 import torch.nn as nn  # noqa: E402
+from tqdm import tqdm  # noqa: E402
 
 from active_graph_reader.engine.graph_state import GraphState  # noqa: E402
 from active_graph_reader.engine.reveal_action import (  # noqa: E402
@@ -105,7 +106,9 @@ def collect_split(reader, graphs, labels, budget_ratios, n_seeds, device,
     最后一次 reveal 的证据）追加为序列末位。
     """
     states, metas, rngs = [], [], []
-    for gi, (g, lbl) in enumerate(zip(graphs, labels)):
+    for gi, (g, lbl) in enumerate(tqdm(zip(graphs, labels), total=len(graphs),
+                                       desc=f'  [{split_name}] states',
+                                       leave=False)):
         n = g.num_nodes()
         for seed_i in range(n_seeds):
             seed_node = deterministic_seed(graph_offset + gi, seed_i, n)
@@ -126,7 +129,9 @@ def collect_split(reader, graphs, labels, budget_ratios, n_seeds, device,
     active = [True] * n_total
     max_budget = max(s._budget_limit for s in states)
 
-    for _step in range(max_budget):
+    step_bar = tqdm(range(max_budget), desc=f'  [{split_name}] lockstep',
+                    leave=False)
+    for _step in step_bar:
         for j in range(n_total):
             if active[j] and states[j].is_frontier_empty:
                 tp = teleport_if_stuck(states[j], rng=rngs[j])
@@ -141,6 +146,7 @@ def collect_split(reader, graphs, labels, budget_ratios, n_seeds, device,
                       if active[j] and not states[j].is_frontier_empty]
         if not active_idx:
             break
+        step_bar.set_postfix(active=len(active_idx), done=n_total - len(active_idx))
         for c0 in range(0, len(active_idx), collect_batch):
             chunk = active_idx[c0:c0 + collect_batch]
             results, new_hc, _, step_states = reader.forward_states_evidence(
@@ -162,9 +168,11 @@ def collect_split(reader, graphs, labels, budget_ratios, n_seeds, device,
                     last_revealed[j] = chosen
                 if states[j].get_budget_used() >= states[j]._budget_limit:
                     active[j] = False
+    step_bar.close()
 
     episodes = []
-    for c0 in range(0, n_total, collect_batch):
+    for c0 in tqdm(range(0, n_total, collect_batch),
+                   desc=f'  [{split_name}] terminal', leave=False):
         chunk = list(range(c0, min(c0 + collect_batch, n_total)))
         _, _, ev_term, step_states = reader.forward_states_evidence(
             [states[j] for j in chunk], temperature=1.0,
