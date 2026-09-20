@@ -1,4 +1,4 @@
-"""BC（行为克隆）训练：任意注册数据集 × base/attention reader。
+"""BC（行为克隆）训练：任意注册数据集 × base/evidence reader。
 
 自 m5/base/train_bc.py（PPA+base）、m6/attention/train_bc.py（PPA+attention）、
 m7/train_bc.py（registry）三份合并：
@@ -12,9 +12,9 @@ m7/train_bc.py（registry）三份合并：
 
 用法:
   python code/train_reader/train_bc.py --dataset cifar10 --root D:\\superpixels \
-      --data-dir data/cifar10/trajectories_filtered --reader-kind attention --epochs 10
+      --data-dir data/cifar10/trajectories_filtered --reader-kind evidence --epochs 10
   # 断点续训
-  ... --resume result/cifar10/experiments/exp1/attention/bc/reader_checkpoint_epoch5.pt --epochs 10
+  ... --resume result/cifar10/experiments/exp1/evidence/bc/reader_checkpoint_epoch5.pt --epochs 10
 """
 
 import argparse

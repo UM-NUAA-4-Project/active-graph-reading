@@ -13,8 +13,8 @@ from classifier import ClassifierConfig, GraphClassifier
 
 
 def test_reader_config_roundtrip():
-    cfg = ReaderConfig.from_legacy('attention', hidden_dim=96, n_layers=3,
-                                   dropout=0.2, m=6, n_heads=8)
+    cfg = ReaderConfig.from_legacy('evidence', hidden_dim=96, n_layers=3,
+                                   dropout=0.2, n_classes=10)
     cfg2 = ReaderConfig.from_dict(cfg.to_dict())
     assert cfg2.to_dict() == cfg.to_dict()
     # 逐层列表往返
@@ -35,8 +35,13 @@ def test_reader_legacy_state_dict_keys():
 
 def test_reader_validate():
     try:
-        ReaderConfig(kind='attention', encoder_hidden_dims=[128, 64]).validate()
-        raise AssertionError('同宽校验应报错')
+        ReaderConfig(kind='attention').validate()
+        raise AssertionError("已废弃的 kind='attention' 应报错")
+    except ValueError:
+        pass
+    try:
+        ReaderConfig(kind='evidence', n_classes=0).validate()
+        raise AssertionError('evidence 需 n_classes>0 应报错')
     except ValueError:
         pass
 
@@ -59,13 +64,13 @@ def test_classifier_per_layer():
 
 def test_infer_reader_config_from_weights():
     from classifier import ClassifierConfig as _  # noqa: F401
-    reader = build_reader(ReaderConfig.from_legacy('attention', hidden_dim=64,
-                                                   n_layers=2, m=3, n_heads=2))
+    reader = build_reader(ReaderConfig.from_legacy('evidence', hidden_dim=64,
+                                                   n_layers=2, n_classes=10))
     cfg = infer_reader_config(reader.state_dict())
-    assert cfg.kind == 'attention'
+    assert cfg.kind == 'evidence'
     assert cfg.encoder_hidden_dims == [64, 64]
     assert cfg.edge_feat_dim == 7
-    assert cfg.m == 3
+    assert cfg.n_classes == 10
 
 
 def run_all():

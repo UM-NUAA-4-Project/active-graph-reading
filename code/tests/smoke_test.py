@@ -129,7 +129,7 @@ def run_synthetic_eval():
 
     fixed = evaluate_fixed('random', classifier, builder, graphs, labels_t,
                            (0.05, 0.1), 'cpu', n_seeds=2)
-    reader = build_reader(ReaderConfig.from_legacy('attention', hidden_dim=32,
+    reader = build_reader(ReaderConfig.from_legacy('base', hidden_dim=32,
                                                    n_layers=2, dropout=0.1))
     learn = evaluate_reader(reader, classifier, builder, graphs, labels_t,
                             (0.05, 0.1), 'cpu', n_seeds=2)

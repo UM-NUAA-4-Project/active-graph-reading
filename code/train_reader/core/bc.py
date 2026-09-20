@@ -1,12 +1,11 @@
-"""BC（行为克隆）统一训练循环：base 与 attention（belief lockstep）一套实现。
+"""BC（行为克隆）统一训练循环：base 与 evidence 一套实现。
 
-收敛 m5/training_utils.train_one_epoch（base）与
-m6/attention/train_bc.py + m7/train_bc.py（attention）三份拷贝。
-两版本 lockstep 骨架逐行同构，仅在 belief 维护与 reveal 方式上分支。
+收敛 m5/training_utils.train_one_epoch（base）与 m7/train_bc.py 两份拷贝。
+（attention/belief lockstep 路径随 attention reader 废弃移除，2026-09-20。）
 """
 
 import random
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import torch
 import torch.nn.functional as F
@@ -14,17 +13,14 @@ from tqdm import tqdm
 
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node
-from .common import reveal_and_update_beliefs_batch
 
 
 def train_one_epoch(reader, optimizer, graph_cache: Dict, train_trajs: List,
                     batch_size: int, device, temperature: float = 1.0,
-                    use_belief: bool = None,
                     evidence_lambda: float = 0.0) -> Dict:
     """单轮 BC 训练（跨图锁步批处理）。
 
     graph_cache: {graph_idx: (graph, label)}；
-    use_belief: None=按 reader 类型自动（有 init_beliefs 即 attention）；
     evidence_lambda: >0 且 reader 含证据流时启用 L_ev（逐步图类别 CE），
     总损失 = L_act + λ·L_ev。
     Returns: {'loss': 平均 step loss, 'bc': 同 loss（兼容旧日志字段）,
@@ -33,8 +29,6 @@ def train_one_epoch(reader, optimizer, graph_cache: Dict, train_trajs: List,
               'ev_acc_final': 终局（读满后补充前向）预测准确率
               （ev 两项无证据流时省略）}
     """
-    if use_belief is None:
-        use_belief = hasattr(reader, 'init_beliefs')
     use_evidence = evidence_lambda > 0 and hasattr(reader, 'forward_states_evidence')
     reader.train()
     total_loss = 0.0
@@ -50,7 +44,7 @@ def train_one_epoch(reader, optimizer, graph_cache: Dict, train_trajs: List,
     for batch_idx, batch_start in enumerate(pbar):
         batch_trajs = train_trajs[batch_start:batch_start + batch_size]
 
-        # ---- Pass 1: create states (attention 另建 beliefs) ----
+        # ---- Pass 1: create states ----
         all_states: List[GraphState] = []
         state_labels = []
         reveal_orders = []
@@ -67,9 +61,6 @@ def train_one_epoch(reader, optimizer, graph_cache: Dict, train_trajs: List,
         n_total = len(all_states)
         active = [True] * n_total
         max_budget = max(len(ro) for ro in reveal_orders)
-        if use_belief:
-            all_beliefs = [reader.init_beliefs(1).to(device) for _ in range(n_total)]
-            all_subgraphs = [None] * n_total
         if use_evidence:
             all_hc = reader.init_evidence(n_total, device)
             # Δ_t = 上一步所揭示节点的嵌入；step 0 为 seed
@@ -97,22 +88,10 @@ def train_one_epoch(reader, optimizer, graph_cache: Dict, train_trajs: List,
                     ev_correct += int(active_ev[k].argmax().item()
                                       == state_labels[j].item())
                     ev_total += 1
-            elif use_belief:
-                active_beliefs = torch.cat([all_beliefs[j] for j in active_idx], dim=0)
-                active_subgraphs = None
-                if all_subgraphs[active_idx[0]] is not None:
-                    active_subgraphs = [all_subgraphs[j] for j in active_idx]
-                batch_results = reader.forward_states(
-                    [all_states[j] for j in active_idx],
-                    temperature=temperature,
-                    beliefs=active_beliefs,
-                    subgraphs=active_subgraphs,
-                )
             else:
                 batch_results = reader.forward_states(
                     [all_states[j] for j in active_idx], temperature=temperature)
 
-            batch_states, batch_nodes, batch_local_idx = [], [], []
             for k, j in enumerate(active_idx):
                 _, probs, frontier_nodes = batch_results[k]
                 if not frontier_nodes:
@@ -130,26 +109,11 @@ def train_one_epoch(reader, optimizer, graph_cache: Dict, train_trajs: List,
                 act_correct += int(target_idx == probs.argmax().item())
                 act_total += 1
                 step_counters[j] += 1
-                if use_belief:
-                    # reveal 延迟到批量 belief 更新（内部会 reveal）
-                    batch_states.append(all_states[j])
-                    batch_nodes.append(teacher_node)
-                    batch_local_idx.append(j)
-                else:
-                    reveal_node(all_states[j], teacher_node)
-                    if use_evidence:
-                        last_revealed[j] = teacher_node
+                reveal_node(all_states[j], teacher_node)
+                if use_evidence:
+                    last_revealed[j] = teacher_node
                 if step_counters[j] >= len(reveal_orders[j]):
                     active[j] = False
-
-            if use_belief and batch_states:
-                batch_beliefs = torch.cat(
-                    [all_beliefs[j] for j in batch_local_idx], dim=0)
-                new_beliefs, new_subgraphs = reveal_and_update_beliefs_batch(
-                    reader, batch_states, batch_nodes, batch_beliefs, device)
-                for k, j in enumerate(batch_local_idx):
-                    all_beliefs[j] = new_beliefs[k:k + 1]
-                    all_subgraphs[j] = new_subgraphs[k]
 
         if not step_losses:
             continue

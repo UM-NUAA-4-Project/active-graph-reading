@@ -6,7 +6,7 @@
   按 OGB train 索引经 load_graph_subset 精确加载 easy 图，其它按本地位置
   取 ds.train_graphs[idx]；
 - reader/classifier 经 train_reader.core 从 checkpoint 重建
-  （base/attention 自动识别）。
+  （base/evidence 自动识别）。
 
 用途（2026-08-05 ex2 结论）：easy 图占训练集 ~48%，梯度易饱和。保留其中对
 reader 最难的（平均 CE 最高的）前 keep_ratio，构成新训练集：
@@ -54,8 +54,7 @@ from tools.config import save_json  # noqa: E402
 from tools.paths import CODE_DIR  # noqa: E402
 from tools.seeds import SEED_METHOD_STR, deterministic_seed  # noqa: E402
 from train_reader.core import (load_classifier_frozen,  # noqa: E402
-                               load_reader_from_checkpoint,
-                               reveal_and_update_beliefs_batch)
+                               load_reader_from_checkpoint)
 
 
 def resolve(p) -> Path:
@@ -66,7 +65,7 @@ def resolve(p) -> Path:
 
 @torch.no_grad()
 def run_batched_trajectories(reader, states_info, temperature, device):
-    """Lockstep batched trajectory sampling（base/attention 通用）。
+    """Lockstep batched trajectory sampling。
 
     Each entry of *states_info* gets ``ce`` filled in-place later by the
     classify stage; this function only advances the rollout.
@@ -75,12 +74,8 @@ def run_batched_trajectories(reader, states_info, temperature, device):
     if n_states == 0:
         return
 
-    use_belief = hasattr(reader, 'init_beliefs')
     active = [True] * n_states
     max_steps = max(si['state']._budget_limit for si in states_info)
-    if use_belief:
-        all_beliefs = [reader.init_beliefs(1).to(device) for _ in range(n_states)]
-        all_subgraphs = [None] * n_states
 
     for _step in range(max_steps):
         active_idx = [j for j in range(n_states)
@@ -88,24 +83,11 @@ def run_batched_trajectories(reader, states_info, temperature, device):
         if not active_idx:
             break
 
-        if use_belief:
-            active_beliefs = torch.cat([all_beliefs[j] for j in active_idx], dim=0)
-            active_subgraphs = None
-            if all_subgraphs[active_idx[0]] is not None:
-                active_subgraphs = [all_subgraphs[j] for j in active_idx]
-            batch_results = reader.forward_states(
-                [states_info[j]['state'] for j in active_idx],
-                temperature=temperature,
-                beliefs=active_beliefs,
-                subgraphs=active_subgraphs,
-            )
-        else:
-            batch_results = reader.forward_states(
-                [states_info[j]['state'] for j in active_idx],
-                temperature=temperature,
-            )
+        batch_results = reader.forward_states(
+            [states_info[j]['state'] for j in active_idx],
+            temperature=temperature,
+        )
 
-        batch_states, batch_nodes, batch_local_idx = [], [], []
         for k, j in enumerate(active_idx):
             scores, probs, frontier_nodes = batch_results[k]
             if not frontier_nodes:
@@ -117,29 +99,9 @@ def run_batched_trajectories(reader, states_info, temperature, device):
             action_idx = dist.sample()
             chosen = frontier_nodes[action_idx.item()]
 
-            if use_belief:
-                batch_states.append(state)
-                batch_nodes.append(chosen)
-                batch_local_idx.append(j)
-            else:
-                reveal_node(state, chosen)
-                if state.get_budget_used() >= state._budget_limit:
-                    active[j] = False
-
-        if use_belief and batch_states:
-            batch_beliefs = torch.cat(
-                [all_beliefs[j] for j in batch_local_idx], dim=0)
-            new_beliefs, new_subgraphs = reveal_and_update_beliefs_batch(
-                reader, batch_states, batch_nodes, batch_beliefs, device)
-            for k, j in enumerate(batch_local_idx):
-                all_beliefs[j] = new_beliefs[k:k + 1]
-                all_subgraphs[j] = new_subgraphs[k]
-
-        if use_belief:
-            for j in active_idx:
-                if active[j] and states_info[j]['state'].get_budget_used() \
-                        >= states_info[j]['state']._budget_limit:
-                    active[j] = False
+            reveal_node(state, chosen)
+            if state.get_budget_used() >= state._budget_limit:
+                active[j] = False
 
 
 def main():
@@ -220,7 +182,7 @@ def main():
     classifier = load_classifier_frozen(clf_ckpt, device)
     print(f"  {clf_path} (val_acc={clf_ckpt.get('val_acc', 'N/A')})")
 
-    # ---- 4. 加载 reader（base/attention 自动识别） ----
+    # ---- 4. 加载 reader（base/evidence 自动识别） ----
     print("\n=== Loading reader ===")
     ckpt_path = resolve(args.checkpoint)
     rl_ckpt = torch.load(str(ckpt_path), map_location='cpu', weights_only=False)

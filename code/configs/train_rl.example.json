@@ -5,12 +5,10 @@
   "device": "cuda:0",
   "seed": 42,
 
-  "reader_kind": "attention",
+  "reader_kind": "evidence",
   "hidden_dim": 128,
   "n_layers": 2,
   "dropout": 0.1,
-  "m": 4,
-  "n_heads": 4,
   "temperature": 0.2,
 
   "reward": "asymmetric",
@@ -22,5 +20,5 @@
   "graphs_per_batch": 32,
   "seeds_per_graph": 4,
 
-  "exp": "rl_attn_asymmetric"
+  "exp": "rl_ev_asymmetric"
 }

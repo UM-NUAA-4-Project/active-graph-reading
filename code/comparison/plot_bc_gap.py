@@ -23,8 +23,8 @@
 用法:
   python code/comparison/plot_bc_gap.py \
       --eval fixed=code/result/cifar10/fixed/eval_fixed.json:bfs \
-             bc=code/result/cifar10/experiments/1-teacher/attention/bc/eval_learnable.json \
-             rl=code/result/cifar10/experiments/1-teacher/attention/rl/eval_learnable.json \
+             bc=code/result/cifar10/experiments/ev1/evidence/bc/eval_learnable.json \
+             rl=code/result/cifar10/experiments/ev-R-read/evidence/rl/eval_learnable.json \
       --base fixed --targets bc rl
 """
 

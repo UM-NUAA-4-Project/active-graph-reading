@@ -13,7 +13,7 @@
 
 用法:
   python code/train_reader/train_rl.py --dataset cifar10 --root D:\\superpixels \
-      --reader-kind attention --bootstrap <bc ckpt> --classifier <上界分类器> \
+      --reader-kind evidence --bootstrap <bc ckpt> --classifier <上界分类器> \
       --reward asymmetric --graphs-per-batch 32 --seeds-per-graph 4
 """
 
@@ -55,7 +55,7 @@ def main():
                         help='训练图数限制（0=全部；冒烟传小值）')
     parser.add_argument('--stratified', action='store_true',
                         help='--max-graphs 按类别比例分层抽样（默认前 N 截断）')
-    cli_utils.add_reader_args(parser, reader_kind_default='attention',
+    cli_utils.add_reader_args(parser, reader_kind_default='evidence',
                               temperature_default=0.2)
     parser.add_argument('--evidence-lambda', type=float, default=1.0,
                         help='evidence reader 的 L_ev 权重（L = L_RL + λ·L_ev；'
@@ -174,7 +174,7 @@ def main():
     if args.reward_source in ('reader', 'both', 'soft-both') \
             and not hasattr(reader, 'forward_states_evidence'):
         raise SystemExit("--reward-source reader/both/soft-both 需要 evidence "
-                         "reader（base/attention 无自身分类头）")
+                         "reader（base 无自身分类头）")
     total_params = sum(p.numel() for p in reader.parameters())
     trainable_params = sum(p.numel() for p in reader.parameters() if p.requires_grad)
     print(f"Reader: {reader.config.kind}, params={total_params:,} "

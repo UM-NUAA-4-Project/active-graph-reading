@@ -10,5 +10,4 @@ from .eval_common import (add_common_args, run_split_eval,  # noqa: F401
 from .build import (load_classifier_frozen, load_reader_from_checkpoint,  # noqa: F401
                     bootstrap_reader)
 from .common import (compute_reward, compute_soft_both_reward,  # noqa: F401
-                     normalize_advantages, freeze_shared_layers,
-                     reveal_and_update_beliefs_batch)
+                     normalize_advantages, freeze_shared_layers)

@@ -51,13 +51,10 @@ class ReaderConfig:
 
     encoder_*  ：FrontierNodesEncoder 的 GIN 层（逐层 hidden/dropout）
     scorer_*   ：base/evidence reader 的 ReaderMLP（逐层 hidden/dropout）
-                 attention reader 要求 encoder 各层同宽（= d_model），
-                 scorer_* 忽略
-    m/n_heads  ：attention 专用
     n_classes  ：evidence 专用（证据头类别数，须 >0）
     """
 
-    kind: str = 'base'                    # 'base' | 'attention' | 'evidence'
+    kind: str = 'base'                    # 'base' | 'evidence'
     edge_feat_dim: int = 7
     node_feat_dim: int = 0
     encoder_hidden_dims: List[int] = field(default_factory=lambda: [128, 128])
@@ -66,8 +63,6 @@ class ReaderConfig:
     # 即 2 个隐层条目 + 1 个输出层
     scorer_hidden_dims: List[int] = field(default_factory=lambda: [128, 128])
     scorer_dropouts: List[float] = field(default_factory=lambda: [0.1, 0.1])
-    m: int = 4
-    n_heads: int = 4
     stochastic: bool = False
     temperature: float = 1.0
     n_classes: int = 0
@@ -90,15 +85,12 @@ class ReaderConfig:
         return self.encoder_dropouts[0]
 
     def validate(self) -> None:
-        if self.kind not in ('base', 'attention', 'evidence'):
-            raise ValueError(f"kind 必须是 base/attention/evidence，得到 '{self.kind}'")
+        if self.kind not in ('base', 'evidence'):
+            raise ValueError(f"kind 必须是 base/evidence，得到 '{self.kind}'")
         if len(self.encoder_dropouts) != len(self.encoder_hidden_dims):
             raise ValueError("encoder_dropouts 与 encoder_hidden_dims 长度不一致")
         if len(self.scorer_dropouts) != len(self.scorer_hidden_dims):
             raise ValueError("scorer_dropouts 与 scorer_hidden_dims 长度不一致")
-        if self.kind == 'attention' and len(set(self.encoder_hidden_dims)) > 1:
-            raise ValueError("attention reader 要求 encoder 各层同宽（attention 模块"
-                             "与 belief 的 d_model 需要统一）")
         if self.kind == 'evidence' and self.n_classes <= 0:
             raise ValueError("evidence reader 需要 n_classes > 0（证据头类别数）")
         if self.kind == 'evidence' and \
@@ -114,7 +106,6 @@ class ReaderConfig:
         d: Dict = {'kind': self.kind,
                    'edge_feat_dim': self.edge_feat_dim,
                    'node_feat_dim': self.node_feat_dim,
-                   'm': self.m, 'n_heads': self.n_heads,
                    'stochastic': self.stochastic,
                    'temperature': self.temperature}
         _fold(d, self.encoder_hidden_dims, 'hidden_dim')
@@ -146,8 +137,6 @@ class ReaderConfig:
             scorer_dropouts=[float(x) for x in
                              _unfold(d, 'scorer_dropout',
                                      encoder_drop[:1] * 2)],
-            m=_to_int(d.get('m'), 4),
-            n_heads=_to_int(d.get('n_heads'), 4),
             stochastic=bool(d.get('stochastic', False)),
             temperature=_to_float(d.get('temperature'), 1.0),
             n_classes=_to_int(d.get('n_classes'), 0),
@@ -160,18 +149,17 @@ class ReaderConfig:
     def from_legacy(kind: str = 'base', edge_feat_dim: int = 7,
                     node_feat_dim: int = 0, hidden_dim: int = 128,
                     n_layers: int = 2, dropout: float = 0.1,
-                    m: int = 4, n_heads: int = 4,
                     stochastic: bool = False, temperature: float = 1.0,
                     n_classes: int = 0,
                     ) -> 'ReaderConfig':
-        """旧式标量构造（与旧 LearnableReader/AttentionReader 签名对齐）。"""
+        """旧式标量构造（与旧 LearnableReader 签名对齐）。"""
         cfg = ReaderConfig(
             kind=kind, edge_feat_dim=edge_feat_dim, node_feat_dim=node_feat_dim,
             encoder_hidden_dims=[hidden_dim] * n_layers,
             encoder_dropouts=[dropout] * n_layers,
             scorer_hidden_dims=[hidden_dim] * 2,
             scorer_dropouts=[dropout] * 2,
-            m=m, n_heads=n_heads, stochastic=stochastic, temperature=temperature,
+            stochastic=stochastic, temperature=temperature,
             n_classes=n_classes,
         )
         cfg.validate()
@@ -210,16 +198,10 @@ def infer_reader_config(state_dict: Dict[str, torch.Tensor]) -> ReaderConfig:
         state_dict['frontier_encoder.convs.0.edge_encoder.weight'].shape[1])
 
     kind = 'base'
-    if any('belief_state' in k for k in state_dict):
-        kind = 'attention'
     # evidence_head 存在于全部 evidence 变体（no_lstm/v1 无 evidence_lstm 键）
-    elif any(k.startswith(('evidence_head', 'evidence_lstm'))
-             for k in state_dict):
+    if any(k.startswith(('evidence_head', 'evidence_lstm'))
+           for k in state_dict):
         kind = 'evidence'
-
-    m = 4
-    if kind == 'attention' and 'belief_state.tokens' in state_dict:
-        m = int(state_dict['belief_state.tokens'].shape[0])
 
     # evidence 证据头类别数：Sequential 里最后一个 Linear 的输出宽度
     n_classes = 0
@@ -235,9 +217,9 @@ def infer_reader_config(state_dict: Dict[str, torch.Tensor]) -> ReaderConfig:
     if kind in ('base', 'evidence'):
         linears = []                             # (block_idx, out_dim)
         for key, tensor in state_dict.items():
-            m = _SCORER_HIDDEN_RE.match(key)
-            if m and int(m.group(1)) % 3 == 0:   # Linear 位于 block 起始 3i
-                linears.append((int(m.group(1)) // 3, int(tensor.shape[0])))
+            mm = _SCORER_HIDDEN_RE.match(key)
+            if mm and int(mm.group(1)) % 3 == 0:   # Linear 位于 block 起始 3i
+                linears.append((int(mm.group(1)) // 3, int(tensor.shape[0])))
         if linears:
             linears.sort()
             # 最后一个 Linear 是输出层（out=1），其余为隐层
@@ -251,7 +233,6 @@ def infer_reader_config(state_dict: Dict[str, torch.Tensor]) -> ReaderConfig:
         encoder_dropouts=[0.1] * len(encoder_hidden),
         scorer_hidden_dims=scorer_hidden,
         scorer_dropouts=[0.1] * len(scorer_hidden),
-        m=m,
         n_classes=n_classes,
     )
     return cfg
@@ -259,8 +240,8 @@ def infer_reader_config(state_dict: Dict[str, torch.Tensor]) -> ReaderConfig:
 
 def reader_config_from_checkpoint(ckpt: dict,
                                   state_dict: Optional[dict] = None) -> ReaderConfig:
-    """checkpoint → ReaderConfig：结构取自权重 shape，非结构超参（m/n_heads/
-    temperature/stochastic）取内嵌 config（如有）。"""
+    """checkpoint → ReaderConfig：结构取自权重 shape，非结构超参（temperature/
+    stochastic）取内嵌 config（如有）。"""
     sd = state_dict if state_dict is not None else ckpt.get('reader_state_dict', {})
     cfg = infer_reader_config(sd)
     embedded = ckpt.get('config')
@@ -288,9 +269,6 @@ def reader_config_from_checkpoint(ckpt: dict,
 def build_reader(config: ReaderConfig):
     """ReaderConfig → reader 实例（统一替代各脚本手写的 build_*_reader）。"""
     config.validate()
-    if config.kind == 'attention':
-        from .reader.attention.attention_reader import AttentionReader
-        return AttentionReader(config=config)
     if config.kind == 'evidence':
         from .reader.evidence import EvidenceReader
         return EvidenceReader(config=config)

@@ -18,7 +18,7 @@
       result/cifar10/classifier/finetune2/history.json \
       result/cifar10/experiments/1-teacher/base/bc/training_log.json \
       result/cifar10/experiments/1-teacher/base/rl/training_log.json
-  # 多 run 对比（如 base vs attention vs evidence）：--labels 与 --json 对齐
+  # 多 run 对比（如 base vs evidence）：--labels 与 --json 对齐
 """
 
 import argparse

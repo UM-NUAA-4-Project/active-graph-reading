@@ -1,4 +1,4 @@
-"""reader 训练核心共享件（belief 更新、奖励、优势归一化、冻结）。"""
+"""reader 训练核心共享件（奖励、优势归一化、冻结、跳转）。"""
 
 import math
 import random
@@ -7,32 +7,7 @@ from typing import List
 import torch
 import torch.nn.functional as F
 
-from active_graph_reader.engine.reveal_action import reveal_node, teleport_if_stuck
-
-
-# ---------------------------------------------------------------------------
-# belief lockstep 原语（自 m6/training_utils 收编）
-# ---------------------------------------------------------------------------
-
-def reveal_and_update_beliefs_batch(reader, states: list, chosen_nodes: list,
-                                    beliefs: torch.Tensor, device,
-                                    state_src: list = None):
-    """Batch：reveal 全部 → 构建子图 → 批量编码 → 批量 belief 更新。
-
-    states: List[GraphState]；chosen_nodes: List[int]；beliefs: (N, m, d)。
-    Returns: (new_beliefs (N, m, d), new_subgraphs List[FrontierSubgraph])
-    """
-    for state, node in zip(states, chosen_nodes):
-        reveal_node(state, node)
-
-    new_subgraphs = [reader.frontier_builder.build(s) for s in states]
-
-    new_infos = reader.encode_new_info_batch(
-        states, new_subgraphs, chosen_nodes, device, state_src=state_src,
-    )  # (N, 1, d)
-
-    new_beliefs = reader.belief_state.update_fn(beliefs, new_infos)
-    return new_beliefs, new_subgraphs
+from active_graph_reader.engine.reveal_action import teleport_if_stuck
 
 
 # ---------------------------------------------------------------------------
@@ -110,16 +85,13 @@ def freeze_shared_layers(reader, enabled: bool) -> None:
     print(f"  --freeze: {frozen} 层已冻结（仅特征投影层可训练）")
 
 
-def teleport_or_deactivate(state, active: list, j: int, rng: random.Random = None,
-                           reader=None, subgraphs: list = None) -> None:
+def teleport_or_deactivate(state, active: list, j: int, rng: random.Random = None) -> None:
     """预算未耗尽但 frontier 空（seed 落孤立小分量）时的跳转处理。
 
-    跳转后若预算耗尽则置 inactive；use_belief 时同步重建子图缓存。
+    跳转后若预算耗尽则置 inactive。
     """
     st = state
     if teleport_if_stuck(st, rng=rng) is None:
         return
-    if reader is not None and subgraphs is not None:
-        subgraphs[j] = reader.frontier_builder.build(st)
     if st.get_budget_used() >= st._budget_limit:
         active[j] = False

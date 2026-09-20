@@ -1,4 +1,4 @@
-"""统一训练循环单测：BC（base/attention）+ RL（base/attention，含奖励类型）。"""
+"""统一训练循环单测：BC（base/evidence）+ RL（base/evidence，含奖励类型）。"""
 
 import random
 import sys
@@ -72,10 +72,11 @@ def test_bc_loops():
     graphs, labels = _make_graphs()
     trajs = _make_valid_trajs(graphs)
     graph_cache = {i: (graphs[i], int(labels[i])) for i in range(len(graphs))}
-    for kind in ('base', 'attention'):
+    for kind in ('base', 'evidence'):
         torch.manual_seed(0)
         reader = build_reader(ReaderConfig.from_legacy(kind, hidden_dim=32,
-                                                       n_layers=2, dropout=0.1))
+                                                       n_layers=2, dropout=0.1,
+                                                       n_classes=3))
         opt = torch.optim.Adam(reader.parameters(), lr=1e-3)
         m1 = bc_train_epoch(reader, opt, graph_cache, trajs, 6, 'cpu')
         m2 = bc_train_epoch(reader, opt, graph_cache, trajs, 6, 'cpu')
@@ -88,12 +89,12 @@ def test_rl_loops():
     graphs, labels = _make_graphs()
     labels_t = torch.stack(labels)
     builder = SubgraphBuilder()
-    for kind in ('base', 'attention'):
+    for kind in ('base', 'evidence'):
         for reward in ('binary', 'asymmetric'):
             torch.manual_seed(0)
             reader = build_reader(ReaderConfig.from_legacy(
                 kind, hidden_dim=32, n_layers=2, dropout=0.1, stochastic=True,
-                temperature=0.5))
+                temperature=0.5, n_classes=3))
             opt = torch.optim.Adam(reader.parameters(), lr=1e-3)
             m = rl_train_epoch(reader, _StubClassifier(), builder, opt,
                                graphs, labels_t, 2, 2, 'cpu', reward, 1.1,

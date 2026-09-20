@@ -1,4 +1,6 @@
-"""旧 checkpoint 兼容性单测：m5 v0 base / m6 attention / m7 / m3 分类器。"""
+"""旧 checkpoint 兼容性单测：m5 v0 base / m7 base / m3 分类器。
+
+（m6 attention 兼容测试随 attention reader 废弃移除，2026-09-20 清理。）"""
 
 import sys
 from pathlib import Path
@@ -38,18 +40,8 @@ def test_m5_v0_base_ckpt():
     print('  m5 v0 base ckpt strict-load OK')
 
 
-def test_m6_attention_ckpt():
-    p = CODE / 'result' / 'ppa' / 'experiments' / 'bc_baseline' / 'attention' / 'bc' / 'reader_belief_epoch3.pt'
-    if not p.exists():
-        print('  SKIP (no m6 ckpt)')
-        return
-    cfg = _try_load_reader(p)
-    assert cfg.kind == 'attention'
-    print('  m6 attention ckpt strict-load OK')
-
-
 def test_m7_ckpts():
-    for kind in ('base', 'attention'):
+    for kind in ('base',):
         hits = sorted((CODE / 'result' / 'cifar10' / 'experiments').rglob(f'*{kind}*/bc/reader_checkpoint_epoch*.pt'))
         hits = [h for h in hits if 'checkpoint_epoch' in h.name]
         if not hits:
@@ -73,7 +65,6 @@ def test_m3_classifier():
 
 def run_all():
     test_m5_v0_base_ckpt()
-    test_m6_attention_ckpt()
     test_m7_ckpts()
     test_m3_classifier()
     print('test_checkpoint_compat: ALL PASSED')

@@ -29,7 +29,7 @@ def add_reader_args(parser: argparse.ArgumentParser,
                     reader_kind_default: str = 'base',
                     temperature_default: float = 1.0) -> None:
     """reader 结构参数（键名与 ReaderConfig.to_dict 一致，config 合并无需映射）。"""
-    parser.add_argument('--reader-kind', choices=['base', 'attention', 'evidence'],
+    parser.add_argument('--reader-kind', choices=['base', 'evidence'],
                         default=reader_kind_default)
     parser.add_argument('--hidden-dim', type=int, default=128,
                         help='旧式统一隐层宽度；与 --hidden-dims 二选一')
@@ -42,9 +42,7 @@ def add_reader_args(parser: argparse.ArgumentParser,
     parser.add_argument('--encoder-dropouts', type=float, nargs='+', default=None,
                         help='encoder 逐层 dropout 列表')
     parser.add_argument('--scorer-hidden-dims', type=int, nargs='+', default=None,
-                        help='base reader scorer MLP 逐层宽度（默认 2 个隐层）')
-    parser.add_argument('--m', type=int, default=4, help='belief token 数（attention）')
-    parser.add_argument('--n-heads', type=int, default=4, help='注意力头数（attention）')
+                        help='base/evidence reader scorer MLP 逐层宽度（默认 2 个隐层）')
     parser.add_argument('--temperature', type=float, default=temperature_default,
                         help='采样温度（RL/评估用；BC 训练恒 1.0）')
 
@@ -55,8 +53,6 @@ def reader_config_from_args(args) -> Dict:
         'kind': getattr(args, 'reader_kind', 'base'),
         'edge_feat_dim': getattr(args, 'edge_feat_dim', 7),
         'node_feat_dim': getattr(args, 'node_feat_dim', 0),
-        'm': getattr(args, 'm', 4),
-        'n_heads': getattr(args, 'n_heads', 4),
         'temperature': getattr(args, 'temperature', 1.0),
     }
     hidden_dims = getattr(args, 'hidden_dims', None)

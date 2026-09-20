@@ -1,4 +1,4 @@
-"""learnable reader 评估（base/attention/evidence 统一入口）。
+"""learnable reader 评估（base/evidence 统一入口）。
 
 自 train_reader/eval.py 拆分（2026-09-19）：reader 评估与 baseline 评估
 各自独立（基线走 eval_baselines.py；旧 eval.py 保留为兼容分发 shim）。
@@ -24,7 +24,7 @@ calibration.json（校准/可靠性分析，预测 5.3c；ev=证据头终判 / c
 用法:
   python code/train_reader/eval_reader.py --dataset cifar10 \
       --root D:\\data\\superpixels \
-      --checkpoint result/cifar10/experiments/exp1/attention/rl/checkpoint_epoch5.pt \
+      --checkpoint result/cifar10/experiments/exp1/evidence/rl/checkpoint_epoch5.pt \
       --classifier result/cifar10/classifier/best_cifar10_classifier.pt
 """
 
@@ -81,7 +81,6 @@ def main():
                                          stochastic=False, temperature=1.0)
     print(f"Reader: kind={reader.config.kind} "
           f"hidden={reader.config.encoder_hidden_dims} "
-          f"m={reader.config.m} n_heads={reader.config.n_heads} "
           f"(from checkpoint config)")
 
     out_dir = (eval_resolve(args.output_dir) if args.output_dir

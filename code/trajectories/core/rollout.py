@@ -38,7 +38,7 @@ def build_classifier(ckpt: dict, device, requires_grad: bool = False) -> GraphCl
 
 def build_reader(ckpt: dict, device, stochastic: bool = False,
                  temperature: float = None):
-    """按 checkpoint 权重/内嵌 config 重建 reader（base/attention 均可）。
+    """按 checkpoint 权重/内嵌 config 重建 reader（base/evidence 均可）。
 
     兼容旧 checkpoint：strip belief classifier 键 + v0/v1 mlp 输入补零。
     """

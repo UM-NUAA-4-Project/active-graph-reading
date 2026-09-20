@@ -1,7 +1,7 @@
 """分层采样 n 张图，统计 reader 在指定 budget 下采样 x 次的轨迹相似度与决策熵。
 
 自 m5/base/analysis/analyze_trajectory_diversity.py 泛化迁移：
-- 任意注册数据集（datasets 注册表）× base/attention reader（checkpoint 自动识别）；
+- 任意注册数据集（datasets 注册表）× base/evidence reader（checkpoint 自动识别）；
 - 图索引语义：有 load_graph_subset 的数据集（PPA）train split 按 OGB 全局索引
   （分层采样读 split/标签 CSV，仅加载被采样图）；其它（cifar10）及非 train
   split 按已加载数据的本地位置（seed 公式同用该索引）；
@@ -48,8 +48,7 @@ from tools import cli  # noqa: E402
 from tools.config import save_json  # noqa: E402
 from tools.paths import CODE_DIR  # noqa: E402
 from tools.seeds import SEED_METHOD_STR, deterministic_seed  # noqa: E402
-from train_reader.core import (load_reader_from_checkpoint,  # noqa: E402
-                               reveal_and_update_beliefs_batch)
+from train_reader.core import load_reader_from_checkpoint  # noqa: E402
 
 
 def resolve(p) -> Path:
@@ -133,7 +132,7 @@ def resolve_sampled_graphs(spec, ds, sampled, split):
 
 
 # ---------------------------------------------------------------------------
-# 单条采样轨迹（base/attention 通用）
+# 单条采样轨迹
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
@@ -146,14 +145,10 @@ def run_trajectory(reader, g, seed_node, budget, temperature, device):
     state = GraphState(g, seed_node=seed_node)
     state._budget_limit = budget
 
-    use_belief = hasattr(reader, 'init_beliefs')
-    if use_belief:
-        beliefs = reader.init_beliefs(1).to(device)
-    else:
-        reader.reset()
-        initial_frontier = list(state._initial_frontier)
-        if initial_frontier:
-            reader.on_new_frontier(initial_frontier)
+    reader.reset()
+    initial_frontier = list(state._initial_frontier)
+    if initial_frontier:
+        reader.on_new_frontier(initial_frontier)
 
     revealed = {seed_node}
     entropies = []
@@ -163,13 +158,8 @@ def run_trajectory(reader, g, seed_node, budget, temperature, device):
             entropies.append(float('nan'))
             continue
 
-        if use_belief:
-            (scores, probs, frontier_nodes), = reader.forward_states(
-                [state], temperature=temperature,
-                beliefs=beliefs, subgraphs=None)
-        else:
-            (scores, probs, frontier_nodes), = reader.forward_states(
-                [state], temperature=temperature)
+        (scores, probs, frontier_nodes), = reader.forward_states(
+            [state], temperature=temperature)
 
         n = len(frontier_nodes)
         if n == 0:
@@ -186,11 +176,7 @@ def run_trajectory(reader, g, seed_node, budget, temperature, device):
         chosen = frontier_nodes[dist.sample().item()]
         revealed.add(chosen)
 
-        if use_belief:
-            beliefs, _subs = reveal_and_update_beliefs_batch(
-                reader, [state], [chosen], beliefs, device)
-        else:
-            reveal_node(state, chosen)
+        reveal_node(state, chosen)
 
     return revealed, entropies
 
@@ -381,7 +367,7 @@ def plot_entropy(all_entropies, output_path):
 def main():
     parser = argparse.ArgumentParser(
         description='Analyze trajectory diversity & decision entropy '
-                    '（任意数据集 × base/attention reader）'
+                    '（任意数据集 × base/evidence reader）'
     )
     parser.add_argument('--checkpoint', required=True,
                         help='Reader model checkpoint path (relative to repo root)')
@@ -437,7 +423,7 @@ def main():
     all_graphs = resolve_sampled_graphs(spec, ds, sampled, args.split)
     print(f"  Loaded {len(all_graphs)} graphs (sampled subset only)")
 
-    # ---- 3. 加载 Reader（结构以权重为准，base/attention 自动识别） ----
+    # ---- 3. 加载 Reader（结构以权重为准，base/evidence 自动识别） ----
     print("\n=== Loading reader ===")
     ckpt_path = resolve(args.checkpoint)
     reader = load_reader_from_checkpoint(

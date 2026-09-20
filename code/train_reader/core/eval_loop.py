@@ -1,6 +1,6 @@
-"""评估循环：learnable reader（base/attention/evidence 统一）+ 固定策略。
+"""评估循环：learnable reader（base/evidence 统一）+ 固定策略。
 
-收敛 m5/base/analysis/eval.py → m6/attention/eval_heldout.py → m7/eval.py
+收敛 m5/base/analysis/eval.py → m7/eval.py（attention/belief 路径随 attention reader 废弃移除，2026-09-20）
 三代实现（以 m7 为基准），JSON schema 与旧版完全兼容：
     {split: {'learnable'|strategy: {'s0': {...}, ..., 'mean': {...}}}, ...}
 
@@ -25,7 +25,6 @@ from tqdm import tqdm
 from active_graph_reader.engine.graph_state import GraphState
 from active_graph_reader.engine.reveal_action import reveal_node, teleport_if_stuck
 from tools.seeds import deterministic_seed
-from .common import reveal_and_update_beliefs_batch
 
 
 @torch.no_grad()
@@ -76,7 +75,7 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
 
     evidence reader：终判由自身证据头给出（读满后补充前向的 ev_logits
     argmax，决策-分类一体）；冻结上界分类器对同一批最终揭示子图的判定
-    作为参照，写入 acc_clf_* 键。base/attention 行为不变（上界分类器即终判）。
+    作为参照，写入 acc_clf_* 键。base 行为不变（上界分类器即终判）。
 
     confidence_out 不为 None 时（校准分析，预测 5.3c），按预算档收集逐样本
     [最大类置信度(4位舍入), 是否正确]：ev = 证据头终判（仅 evidence），
@@ -91,7 +90,6 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
                           for i in range(n_seeds)}
     per_budget_clf_correct = defaultdict(int)
     per_budget_clf_outcomes = defaultdict(list)
-    use_belief = hasattr(reader, 'init_beliefs')
     use_evidence = (getattr(reader, 'config', None) is not None
                     and getattr(reader.config, 'kind', '') == 'evidence')
 
@@ -117,9 +115,6 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
         n_total = len(all_states)
         active = [True] * n_total
         max_budget = max(s._budget_limit for s in all_states)
-        if use_belief:
-            all_beliefs = [reader.init_beliefs(1).to(device) for _ in range(n_total)]
-            all_subgraphs = [None] * n_total
         if use_evidence:
             all_hc = reader.init_evidence(n_total, device)
             last_revealed = [s.seed_node for s in all_states]
@@ -136,8 +131,6 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
                     st = all_states[j]
                     tp_node = teleport_if_stuck(st, rng=state_rng[j])
                     if tp_node is not None:
-                        if use_belief:
-                            all_subgraphs[j] = reader.frontier_builder.build(st)
                         if use_evidence:
                             last_revealed[j] = tp_node
                         if st.get_budget_used() >= st._budget_limit:
@@ -153,19 +146,10 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
                     last_revealed=[last_revealed[j] for j in active_idx])
                 for k, j in enumerate(active_idx):
                     all_hc[j] = active_hc[k]
-            elif use_belief:
-                active_beliefs = torch.cat([all_beliefs[j] for j in active_idx], dim=0)
-                active_subgraphs = None
-                if all_subgraphs[active_idx[0]] is not None:
-                    active_subgraphs = [all_subgraphs[j] for j in active_idx]
-                batch_results = reader.forward_states(
-                    [all_states[j] for j in active_idx], temperature=1.0,
-                    beliefs=active_beliefs, subgraphs=active_subgraphs)
             else:
                 batch_results = reader.forward_states(
                     [all_states[j] for j in active_idx], temperature=1.0)
 
-            batch_states, batch_nodes, batch_local_idx = [], [], []
             for k, j in enumerate(active_idx):
                 _, probs, frontier_nodes = batch_results[k]
                 if not frontier_nodes:
@@ -173,23 +157,9 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
                     continue
                 chosen = frontier_nodes[probs.argmax().item()] if argmax else \
                     frontier_nodes[torch.distributions.Categorical(probs).sample().item()]
-                batch_states.append(all_states[j])
-                batch_nodes.append(chosen)
-                batch_local_idx.append(j)
-            if not use_belief:
-                # belief 路径下 reveal 由 reveal_and_update_beliefs_batch 内部完成
-                for state, node in zip(batch_states, batch_nodes):
-                    reveal_node(state, node)
+                reveal_node(all_states[j], chosen)
                 if use_evidence:
-                    for j, node in zip(batch_local_idx, batch_nodes):
-                        last_revealed[j] = node
-            if use_belief and batch_states:
-                batch_beliefs = torch.cat([all_beliefs[j] for j in batch_local_idx], dim=0)
-                new_beliefs, new_subgraphs = reveal_and_update_beliefs_batch(
-                    reader, batch_states, batch_nodes, batch_beliefs, device)
-                for k, j in enumerate(batch_local_idx):
-                    all_beliefs[j] = new_beliefs[k:k + 1]
-                    all_subgraphs[j] = new_subgraphs[k]
+                    last_revealed[j] = chosen
             for j in active_idx:
                 if active[j] and all_states[j].get_budget_used() >= all_states[j]._budget_limit:
                     active[j] = False

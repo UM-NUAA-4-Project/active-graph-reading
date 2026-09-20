@@ -1,4 +1,4 @@
-"""Reader checkpoint 诊断 — base/attention 通用 × 任意注册数据集。
+"""Reader checkpoint 诊断 — base/evidence 通用 × 任意注册数据集。
 
 自 m5/base/analysis/diagnose_checkpoint.py（base reader）与
 m6/attention/diagnose_checkpoint.py（attention reader）合并泛化：
@@ -55,8 +55,7 @@ from tools.config import load_json, save_json  # noqa: E402
 from tools.paths import CODE_DIR  # noqa: E402
 from tools.seeds import SEED_METHOD_STR, deterministic_seed  # noqa: E402
 from train_reader.core import (load_classifier_frozen,  # noqa: E402
-                               load_reader_from_checkpoint,
-                               reveal_and_update_beliefs_batch)
+                               load_reader_from_checkpoint)
 
 
 def resolve(p) -> Path:
@@ -163,12 +162,11 @@ def stratified_sample_graphs(candidates, labels_lookup, n_graphs, rng,
 
 @torch.no_grad()
 def run_batched_trajectories(reader, states_info, temperature, device):
-    """Lockstep batched trajectory sampling（base/attention 统一）。
+    """Lockstep batched trajectory sampling。
 
     所有轨迹逐 step 同步推进；每步把活动状态的扩展子图批量过
-    FrontierEncoder（forward_states）。attention reader 额外管理信念状态
-    （init_beliefs → reveal 后 NewInfoEncoder 编码 + belief 更新，
-    经 train_reader.core.reveal_and_update_beliefs_batch）。
+    FrontierEncoder（forward_states）。
+    （attention reader 的信念状态路径随其废弃移除，2026-09-20。）
 
     就地修改 states_info 各项：
       - ``norm_entropies``: 每步 H(π)/log(|frontier|)
@@ -178,12 +176,8 @@ def run_batched_trajectories(reader, states_info, temperature, device):
     if n_states == 0:
         return
 
-    use_belief = hasattr(reader, 'init_beliefs')
     active = [True] * n_states
     max_steps = max(si['state']._budget_limit for si in states_info)
-    if use_belief:
-        all_beliefs = [reader.init_beliefs(1).to(device) for _ in range(n_states)]
-        all_subgraphs = [None] * n_states
 
     for _step in range(max_steps):
         active_idx = [j for j in range(n_states)
@@ -191,24 +185,11 @@ def run_batched_trajectories(reader, states_info, temperature, device):
         if not active_idx:
             break
 
-        if use_belief:
-            active_beliefs = torch.cat([all_beliefs[j] for j in active_idx], dim=0)
-            active_subgraphs = None
-            if all_subgraphs[active_idx[0]] is not None:
-                active_subgraphs = [all_subgraphs[j] for j in active_idx]
-            batch_results = reader.forward_states(
-                [states_info[j]['state'] for j in active_idx],
-                temperature=temperature,
-                beliefs=active_beliefs,
-                subgraphs=active_subgraphs,
-            )
-        else:
-            batch_results = reader.forward_states(
-                [states_info[j]['state'] for j in active_idx],
-                temperature=temperature,
-            )
+        batch_results = reader.forward_states(
+            [states_info[j]['state'] for j in active_idx],
+            temperature=temperature,
+        )
 
-        batch_states, batch_nodes, batch_local_idx = [], [], []
         for k, j in enumerate(active_idx):
             scores, probs, frontier_nodes = batch_results[k]
             if not frontier_nodes:
@@ -233,32 +214,9 @@ def run_batched_trajectories(reader, states_info, temperature, device):
             chosen = frontier_nodes[action_idx.item()]
             si['revealed'].add(chosen)
 
-            if use_belief:
-                # belief 路径：reveal 由 reveal_and_update_beliefs_batch 完成
-                batch_states.append(state)
-                batch_nodes.append(chosen)
-                batch_local_idx.append(j)
-            else:
-                reveal_node(state, chosen)
-                if state.get_budget_used() >= state._budget_limit:
-                    active[j] = False
-
-        # batch reveal + encode new info + update beliefs
-        if use_belief and batch_states:
-            batch_beliefs = torch.cat(
-                [all_beliefs[j] for j in batch_local_idx], dim=0)
-            new_beliefs, new_subgraphs = reveal_and_update_beliefs_batch(
-                reader, batch_states, batch_nodes, batch_beliefs, device,
-            )
-            for k, j in enumerate(batch_local_idx):
-                all_beliefs[j] = new_beliefs[k:k + 1]
-                all_subgraphs[j] = new_subgraphs[k]
-
-        if use_belief:
-            for j in active_idx:
-                if active[j] and states_info[j]['state'].get_budget_used() \
-                        >= states_info[j]['state']._budget_limit:
-                    active[j] = False
+            reveal_node(state, chosen)
+            if state.get_budget_used() >= state._budget_limit:
+                active[j] = False
 
     # frontier 提前为空（提前结束）的状态：补 NaN 对齐
     for j in range(n_states):
@@ -297,7 +255,7 @@ def main():
                         help='Reader checkpoint 路径（相对 repo root）')
     parser.add_argument('--classifier', default='m3/best_model_ft.pt',
                         help='冻结 classifier checkpoint 路径')
-    parser.add_argument('--reader-kind', choices=['base', 'attention'], default='',
+    parser.add_argument('--reader-kind', choices=['base', 'evidence'], default='',
                         help='显式指定 reader 类别（默认从 checkpoint 自动识别；'
                              '与检测结果不一致时报错退出）')
     cli.add_dataset_args(parser, default_dataset='ppa')
@@ -365,7 +323,7 @@ def main():
     classifier = load_classifier_frozen(clf_ckpt, device)
     print(f"  {clf_path} (val_acc={clf_ckpt.get('val_acc', 'N/A')})")
 
-    # ---- 5. 加载 Reader（结构以权重为准，自动识别 base/attention） ----
+    # ---- 5. 加载 Reader（结构以权重为准，自动识别 base/evidence） ----
     print("\n=== Loading reader ===")
     rl_ckpt = torch.load(str(ckpt_path), map_location='cpu', weights_only=False)
     reader = load_reader_from_checkpoint(rl_ckpt, device,
@@ -377,8 +335,7 @@ def main():
             f"--reader-kind={args.reader_kind} 与 checkpoint 检测结果 '{kind}' 不一致")
     reader.eval()
     print(f"  kind={kind} (auto-detected), "
-          f"hidden={reader.config.encoder_hidden_dims}, "
-          f"m={reader.config.m}, n_heads={reader.config.n_heads}")
+          f"hidden={reader.config.encoder_hidden_dims}")
     print(f"  Temperature: {args.temperature}")
 
     # ---- 6. 读 config.json（如果存在） ----

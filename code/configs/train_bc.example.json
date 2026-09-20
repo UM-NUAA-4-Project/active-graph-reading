@@ -8,17 +8,14 @@
   "data_dir": "data/cifar10/trajectories_filtered",
   "teachers": ["gradient", "structural-degree"],
 
-  "reader_kind": "attention",
+  "reader_kind": "evidence",
   "hidden_dim": 128,
   "n_layers": 2,
   "dropout": 0.25,
-
-  "m": 4,
-  "n_heads": 4,
 
   "epochs": 10,
   "lr": 0.001,
   "batch_size": 32,
 
-  "exp": "bc_attn_baseline"
+  "exp": "bc_ev_baseline"
 }
