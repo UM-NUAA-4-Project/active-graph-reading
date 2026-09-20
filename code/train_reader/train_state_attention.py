@@ -125,7 +125,12 @@ def collect_split(reader, graphs, labels, budget_ratios, n_seeds, device,
     n_total = len(states)
     all_hc = reader.init_evidence(n_total, device)
     last_revealed = [s.seed_node for s in states]
-    ev_hist: List[List[torch.Tensor]] = [[] for _ in range(n_total)]
+    # 逐步证据行缓冲：每 state 预分配 (budget+1, 2d)，行号 ev_len 追加。
+    # 全量采集（~200k episode × ~13 步）若用逐张 append 会产生 ~2.6M 个小
+    # tensor（对象开销 + 碎片），叠加上文 states 全程存活直接打爆内存。
+    state_dim = 2 * reader.config.hidden_dim
+    ev_buf = [torch.empty(s._budget_limit + 1, state_dim) for s in states]
+    ev_len = [0] * n_total
     active = [True] * n_total
     max_budget = max(s._budget_limit for s in states)
 
@@ -157,7 +162,8 @@ def collect_split(reader, graphs, labels, budget_ratios, n_seeds, device,
             for k, j in enumerate(chunk):
                 all_hc[j] = new_hc[k]
                 z_t, h_t = step_states[k]
-                ev_hist[j].append(torch.cat([z_t, h_t]).float().cpu())
+                ev_buf[j][ev_len[j]] = torch.cat([z_t, h_t]).float().cpu()
+                ev_len[j] += 1
                 _, probs, frontier_nodes = results[k]
                 if not frontier_nodes:
                     active[j] = False
@@ -181,11 +187,17 @@ def collect_split(reader, graphs, labels, budget_ratios, n_seeds, device,
             return_states=True)
         for k, j in enumerate(chunk):
             z_T, h_T = step_states[k]
-            X = torch.stack(ev_hist[j] + [torch.cat([z_T, h_T]).float().cpu()])
+            ev_buf[j][ev_len[j]] = torch.cat([z_T, h_T]).float().cpu()
             ep = dict(metas[j])
-            ep['x'] = X
+            # clone 摘出定长前缀，原缓冲随即释放（states 同步释放）——
+            # terminal 段内存单调下降，不再三方叠加换页
+            ep['x'] = ev_buf[j][:ev_len[j] + 1].clone()
             ep['terminal_logits'] = ev_term[k].float().cpu()
             episodes.append(ep)
+            ev_buf[j] = None
+            states[j] = None
+            all_hc[j] = None
+        del step_states
     print(f'  [{split_name}] {n_total} episodes collected '
           f'(batch={collect_batch})', flush=True)
     return episodes
