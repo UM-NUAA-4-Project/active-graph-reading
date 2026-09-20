@@ -4,7 +4,11 @@
 精度；本脚本做完整事后评估，全部口径基于同一批 episodes：
 - 逐 split × 逐预算档：learned / uniform / terminal-only（冻结 reader
   证据头终判）精度（±95% 二项 CI）+ attention 诊断（末位质量、归一化
-  熵）+ 平均步数与提前截断率（frontier 早于预算耗尽的比例）；
+  熵）+ 每预算档注意力分布 attn_dist：步位 pos 按位序/n_nodes 归一化到
+  [0, ratio] 比例轴（末位=终局状态，恰落在 ratio），n_bins 等宽分箱后对
+  episode 取平均，供论文的分布热力图/曲线图直接使用（旧缓存无 n_nodes
+  的 episode 自动剔除并记录实际计数）
+  + 平均步数与提前截断率（frontier 早于预算耗尽的比例）；
 - 零成本第四对照：冻结证据头在存储逐步状态上的 logits 均值集成
   （per-step ensemble）；其末步判据与采集时存下的 terminal_logits 的
   不一致数作为 checkpoint 一致性告警（GEMM 噪声可在近平手翻转 argmax，
@@ -119,6 +123,7 @@ def head_records(head, episodes, device, learned: bool, batch_size: int):
             rec = {'correct': bool(correct[b])}
             if learned:
                 a = alpha[b, mask[b]]
+                rec['alpha'] = a.tolist()
                 rec['last_mass'] = float(a[last_idx[b]].item())
                 p_ = a.clamp_min(1e-9)
                 rec['entropy'] = float((-(p_ * p_.log()).sum()
@@ -180,10 +185,37 @@ def build_rows(episodes, rec_learned, rec_uniform, rec_ev):
             == int(ep['label']),
             'ok_ev_last': rec_ev[i][0],
             'ok_ev_ens': rec_ev[i][1],
+            'alpha': rec_learned[i].get('alpha'),
             'last_mass': rec_learned[i].get('last_mass'),
             'entropy': rec_learned[i].get('entropy'),
         })
     return rows
+
+
+def attn_dist(rows, ratio: float, n_bins: int = 20):
+    """预算档内注意力分布：步位 pos（0..T-1 为揭示前状态，末位为终局补充
+    前向状态）按 pos/n_nodes 归一化到 [0, ratio] 比例轴，n_bins 等宽分箱后
+    对 episode 取平均。末位恰落在 ratio → 尾箱；旧缓存无 n_nodes 的行剔除。"""
+    acc = [0.0] * n_bins
+    used = 0
+    for r in rows:
+        alpha, n = r.get('alpha'), r.get('n_nodes')
+        if not alpha or not n:
+            continue
+        for pos, w in enumerate(alpha):
+            # +1e-9 抵消浮点噪声（如 0.03/0.1*20 = 5.999...9 落错箱）
+            b = min(int((pos / n / ratio) * n_bins + 1e-9), n_bins - 1)
+            acc[b] += w
+        used += 1
+    if not used:
+        return None
+    return {'n_bins': n_bins,
+            'bin_edges': [round(i * ratio / n_bins, 6)
+                          for i in range(n_bins + 1)],
+            'bin_centers': [round((i + 0.5) * ratio / n_bins, 6)
+                            for i in range(n_bins)],
+            'dist': [round(a / used, 6) for a in acc],
+            'n_episodes': used}
 
 
 def summarize(rows):
@@ -310,6 +342,7 @@ def main():
                               [rec_u[i] for i in idxs],
                               [rec_e[i] for i in idxs])
             by_budget[key] = summarize(rows)
+            by_budget[key]['attn_dist'] = attn_dist(rows, float(key))
         overall = summarize(build_rows(eps, rec_l, rec_u, rec_e))
         mismatch = sum(1 for m in rec_e if m[2])
         print_table(split, by_budget, overall)

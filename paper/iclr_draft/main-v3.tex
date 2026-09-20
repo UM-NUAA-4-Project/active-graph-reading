@@ -6,6 +6,10 @@
 \usepackage{graphicx}
 \usepackage{xcolor}
 \usepackage{multirow}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\renewcommand{\algorithmicrequire}{\textbf{Input:}}
+\renewcommand{\algorithmicensure}{\textbf{Output:}}
 \usepackage[hidelinks]{hyperref}
 
 % NOTE: compiled against an ICLR-2025-derived style file renamed to
@@ -29,7 +33,7 @@
 \maketitle
 
 \begin{abstract}
-Graph classification methods almost universally assume that the entire graph is available at prediction time, yet on large graphs discriminative evidence is often concentrated in a small region while node-by-node inspection carries real cost. Existing pooling and explanation methods all operate under full observation and cannot answer, before the graph is visible, where reading should go; the direction has long lacked a leak-proof evaluation protocol, as well as evidence that a learned policy beats fixed ones at matched budgets. We therefore propose \emph{budget-limited active graph reading}: an agent starts from a single seed node, step by step selects frontier nodes to reveal under a fixed node budget, and once the budget is exhausted classifies only the revealed subgraph. Training proceeds in three stages, namely teacher-trajectory distillation, behavior cloning, and reinforcement fine-tuning with an asymmetric reward judged by a frozen classifier, while the evidence reader is decoupled from node selection and accumulates what has been read in a recurrent state, guaranteeing by construction that prediction depends only on the revealed set. Experiments show that the learned policy recovers about $81\%$ of full-graph test accuracy on COLLAB under a $20\%$ node budget, and exceeds the best fixed policy by up to $11.3$ percentage points on CIFAR10. These results indicate that task-aware adaptive reading can substantially recover full-graph accuracy under a very small inspection budget.
+Graph-level prediction typically assumes access to the complete input graph. However, when node information must be acquired through external queries or costly measurements, a predictor must decide what to observe within a limited budget. We study budget-limited active graph reading, where an agent sequentially reveals nodes and predicts the graph label from acquired evidence. Learning such a policy is challenging because graph labels provide no direct supervision for exploration actions, and the combinatorial space of reading trajectories makes unguided exploration difficult. We introduce BAGR, a budget-aware graph reader that combines sequential node selection with recurrent evidence accumulation. To guide exploration, we generate privileged teacher trajectories and filter them according to a pretrained classifier's predictive performance on the revealed subgraphs. Imitation learning transfers these demonstrations into an observation-constrained policy, providing a task-informed initialization. On-policy reinforcement learning then refines the policy using classification-based rewards on its own trajectories, enabling task-driven exploration beyond the teacher demonstrations. We evaluate BAGR on CIFAR10 superpixels, COLLAB, and OGBG-PPA under explicit observation and node-budget constraints, and experimental results show gains over the evaluated fixed heuristics.
 \end{abstract}
 
 \section{Introduction}
@@ -41,9 +45,9 @@ Existing lines of work each provide part of the answer but stop short of this se
 
 This paper rests on two observations. The first is informational discipline: to learn and compare readers under partial observation, one must first pin down what is visible at each step. Revealed content and frontier attachment structure are visible, frontier edge features are freely queryable, and all content of unvisited nodes is permanently disabled; under this discipline the reader depends by construction only on the revealed set, and the prediction cannot peek at unrevealed evidence. The second is why learning is necessary: the reading order of a fixed heuristic is entirely task-agnostic and struggles to steer the budget toward regions that are actually useful for classification; in our experiments such heuristics either collapse to the majority class or cluster in a narrow band. A reading policy therefore has to learn task-aware selection from data rather than rely on hand-crafted rules.
 
-To this end we give a leak-proof formalization of the problem (\S\ref{sec:setup}) together with a three-stage training pipeline (\S\ref{sec:method}): behavior cloning distills an initial policy from successful trajectories of task-agnostic teachers (gradient saliency, information gain, and structural heuristics); reinforcement fine-tuning uses the frozen classifier's judgment on the final revealed subgraph as the reward, in an asymmetric form that suppresses gradient noise from failed trajectories; and the evidence reader is decoupled from the selection path, accumulating what has been read step by step in a recurrent state so that prediction and selection do not interfere.
+To this end we give a leak-proof formalization of the problem (\S\ref{sec:setup}) and introduce \textbf{BAGR}, a budget-aware graph reader that combines sequential node selection with recurrent evidence accumulation, trained by a three-stage pipeline (\S\ref{sec:method}): behavior cloning distills an initial policy from successful trajectories of task-agnostic teachers, namely gradient saliency, information gain, and structural heuristics; reinforcement fine-tuning uses the frozen classifier's judgment on the final revealed subgraph as the reward, in an asymmetric form that suppresses gradient noise from failed trajectories; and the evidence reader is decoupled from the selection path, accumulating what has been read step by step in a recurrent state so that prediction and selection do not interfere.
 
-Our contributions unfold along three lines. \textbf{Protocol.} We formalize the above discipline as a three-tier visibility model with leak-proof budget accounting (\S\ref{sec:setup}). \textbf{Method.} Behavior cloning distills an initial policy from successful teacher trajectories; reinforcement learning fine-tunes it with an asymmetric reward judged by a frozen classifier; the evidence reader accumulates what has been read in a recurrent state decoupled from node selection (\S\ref{sec:method}). \textbf{Experiments.} On COLLAB all fixed policies collapse to the majority-class level, and the learned policy recovers about $81\%$ of full-graph test accuracy with a $20\%$ budget; on CIFAR10 it exceeds the best fixed policy by up to $11.3$ percentage points; on PPA it does not yet surpass the best fixed policy, marking the clear boundary of the current method (\S\ref{sec:experiments}).
+Our contributions unfold along three lines. \textbf{Protocol.} We formalize the above discipline as a three-tier visibility model with leak-proof budget accounting (\S\ref{sec:setup}). \textbf{Method.} Behavior cloning distills an initial policy from successful teacher trajectories; reinforcement learning fine-tunes it with an asymmetric reward judged by a frozen classifier; the evidence reader accumulates what has been read in a recurrent state decoupled from node selection (\S\ref{sec:method}). \textbf{Experiments.} On COLLAB all fixed policies and adapted poolers collapse to the majority-class level, and the learned policy recovers about $81\%$ of full-graph test accuracy with a $20\%$ budget; on CIFAR10 it exceeds the strongest baseline by up to $11.3$ percentage points; on PPA it does not yet surpass the best fixed policy, marking the clear boundary of the current method (\S\ref{sec:experiments}).
 
 \section{Related Work}
 \label{sec:related}
@@ -87,21 +91,21 @@ with $V^{*,p}(B)$ under protocol $p$.
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figures/evidence-reader-1.png}
-\caption{Evidence reader architecture. Top: stateless selection path; bottom: recurrent evidence path; both share one GINE encoder.}
+\caption{BAGR architecture. Top: stateless selection path; bottom: recurrent evidence path; both share one GINE encoder.}
 \label{fig:arch}
 \end{figure}
 
 \subsection{Overview}
 \label{subsec:overview}
 
-Figure~\ref{fig:arch} gives the overall architecture of the evidence reader: the revealed subgraph, together with T1 frontier edge features, is fed to a shared GINE encoder, on top of which sit two decoupled paths, a stateless selection path (\S\ref{subsec:selector}) and a recurrent evidence path (\S\ref{subsec:evidence}); the final-step output of the latter carries the terminal readout. During training the reader randomizes revelation with a temperature; at evaluation it takes the argmax.
+Figure~\ref{fig:arch} gives the overall architecture of BAGR: the revealed subgraph, together with T1 frontier edge features, is fed to a shared GINE encoder, on top of which sit two decoupled paths, a stateless selection path (\S\ref{subsec:selector}) and a recurrent evidence path (\S\ref{subsec:evidence}); the final-step output of the latter carries the terminal readout. During training the reader randomizes revelation with a temperature; at evaluation it takes the argmax.
 
 \subsection{Selection Head}
 \label{subsec:selector}
 
-Motivation. The protocol restricts what the selection head may use to $o_t$: candidate nodes are unrevealed with no readable features, and any scoring that depends on global structure is unavailable, for example whole-graph top-$k$ pooling. The selection head is therefore designed as a lightweight scorer over visible information, not a heavy reasoning module.
+\textbf{Motivation.} The protocol restricts what the selection head may use to $o_t$: candidate nodes are unrevealed with no readable features, and any scoring that depends on global structure is unavailable, for example whole-graph top-$k$ pooling. The selection head is therefore designed as a lightweight scorer over visible information, not a heavy reasoning module.
 
-Mechanism. The shared encoder runs message passing on the visible subgraph (the revealed part, frontier attachment structure, and T1 frontier edge features), producing embeddings for all nodes; for each frontier candidate $v$, it concatenates
+\textbf{Mechanism.} The shared encoder runs message passing on the visible subgraph (the revealed part, frontier attachment structure, and T1 frontier edge features), producing embeddings for all nodes; for each frontier candidate $v$, it concatenates
 \[
 u_v=\big[\,h_v\ ;\ \rho_t\ ;\ \phi_v\,\big],
 \]
@@ -146,7 +150,7 @@ $\mathcal L_{ev}$ is the only training signal of the evidence path (\S\ref{subse
 \subsection{Algorithm}
 \label{subsec:algo}
 
-Inference and training share the same rollout loop: one forward pass on the visible subgraph per step, with cost $O(|E(G_t)|)$ determined by the subgraph induced by the revealed set and the frontier, usually far smaller than the whole graph; a $B$-step trajectory costs linearly in $B$. Rollouts for training and evaluation run in lockstep batches across graphs. The three-stage pipeline of teacher trajectories, behavior cloning, and reinforcement fine-tuning is given in Algorithm~1 (Appendix~\ref{app:pipeline}).
+Inference and training share the same rollout loop: one forward pass on the visible subgraph per step, with cost $O(|E(G_t)|)$ determined by the subgraph induced by the revealed set and the frontier, usually far smaller than the whole graph; a $B$-step trajectory scales linearly with $B$. Rollouts for training and evaluation run in lockstep batches across graphs. The three-stage pipeline of teacher trajectories, behavior cloning, and reinforcement fine-tuning is given in Algorithm~\ref{alg:pipeline} (Appendix~\ref{app:pipeline}).
 
 Implementation details on architecture, optimization, and seed conventions are given in Appendix~\ref{app:impl}.
 
@@ -156,23 +160,25 @@ Implementation details on architecture, optimization, and seed conventions are g
 \subsection{Experimental Setup}
 \label{subsec:exp-setup}
 
-We evaluate on three large-scale graph classification benchmarks: OGBG-PPA \refadd{ogbg}, CIFAR10 superpixels \refadd{lrgb}, and COLLAB \refadd{tudataset}. The three cover different structural regimes the protocol must face: CIFAR10 superpixels are node-feature-centric, near-grid, and bounded-diameter; PPA has only 7-dimensional edge features and averages 243 nodes; COLLAB has only topology. The metric is accuracy (\%). Fixed baselines comprise four revelation strategies, namely Random, BFS, Max-Frontier-Degree, and Random-Walk, plus the adapted SAGPool; the frozen full-graph classifier provides each dataset's upper bound, and its accuracy on the revealed subgraph is reported as the reference head ($\mathrm{acc\_clf}$).
+We evaluate on three large-scale graph classification benchmarks: OGBG-PPA \refadd{ogbg}, CIFAR10 superpixels \refadd{lrgb}, and COLLAB \refadd{tudataset}. The three cover different structural regimes the protocol must face: CIFAR10 superpixels are node-feature-centric, near-grid, and bounded-diameter; PPA has only 7-dimensional edge features and averages 243 nodes; COLLAB has only topology. The metric is accuracy (\%). Fixed baselines comprise four revelation strategies, namely Random, BFS, Max-Frontier-Degree, and Random-Walk; adapted baselines comprise SAGPool, Soft-Mask, and AgentNet, each turned into a protocol-compliant stepwise selector. The frozen full-graph classifier provides each dataset's upper bound, and its accuracy on the revealed subgraph is reported as the reference head ($\mathrm{acc\_clf}$).
 
-\textbf{How baselines enter the protocol.} The four fixed strategies and the adapted SAGPool share one protocol interface: at each step they select exactly one unrevealed endpoint from the current frontier, with budget accounting, seed formulas, and terminal judgment identical to the learned methods, differing only in the \textbf{sequential heuristic} that orders reading; SAGPool's scorer is turned into a stepwise static selector, and the resulting distribution shift at evaluation is part of that baseline's setting. Full adaptation details are in Appendix~\ref{app:baselines}; all methods share the same terminal judgment, upper bound, and reference-head protocol.
+\textbf{How baselines enter the protocol.} The four fixed strategies and the three adapted baselines share one protocol interface: at each step they select exactly one unrevealed endpoint from the current frontier, with budget accounting, seed formulas, and terminal judgment identical to the learned methods, differing only in the \textbf{selection rule} that orders reading; SAGPool and Soft-Mask scorers are turned into stepwise static selectors, and AgentNet's walk is confined to the frontier, so the distribution shift at evaluation is part of these baselines' setting. Full adaptation details are in Appendix~\ref{app:baselines}. Terminal judgment follows each method's original design: the fixed strategies and the adapted poolers are judged by the frozen classifier, whereas AgentNet, which carries its own classification head as in its original work, is judged by its own readout.
 
 \begin{table}[t]
 \centering
 \caption{CIFAR10 superpixels, test accuracy (\%). The reference head is the frozen classifier on RL-revealed subgraphs; BC is the main comparison configuration, and the evidence reader's BC variants are in Table~\ref{tab:ablation}.}
 \label{tab:cifar10}
-\begin{tabular}{lcccccccc}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lcccccccccc}
 \toprule
-Budget & Random & BFS & Max-Fr.-Deg. & RW & SAGPool & BC & RL & RL-Ref \\
+Budget & Random & BFS & Max-Fr.-Deg. & RW & SAGPool & Soft-Mask & AgentNet & BC & RL & RL-Ref \\
 \midrule
-5\%  & 16.32 & 16.32 & 16.09 & 16.30 & 15.49 & 16.91 & \textbf{25.32} & 16.68 \\
-10\% & 18.69 & 18.06 & 17.31 & 19.03 & 16.91 & 17.87 & \textbf{30.03} & 19.78 \\
-15\% & 20.57 & 19.59 & 18.98 & 21.36 & 18.10 & 18.39 & \textbf{32.68} & 22.98 \\
+5\%  & 16.32 & 16.32 & 16.09 & 16.30 & 15.49 & 16.12 & 16.25 & 16.91 & \textbf{25.32} & 16.68 \\
+10\% & 18.69 & 18.06 & 17.31 & 19.03 & 16.91 & 18.45 & 18.30 & 17.87 & \textbf{30.03} & 19.78 \\
+15\% & 20.57 & 19.59 & 18.98 & 21.36 & 18.10 & 21.07 & 19.11 & 18.39 & \textbf{32.68} & 22.98 \\
 \bottomrule
-\end{tabular}
+\end{tabular}%
+}
 
 \smallskip
 {\footnotesize Full-graph classifier (upper bound) 60.5.}
@@ -180,16 +186,16 @@ Budget & Random & BFS & Max-Fr.-Deg. & RW & SAGPool & BC & RL & RL-Ref \\
 
 \begin{table}[t]
 \centering
-\caption{COLLAB, accuracy (\%), all cells validation/test. Fixed policies are pinned at the majority-class level.}
+\caption{COLLAB, accuracy (\%), all cells validation/test. Fixed policies and the adapted poolers are pinned at the majority-class level; AgentNet is judged by its own readout head.}
 \label{tab:collab}
 \resizebox{\linewidth}{!}{%
-\begin{tabular}{lcccccccc}
+\begin{tabular}{lcccccccccc}
 \toprule
-Budget & Random & BFS & Max-Fr.-Deg. & RW & SAGPool & BC & RL & RL-Ref \\
+Budget & Random & BFS & Max-Fr.-Deg. & RW & SAGPool & Soft-Mask & AgentNet & BC & RL & RL-Ref \\
 \midrule
-10\% & 15.43/15.57 & 15.53/15.57 & 15.63/15.57 & 15.43/15.57 & 15.43/15.57 & 16.78/16.42 & \textbf{52.20/51.90} & 15.88/15.72 \\
-15\% & 15.43/15.57 & 15.73/15.57 & 15.83/15.72 & 15.43/15.57 & 15.43/15.57 & 20.24/19.96 & \textbf{54.56/53.44} & 18.09/18.21 \\
-20\% & 15.43/15.57 & 15.98/15.72 & 16.03/15.87 & 15.43/15.57 & 15.43/15.57 & 27.56/25.60 & \textbf{58.02/55.74} & 20.64/20.26 \\
+10\% & 15.43/15.57 & 15.53/15.57 & 15.63/15.57 & 15.43/15.57 & 15.43/15.57 & 15.43/15.57 & 52.1/51.9 & 16.78/16.42 & \textbf{52.20/51.90} & 15.88/15.72 \\
+15\% & 15.43/15.57 & 15.73/15.57 & 15.83/15.72 & 15.43/15.57 & 15.43/15.57 & 15.43/15.57 & 52.1/51.9 & 20.24/19.96 & \textbf{54.56/53.44} & 18.09/18.21 \\
+20\% & 15.43/15.57 & 15.98/15.72 & 16.03/15.87 & 15.43/15.57 & 15.43/15.57 & 15.48/15.57 & 52.1/51.9 & 27.56/25.60 & \textbf{58.02/55.74} & 20.64/20.26 \\
 \bottomrule
 \end{tabular}%
 }
@@ -201,24 +207,24 @@ Budget & Random & BFS & Max-Fr.-Deg. & RW & SAGPool & BC & RL & RL-Ref \\
 \subsection{Main Results}
 \label{subsec:results}
 
-The results answer three questions: can the learned policy beat all fixed baselines at matched budgets (Tables~\ref{tab:cifar10}--\ref{tab:ppa}); is the gain cashed by ``selecting well'' or by ``reading well'' (the dual-readout protocol of \S\ref{subsec:evidence}); and where the method's boundary of applicability lies (the negative result on PPA).
+The results answer three questions: can the learned policy beat all fixed and adapted baselines at matched budgets (Tables~\ref{tab:cifar10}--\ref{tab:ppa}); is the gain cashed by ``selecting well'' or by ``reading well'' (the dual-readout protocol of \S\ref{subsec:evidence}); and where the method's boundary of applicability lies (the negative result on PPA).
 
-On CIFAR10 superpixels (Table~\ref{tab:cifar10}), fixed policies concentrate in a narrow 16--21 band and behavior cloning falls in the same band, so imitating task-agnostic teachers alone does not beat the best heuristics. Reinforcement fine-tuning pushes the policy far out of this band: the three budget tiers reach 25.32, 30.03, and 32.68, exceeding the best fixed policy at the same budget by 9.0--11.3 percentage points and BC by up to 14.3. Taking the 15\% budget gap between 32.68 and 22.98 as an example, the difference between RL and the reference head shows that the policy reveals subgraphs the frozen classifier reads \textbf{better}, not merely ``reveals more''. Against the full-graph upper bound, at 15\% budget RL reaches 32.7 with the full-graph classifier at 60.5, recovering about 54\% of full-graph accuracy: reinforcement fine-tuning captures most of the increment beyond the fixed-policy band, but substantial headroom remains.
+On CIFAR10 superpixels (Table~\ref{tab:cifar10}), fixed policies concentrate in a narrow 16--21 band, the adapted Soft-Mask and AgentNet stay in or near this band, and behavior cloning falls in it as well, so imitating task-agnostic teachers alone does not beat the best heuristics. Reinforcement fine-tuning pushes the policy far out of this band: the three budget tiers reach 25.32, 30.03, and 32.68, exceeding the strongest baseline at the same budget by 9.0--11.3 percentage points and BC by up to 14.3. At the 15\% budget, RL reaches 32.68 while the reference head reaches 22.98; this gap shows that the policy reveals subgraphs the frozen classifier reads \textbf{better}, not merely ``reveals more''. Against the full-graph upper bound of 60.5, RL at the 15\% budget reaches 32.7, recovering about 54\% of full-graph accuracy: reinforcement fine-tuning captures most of the increment beyond the fixed-policy band, but substantial headroom remains.
 
-On COLLAB (Table~\ref{tab:collab}), all fixed policies and SAGPool stay at 15.4--16.0 on both splits, the majority-class level of this imbalanced dataset, where the greedy failure appears in its most extreme form: task-agnostic selection never escapes collapse. Behavior cloning improves to valid 16.8--27.6 and test 16.4--25.6; reinforcement fine-tuning reaches 51.90, 53.44, and 55.74 on test, recovering 75.2--80.7\% of full-graph test accuracy (69.06). The remaining gap is mainly bounded by the full-graph classifier's own accuracy, not by the reading policy. The reference head sharpens the mechanism: the frozen classifier reading RL-revealed subgraphs achieves only 15.7--20.3, so it is the evidence head that converts revealed evidence into prediction, not the frozen readout.
+On COLLAB (Table~\ref{tab:collab}), all fixed policies and the two adapted poolers stay at 15.4--16.0 on both splits, the majority-class level of this imbalanced dataset; task-agnostic selection never escapes collapse. AgentNet, which like our reader is judged by its own readout head, scores 52.1/51.9, the only adapted baseline above the collapse level, but its accuracy stays flat across budget tiers; BAGR already matches it with a 10\% budget and continues to 55.74 at 20\%. Behavior cloning improves to valid 16.8--27.6 and test 16.4--25.6; reinforcement fine-tuning reaches 51.90, 53.44, and 55.74 on test, recovering 75.2--80.7\% of full-graph test accuracy (69.06), and the remaining gap is mainly bounded by the full-graph classifier's own accuracy, not by the reading policy. The reference head sharpens the mechanism: the frozen classifier reading RL-revealed subgraphs achieves only 15.7--20.3, so it is the evidence head that converts revealed evidence into prediction, not the frozen readout.
 
 \begin{table}[t]
 \centering
-\caption{OGBG-PPA, accuracy (\%), all cells validation/test. Learned policies do not yet beat the best fixed policy; BC collapses to near random.}
+\caption{OGBG-PPA, accuracy (\%), all cells validation/test. The learned policies do not yet beat the best baseline; BC collapses to near random.}
 \label{tab:ppa}
 \resizebox{\linewidth}{!}{%
-\begin{tabular}{lcccccccc}
+\begin{tabular}{lcccccccccc}
 \toprule
-Budget & Random & BFS & Max-Fr.-Deg. & RW & SAGPool & BC & RL & RL-Ref \\
+Budget & Random & BFS & Max-Fr.-Deg. & RW & SAGPool & Soft-Mask & AgentNet & BC & RL & RL-Ref \\
 \midrule
-5\%  & 18.86/20.16 & 23.45/24.45 & 25.31/26.20 & 19.71/21.46 & 26.08/27.28 & 3.90/3.97 & 23.53/26.90 & 19.65/20.73 \\
-10\% & 31.14/33.07 & 30.06/35.68 & 36.33/37.28 & 32.34/34.54 & 36.25/37.92 & 7.23/7.37 & 28.12/32.34 & 26.83/27.41 \\
-15\% & 39.37/41.88 & 40.84/42.92 & 42.94/44.52 & 40.21/42.99 & 43.03/45.08 & 9.04/9.03 & 30.76/35.05 & 31.87/32.99 \\
+5\%  & 18.86/20.16 & 23.45/24.45 & 25.31/26.20 & 19.71/21.46 & 26.08/27.28 & 20.68/21.88 & 9.98/9.48 & 3.90/3.97 & 23.53/26.90 & 19.65/20.73 \\
+10\% & 31.14/33.07 & 34.07/35.68 & 36.33/37.28 & 32.34/34.54 & 36.25/37.92 & 32.25/33.89 & 9.98/9.48 & 7.23/7.37 & 28.12/32.34 & 26.83/27.41 \\
+15\% & 39.37/41.88 & 40.84/42.92 & 42.94/44.52 & 40.21/42.99 & 43.03/45.08 & 40.12/42.00 & 9.98/9.48 & 9.04/9.03 & 30.76/35.05 & 31.87/32.99 \\
 \bottomrule
 \end{tabular}%
 }
@@ -227,7 +233,7 @@ Budget & Random & BFS & Max-Fr.-Deg. & RW & SAGPool & BC & RL & RL-Ref \\
 {\footnotesize Full-graph classifier (upper bound) valid 64.2 / test 65.6.}
 \end{table}
 
-On PPA the fixed policies separate cleanly with budget, and SAGPool is the strongest fixed baseline on test. In stark contrast to the other two datasets, the learned policies are not yet competitive: behavior cloning collapses to 3.9--9.0, well below all fixed policies; on test, reinforcement fine-tuning consistently beats its reference head (26.9--35.1 vs.\ 20.7--33.0) yet trails the best fixed baseline by 0.4--10.0 percentage points at every budget tier. The policy gradient's signal-to-noise ratio is naturally low at low success rates, consistent with this observation; however, a complete attribution, involving reward sparsity, PPA's budget granularity, and class imbalance, is not yet established, and we draw no conclusion about adaptive reading from this negative result.
+On PPA the fixed policies separate cleanly with budget, and SAGPool is the strongest baseline on test. In stark contrast to the other two datasets, the learned policies are not yet competitive: behavior cloning collapses to 3.9--9.0, well below every baseline; on test, reinforcement fine-tuning consistently beats its reference head (26.9--35.1 vs.\ 20.7--33.0) yet trails the best baseline by 0.4--10.0 percentage points at every budget tier. AgentNet, judged by its own readout head as in its original design, collapses to a single class near 10 on both splits; among learned readers, none is yet competitive on PPA. The policy gradient's signal-to-noise ratio is naturally low at low success rates, consistent with this observation; however, a complete attribution, involving reward sparsity, PPA's budget granularity, and class imbalance, is not yet established, and we draw no conclusion about adaptive reading from this negative result.
 
 \subsection{Ablation and Analysis}
 \label{subsec:ablation}
@@ -274,7 +280,7 @@ Tables~\ref{tab:ablation} ablate the evidence path's two components item by item
 \section{Conclusion}
 \label{sec:conclusion}
 
-We presented a leak-proof formalization and evaluation benchmark for budget-limited active graph reading: a three-tier visibility protocol makes learning and evaluation under partial observation comparable and reproducible. On the method side, behavior cloning followed by reinforcement fine-tuning with an asymmetric reward turns task-agnostic reading into task-aware reading: on COLLAB a 20\% node budget recovers about 81\% of full-graph test accuracy, on CIFAR10 the learned policy beats the best fixed policy by up to 11.3 percentage points, and ablations confirm the recurrent evidence accumulator carries the main gains.
+We presented BAGR, a budget-aware graph reader for budget-limited active graph reading, together with a leak-proof formalization and evaluation benchmark: a three-tier visibility protocol makes learning and evaluation under partial observation comparable and reproducible. On the method side, behavior cloning followed by reinforcement fine-tuning with an asymmetric reward turns task-agnostic reading into task-aware reading: on COLLAB a 20\% node budget recovers about 81\% of full-graph test accuracy, on CIFAR10 BAGR beats the strongest baseline by up to 11.3 percentage points, and ablations confirm the recurrent evidence accumulator carries the main gains.
 
 \appendix
 \renewcommand{\thesection}{A.\arabic{section}}
@@ -292,51 +298,53 @@ The shared encoder is a GINE-style edge-feature convolution, by default 2 layers
 
 The pseudocode below gives the three-stage pipeline of \S\ref{subsec:algo}; budget accounting and the terminal judgment follow the protocol of \S\ref{subsec:protocol}.
 
-\begin{center}
-\begin{minipage}{0.96\linewidth}
-\small
-\textbf{Algorithm 1: Three-stage training pipeline.}
-
-\smallskip
-\begin{verbatim}
-Input : training graphs {G_i}; frozen classifier f_hat;
-        budget tiers B; teachers {gradient, info-gain,
-        structural, hybrid}
-Output: policy and evidence-head parameters theta
-
-# Stage A: teacher trajectories
-for G_i, seed s0, teacher T:
-    S <- {s0}
-    while |S| - 1 < B:       # budget = reveals, excl. seed
-        F <- N(S) \ S
-        if F = empty then teleport (costs 1 budget)
-        a <- T(observation); reveal a; S <- S union {a}
-        # record (o_t, a_t) stepwise
-    if f_hat(G_S) = y: D <- D union {this trajectory}
-Class-balance D
-
-# Stage B: behavior cloning
-repeat: sample a batch from D, reproduce observations
-        by temperature rollout; gradient descent on L_BC
-
-# Stage C: reinforcement fine-tuning
-repeat: rollout with theta at temperature;
-        R <- +1 if f_hat(o_B)=y else -0.1
-        standardize advantages; gradient descent on L^total
-\end{verbatim}
-\end{minipage}
-\end{center}
+\begin{algorithm}[h]
+\caption{Three-stage training pipeline}
+\label{alg:pipeline}
+\begin{algorithmic}[1]
+\REQUIRE training graphs $\{G_i\}$; frozen classifier $\hat f$; budget tiers $B$; teachers $\{\text{gradient, info-gain, structural, hybrid}\}$
+\ENSURE policy and evidence-head parameters $\theta$
+\STATE \textbf{Stage A: teacher trajectories.}
+\FOR{each graph $G_i$, seed $s_0$, and teacher $T$}
+    \STATE $S \leftarrow \{s_0\}$
+    \WHILE{$|S|-1 < B$}
+        \STATE $F \leftarrow N(S)\setminus S$
+        \IF{$F=\emptyset$}
+            \STATE teleport to an unrevealed node, consuming one unit of budget
+        \ENDIF
+        \STATE $a \leftarrow T(\text{observation})$; reveal $a$; $S \leftarrow S \cup \{a\}$; record $(o_t,a_t)$
+    \ENDWHILE
+    \IF{$\hat f(G_S)=y$}
+        \STATE $\mathcal{D} \leftarrow \mathcal{D} \cup \{\text{this trajectory}\}$
+    \ENDIF
+\ENDFOR
+\STATE class-balance $\mathcal{D}$
+\STATE \textbf{Stage B: behavior cloning.}
+\REPEAT
+    \STATE sample a batch from $\mathcal{D}$, reproduce observations by temperature rollout, descend on $\mathcal{L}_{BC}$
+\UNTIL{converged}
+\STATE \textbf{Stage C: reinforcement fine-tuning.}
+\REPEAT
+    \STATE roll out with $\theta$ at temperature; $R \leftarrow +1$ if $\hat f(o_B)=y$, otherwise $-0.1$; standardize advantages
+    \STATE descend on $\mathcal{L}^{\mathrm{total}}$
+\UNTIL{converged}
+\end{algorithmic}
+\end{algorithm}
 
 \section{How Baselines Enter the Protocol}
 \label{app:baselines}
 
 \textbf{Fixed strategies.} The four fixed strategies, namely Random, BFS, Max-Frontier-Degree, and Random-Walk, share one protocol interface: at each step they select exactly one unrevealed endpoint from the current frontier, with budget accounting, seed formulas, and terminal judgment identical to the learned methods; they differ only in the \textbf{sequential heuristic} that orders reading. Random samples uniformly over frontier edges and reveals their unrevealed endpoint; BFS reveals in first-in-first-out order of frontier-edge discovery; Max-Frontier-Degree reveals the frontier node with the most connections to the revealed subgraph; Random-Walk walks along random edges from the current node and reveals the first unrevealed node it arrives at.
 
-\textbf{SAGPool.} SAGPool requires substantive adaptation to enter the protocol: its original form performs one-shot top-$k$ selection on the complete graph, consuming unobserved global structure and guaranteeing neither connectivity to the seed. The adapted version turns its scorer into a stepwise static selector: at each step it recomputes gating scores on the visible subgraph only (revealed $\cup$ frontier, with frontier node features zeroed) and reveals the highest-scoring frontier node (ties broken by smaller id, deterministic); the scorer itself is still trained on complete graphs with standard supervision, and the resulting distribution shift at evaluation is part of that baseline's setting. All methods share the same terminal judgment, upper bound, and reference-head protocol.
+\textbf{SAGPool.} SAGPool requires substantive adaptation to enter the protocol: its original form performs one-shot top-$k$ selection on the complete graph, consuming unobserved global structure and guaranteeing neither connectivity to the seed. The adapted version turns its scorer into a stepwise static selector: at each step it recomputes gating scores on the visible subgraph only (revealed $\cup$ frontier, with frontier node features zeroed) and reveals the highest-scoring frontier node (ties broken by smaller id, deterministic); the scorer itself is still trained on complete graphs with standard supervision, and the resulting distribution shift at evaluation is part of that baseline's setting. All methods share the same upper bound and reference-head protocol.
+
+\textbf{Soft-Mask.} Soft-Mask \refadd{soft-mask} is the soft-weighting counterpart of SAGPool: a mask generator outputs a continuous gate $m_v\in(0,1)$ for every node at each layer, message passing is modulated by $x\odot m$, and the masks are supervised only indirectly by the classification loss on complete graphs, with no budget or temporal notion. Its adaptation mirrors SAGPool's two stages: the scorer is trained on complete graphs, and at inference the first-layer mask scores are recomputed on the visible subgraph at every step to reveal the highest-scoring frontier node. Together the two adapted poolers form a paired contrast between soft weighting and hard top-$k$ selection.
+
+\textbf{AgentNet.} The original AgentNet \refadd{agentnet} lets a population of identity-carrying agents walk the complete graph with Gumbel-softmax transitions, absorb neighbor states at every step, and read out a classification, with no budget notion since the agent count times the walk length far exceeds a 5--15\% node budget. The adaptation translates the policy rather than transplanting a scorer: one agent walking one step corresponds to revealing one frontier node, candidates are restricted to the frontier neighbors of the current position, the initial position is the seed, and when no frontier candidate remains the agent navigates within the revealed region by its exploration score back to a position with candidates, consuming no budget. Consistent with its original design, in which the walking policy and the classification head are learned together, evaluation judges AgentNet by its own readout head.
 
 \section*{Reproducibility Statement}
 
-All experiments use the per-graph deterministic seed formula, fixed dataset splits, and a single evaluation mode (including per-class breakdowns and dual-readout accuracies); complete configurations are embedded in every checkpoint, and all results are averages over four seeds. Code, configurations, trajectory data, and the leakage-invariant test suite will be released with the paper.
+All experiments use the per-graph deterministic seed formula, fixed dataset splits, and a single evaluation mode (including per-class breakdowns and dual-readout accuracies); complete configurations are embedded in every checkpoint, and all results are averages over deterministic seeds, four per method and two for the adapted AgentNet on CIFAR10. Code, configurations, trajectory data, and the leakage-invariant test suite will be released with the paper.
 
 \section*{LLM Usage Statement}
 

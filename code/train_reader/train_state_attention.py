@@ -9,6 +9,12 @@
   LayerNorm → 与零初始化可学习查询打分（初始 ≡ 均匀权重 = mean-pool
   下限）→ mask softmax（pad 位 -inf）→ 加权和 s → MLP → 类别。
   不拼接终局状态（终局状态已在序列内，attention 可自行加权）。
+- `--freeze-mlp` 诊断口径：evidence head MLP 权重右补一列零（2d → 2d+1，
+  时间通道列置零）加载进聚合头 MLP 并冻结，只训 attention 打分器
+  （norm/proj/query）。把"纯重加权"与"重训分类器"两种收益分开：
+  frozen learned ≈ fresh learned ⇒ 增益归因于注意力分布本身；
+  frozen ≪ fresh ⇒ 差值即重训占比。uniform 变体同口径下仅剩 norm 可训，
+  是冻结解码器的均匀池化参照。
 - 三口径对照（同一批 rollout）：learned（学 attention 权重）vs uniform
   （同 MLP、权重恒均匀——"学特化是否优于均匀"的直接对照）vs terminal-
   only（冻结 reader 自身终判，参照下限）。模型选择用 train 内 carve 的
@@ -69,6 +75,10 @@ def build_parser() -> argparse.ArgumentParser:
     # 头结构
     p.add_argument('--d-attn', type=int, default=128)
     p.add_argument('--mlp-hidden', type=int, default=128)
+    p.add_argument('--freeze-mlp', action=argparse.BooleanOptionalAction,
+                   default=False,
+                   help='evidence head MLP 权重右补零列（时间通道）加载进聚合'
+                        '头并冻结，只训 attention 打分器（纯重加权归因诊断）')
     # 训练
     p.add_argument('--epochs', type=int, default=40)
     p.add_argument('--batch-size', type=int, default=64)
@@ -233,6 +243,36 @@ class StateAttentionHead(nn.Module):
         return self.mlp(s), alpha
 
 
+def init_mlp_from_evidence(head, reader):
+    """evidence head MLP 权重加载进聚合头 mlp 并冻结（--freeze-mlp）。
+
+    聚合头 MLP 输入 2d+1（末位为 t/T 通道），evidence head 输入 2d：
+    第一层权重右补一列零——时间通道权重置零后，聚合头在 t/T=0 处与
+    evidence head 判据严格等价；第二层形状相同直接拷贝。要求
+    evidence_head 恰含两个 Linear 且隐宽 == mlp_hidden。"""
+    lins = [m for m in reader.evidence_head if isinstance(m, nn.Linear)]
+    if len(lins) != 2:
+        raise SystemExit(f'--freeze-mlp 需要 evidence_head 恰含 2 个 Linear，'
+                         f'实为 {len(lins)}')
+    hidden = lins[0].weight.shape[0]
+    if hidden != head.mlp[0].out_features:
+        raise SystemExit(f'--freeze-mlp 隐宽不匹配：evidence head 隐宽 '
+                         f'{hidden} ≠ 聚合头 mlp_hidden '
+                         f'{head.mlp[0].out_features}，请用 --mlp-hidden '
+                         f'{hidden} 对齐')
+    w1 = torch.cat([lins[0].weight.detach(),
+                    torch.zeros(hidden, 1, device=lins[0].weight.device)],
+                   dim=1)
+    with torch.no_grad():
+        head.mlp[0].weight.copy_(w1)
+        head.mlp[0].bias.copy_(lins[0].bias.detach())
+        head.mlp[2].weight.copy_(lins[1].weight.detach())
+        head.mlp[2].bias.copy_(lins[1].bias.detach())
+    for p in head.mlp.parameters():
+        p.requires_grad_(False)
+    return hidden
+
+
 def make_batches(episodes, batch_size, shuffle=True):
     idx = list(range(len(episodes)))
     if shuffle:
@@ -287,9 +327,11 @@ def evaluate_variant(head, episodes, device, learned: bool):
 
 def train_variant(head, train_eps, val_eps, eval_eps, args, device,
                   learned: bool):
-    """训练一个变体：train 拟合、val 选 best、eval 终报。"""
-    opt = torch.optim.Adam(head.parameters(), lr=args.lr,
-                           weight_decay=args.weight_decay)
+    """训练一个变体：train 拟合、val 选 best、eval 终报。frozen MLP 的
+    参数被优化器排除（--freeze-mlp 下 uniform 变体仅剩 norm 可训）。"""
+    opt = torch.optim.Adam(
+        (p for p in head.parameters() if p.requires_grad), lr=args.lr,
+        weight_decay=args.weight_decay)
     best_acc, best_state, history = -1.0, None, []
     for epoch in range(1, args.epochs + 1):
         head.train()
@@ -393,9 +435,16 @@ def main():
               'n_fit': len(fit_eps), 'n_val': len(val_eps),
               'n_eval': len(eval_eps),
               'trained_at': datetime.now().isoformat(timespec='seconds')}
+    if args.freeze_mlp:
+        lins = [m for m in reader.evidence_head if isinstance(m, nn.Linear)]
+        print(f'Freeze-MLP: evidence head Linears '
+              f'{[tuple(l.weight.shape) for l in lins]}，右补零列加载进聚合头'
+              f'并冻结，只训 attention 打分器')
     for name, learned in (('learned', True), ('uniform', False)):
         head = StateAttentionHead(2 * d, n_classes, args.d_attn,
                                   args.mlp_hidden).to(device)
+        if args.freeze_mlp:
+            init_mlp_from_evidence(head, reader)
         val_acc, eval_acc, diag, hist = train_variant(
             head, fit_eps, val_eps, eval_eps, args, device, learned)
         print(f'[{name}] best val acc = {val_acc:.4f} | '
