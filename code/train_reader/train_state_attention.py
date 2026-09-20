@@ -118,7 +118,7 @@ def collect_split(reader, graphs, labels, budget_ratios, n_seeds, device,
             st._budget_limit = budget
             states.append(st)
             rngs.append(random.Random(seed_node * 1_000_003 + budget))
-            metas.append({'label': int(lbl.item()), 'budget': ratio,
+            metas.append({'label': int(lbl.item()), 'budget': ratio, 'n': n,
                           'split': split_name, 'graph_idx': graph_offset + gi,
                           'seed_i': seed_i})
 
