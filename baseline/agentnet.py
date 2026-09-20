@@ -599,7 +599,8 @@ class AgentnetStrategy(BaseReader):
         gs = [dgl.add_self_loop(symmetrize_with_feat(dgl.remove_self_loop(s)))
               for s in subgraphs]
         B = len(gs)
-        out = torch.zeros(B, self._model.fc.weight.shape[0])
+        out = torch.zeros(B, self._model.fc.weight.shape[0],
+                          device=self._device)
         if steps is None:
             groups = [(None, list(range(B)))]
         else:
@@ -615,7 +616,10 @@ class AgentnetStrategy(BaseReader):
             bg = dgl.batch([gs[k] for k in idx]).to(self._device)
             sr = ([seed_rows[k] for k in idx]
                   if seed_rows is not None else None)
-            out[torch.tensor(idx, dtype=torch.long)] =                 self._model.forward_batch(bg, starts=sr, steps=st_val)
+            idx_t = torch.as_tensor(idx, dtype=torch.long,
+                                    device=self._device)
+            out[idx_t] = self._model.forward_batch(bg, starts=sr,
+                                                   steps=st_val)
         return out
 
     def on_new_frontier(self, edges) -> None:
