@@ -40,6 +40,7 @@ CLI_SCRIPTS = [
     'train_reader/train_rl.py',
     'train_reader/eval_reader.py',
     'train_reader/eval_baselines.py',
+    'train_reader/train_state_attention.py',
     'train_reader/eval.py',
     'train_reader/transfer.py',
     'tools/migrate_eval_json.py',

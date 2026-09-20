@@ -101,6 +101,7 @@ class EvidenceReader(LearnableReader):
         self, states, temperature: float,
         hc_list: List[Tuple[torch.Tensor, torch.Tensor]],
         last_revealed: List[int],
+        return_states: bool = False,
     ):
         """base 选点 + 证据流，单次共享 GNN 前向。
 
@@ -108,13 +109,21 @@ class EvidenceReader(LearnableReader):
         (h, c)；last_revealed 为各 state 上一步所揭示节点（step 0 = seed），
         其嵌入取自本次前向（lazy Δ，无第二编码器）。
 
+        return_states=True 时额外返回各 state 本步的 (z_t, h_t)——供冻结
+        reader 的离线聚合头（train_state_attention.py）采集轨迹特征；只增
+        不改，默认 False 时返回值与原签名逐字节一致。
+
         Returns:
             results   : List[(scores, probs, frontier_nodes)]——与 base
                         forward_states 逐字节一致；
             new_hc    : List[(h, c)] 更新后的积分器状态；
-            ev_logits : List[Tensor (n_classes,)] 各 state 逐步预测。
+            ev_logits : List[Tensor (n_classes,)] 各 state 逐步预测；
+            step_states（仅 return_states=True）: List[(z_t, h_t)]，各
+                        (d,)/ (d,)。
         """
         if not states:
+            if return_states:
+                return [], [], [], []
             return [], [], []
 
         subgraphs = [self.frontier_builder.build(s) for s in states]
@@ -151,6 +160,7 @@ class EvidenceReader(LearnableReader):
 
         results: List[Tuple[torch.Tensor, torch.Tensor, List[int]]] = []
         ev_logits: List[torch.Tensor] = []
+        step_states: List[Tuple[torch.Tensor, torch.Tensor]] = []
         for k, sg in enumerate(subgraphs):
             h_all = all_embeds[k]
             n_rev = sg.n_revealed
@@ -174,7 +184,11 @@ class EvidenceReader(LearnableReader):
             else:
                 z_t = self.evidence_pool(h_t, h_all[:n_rev])   # 历史引导读出
             ev_logits.append(self.evidence_head(torch.cat([z_t, h_t])))
+            if return_states:
+                step_states.append((z_t, h_t))
 
+        if return_states:
+            return results, new_hc, ev_logits, step_states
         return results, new_hc, ev_logits
 
     @property
