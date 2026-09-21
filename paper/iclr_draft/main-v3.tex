@@ -280,20 +280,13 @@ Learned attention & Frozen evidence head & 53.64 & 30.19 \\
 \end{tabular}
 \end{table}
 
-\textbf{Attention distribution.} The learned attention concentrates its mass at the end of the trajectory, and whether this concentrated pattern translates into a gain depends on whether the decoder is trained jointly with the attention (Figures~\ref{fig:attn-heat} and~\ref{fig:attn-curves}). On CIFAR10 the three budget tiers share one shape: the first half of the trajectory receives at most 1\% of the mass, the last quartile holds a constant 87--89\%, and the mass on the terminal state drops from 84\% to 48\% as the budget grows while the entropy rises from 0.25 to 0.43. The readout's effective memory horizon is therefore about the most recent quarter of the revelation steps, and it widens with budget. COLLAB is the extreme form of the same structure: terminal mass 90--99\%, first half exactly zero. Under the frozen decoder the pattern splits: CIFAR10 keeps its recency concentration and genuinely benefits, while COLLAB drifts to near-uniform with zero per-budget gain. The learned attention entropy therefore diagnoses whether temporal reweighting has exploitable structure.
+\textbf{Attention distribution.} The learned attention concentrates its mass at the end of the trajectory, and whether this concentrated pattern translates into a gain depends on whether the decoder is trained jointly with the attention (Figure~\ref{fig:attn-dist}). On CIFAR10 the three budget tiers share one shape: the first half of the trajectory receives at most 1\% of the mass, the last quartile holds a constant 87--89\%, and the mass on the terminal state drops from 84\% to 48\% as the budget grows while the entropy rises from 0.25 to 0.43. The readout's effective memory horizon is therefore about the most recent quarter of the revelation steps, and it widens with budget. COLLAB is the extreme form of the same structure: terminal mass 90--99\%, first half exactly zero. Under the frozen decoder the pattern splits: CIFAR10 keeps its recency concentration and genuinely benefits, while COLLAB drifts to near-uniform with zero per-budget gain. The learned attention entropy therefore diagnoses whether temporal reweighting has exploitable structure.
 
 \begin{figure}[!htb]
 \centering
-\includegraphics[width=0.8\linewidth]{figures/attn_dist_heatmap.png}
-\caption{Distribution heatmap of the learned attention. Rows are budget tiers, columns are relative step positions, and cell shading is attention mass; each row is annotated with the entropy $H$ and the last-position mass.}
-\label{fig:attn-heat}
-\end{figure}
-
-\begin{figure}[!htb]
-\centering
-\includegraphics[width=0.8\linewidth]{figures/attn_dist_curves.png}
-\caption{Per-budget attention distribution curves. Solid lines are the learned attention with a retrained decoder, with entropy in the legend; gray dashed lines are the frozen-decoder control; shading marks the first half of the trajectory.}
-\label{fig:attn-curves}
+\includegraphics[width=0.85\linewidth]{figures/attn_dist_combined.png}
+\caption{Distribution of the learned attention. Top row (a, b): heatmap of attention mass by budget tier (rows) and relative step position (columns); each row is annotated with the entropy $H$ and the last-position mass. Bottom row (c, d): per-budget distribution curves; solid lines are the learned attention with a retrained decoder, with entropy in the legend, gray dashed lines are the frozen-decoder control, and shading marks the first half of the trajectory.}
+\label{fig:attn-dist}
 \end{figure}
 
 \section{Discussion}

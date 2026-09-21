@@ -2,7 +2,9 @@
 
 自 m5/base/train_rl.py、m6/attention/train_rl.py、m7/train_rl.py 三份合并：
 - 起点：--bootstrap 任意 reader checkpoint（跨架构/跨数据集时部分权重
-  迁移：同形复制 / 末维零填充 / 跳过）；
+  迁移：同形复制 / 末维零填充 / 跳过）/ --from-scratch 从零新建 reader
+  直接 RL（结构走 CLI reader 参数，evidence 类别数取 spec.n_classes）
+  / --resume RL checkpoint 续训，三者必选其一；
 - 奖励：判定来源 --reward-source（classifier=冻结上界分类器（默认）/
   reader=reader 自身证据头终判，仅 evidence kind / both=分类器与证据头
   同时判对才计奖，仅 evidence kind / soft-both=R 为两模型对正确类置信度
@@ -30,6 +32,7 @@ sys.path = [p for p in sys.path
 
 import torch  # noqa: E402
 
+from active_graph_reader import ReaderConfig, build_reader  # noqa: E402
 from active_graph_reader.gnn.subgraph_builder import SubgraphBuilder  # noqa: E402
 from datasets import get_dataset  # noqa: E402
 from tools import cli as cli_utils  # noqa: E402
@@ -61,7 +64,10 @@ def main():
                         help='evidence reader 的 L_ev 权重（L = L_RL + λ·L_ev；'
                              '其他 kind 忽略）')
     parser.add_argument('--bootstrap', default='',
-                        help='迁移起点 reader checkpoint（与 --resume 二选一）')
+                        help='迁移起点 reader checkpoint（与 --resume/--from-scratch 三选一）')
+    parser.add_argument('--from-scratch', action='store_true',
+                        help='从零初始化 reader 直接 RL（无 BC/bootstrap 起点；'
+                             '结构走 CLI reader 参数，evidence 类别数取 spec.n_classes）')
     parser.add_argument('--classifier', default='', help='上界分类器 checkpoint（必填：CLI 或 --config）')
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=1e-4)
@@ -107,8 +113,8 @@ def main():
     require_args(args, ['root']
                  + (['classifier'] if args.reward_source != 'reader' else []))
 
-    assert bool(args.bootstrap) != bool(args.resume), \
-        "--bootstrap 与 --resume 必须二选一"
+    if bool(args.bootstrap) + bool(args.resume) + bool(args.from_scratch) != 1:
+        raise SystemExit("--bootstrap / --resume / --from-scratch 必须三选一")
 
     set_all_seeds(args.seed)
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
@@ -158,6 +164,20 @@ def main():
                              f"--epochs={args.epochs} 无需续训")
         print(f"Resuming from {resume_path} (done={start_epoch - 1}, "
               f"target={args.epochs})")
+    elif args.from_scratch:
+        cfg_dict = cli_utils.reader_config_from_args(args)
+        if cfg_dict.get('kind') == 'evidence':
+            cfg_dict['n_classes'] = spec.n_classes   # from_dict 末尾即 validate
+        reader_cfg = ReaderConfig.from_dict(cfg_dict)
+        reader_cfg.edge_feat_dim = args.edge_feat_dim or spec.edge_feat_dim
+        reader_cfg.node_feat_dim = args.node_feat_dim or spec.node_feat_dim
+        reader_cfg.stochastic = True   # RL rollout 语义，与 bootstrap/resume 路径一致
+        reader_cfg.validate()
+        reader = build_reader(reader_cfg).to(device)
+        print("From-scratch init: 无 BC/bootstrap 起点，直接 RL")
+        freeze_shared_layers(reader, args.freeze)
+        optimizer = torch.optim.Adam(
+            [p for p in reader.parameters() if p.requires_grad], lr=args.lr)
     else:
         bootstrap_path = resolve(args.bootstrap)
         src_ckpt = torch.load(str(bootstrap_path), map_location='cpu',

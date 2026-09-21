@@ -69,7 +69,7 @@ $$
 
 ### 4.1 Overview
 
-Figure 1 gives the overall architecture of BAGR: the revealed subgraph, together with T1 frontier edge features, is fed to a shared GINE encoder, on top of which sit two decoupled paths, a stateless selection path (Sec. 4.2) and a recurrent evidence-accumulation path (Sec. 4.3). The final-step output of the latter carries the terminal readout. During training the reader randomizes revelation with a temperature; at evaluation it takes the argmax.
+Figure 1 illustrates the overall architecture of BAGR. The revealed subgraph, together with T1 frontier edge features, is fed into a shared GINE encoder. On top of the encoder sit two decoupled paths: a stateless selection path (Sec. 4.2) and a recurrent evidence-accumulation path (Sec. 4.3). The terminal readout is taken from the final-step output of the recurrent path. During training, the reader samples actions from a temperature-scaled distribution over the frontier; at evaluation, it selects the maximum-probability action.
 
 ### 4.2 Selection Head
 
@@ -208,11 +208,9 @@ The evidence path's two components contribute asymmetrically. The recurrent accu
 | Uniform pooling           | Frozen evidence head | 52.74           | 28.14           |
 | Learned attention         | Frozen evidence head | 53.64           | 30.19           |
 
-**Attention distribution.** The learned attention concentrates its mass at the end of the trajectory, and whether this concentrated pattern translates into a gain depends on whether the decoder is trained jointly with the attention (Figures 2 and 3). On CIFAR10 the three budget tiers share one shape: the first half of the trajectory receives at most 1% of the mass, the last quartile holds a constant 87–89%, and the mass on the terminal state drops from 84% to 48% as the budget grows while the entropy rises from 0.25 to 0.43. The readout's effective memory horizon is therefore about the most recent quarter of the revelation steps, and it widens with budget. COLLAB is the extreme form of the same structure: terminal mass 90–99%, first half exactly zero. Under the frozen decoder the pattern splits: CIFAR10 keeps its recency concentration and genuinely benefits, while COLLAB drifts to near-uniform with zero per-budget gain. The learned attention entropy therefore diagnoses whether temporal reweighting has exploitable structure.
+**Attention distribution.** The learned attention concentrates its mass at the end of the trajectory, and whether this concentrated pattern translates into a gain depends on whether the decoder is trained jointly with the attention (Figure 2). On CIFAR10 the three budget tiers share one shape: the first half of the trajectory receives at most 1% of the mass, the last quartile holds a constant 87–89%, and the mass on the terminal state drops from 84% to 48% as the budget grows while the entropy rises from 0.25 to 0.43. The readout's effective memory horizon is therefore about the most recent quarter of the revelation steps, and it widens with budget. COLLAB is the extreme form of the same structure: terminal mass 90–99%, first half exactly zero. Under the frozen decoder the pattern splits: CIFAR10 keeps its recency concentration and genuinely benefits, while COLLAB drifts to near-uniform with zero per-budget gain. The learned attention entropy therefore diagnoses whether temporal reweighting has exploitable structure.
 
-![Figure 2: Distribution heatmap of the learned attention. Rows are budget tiers, columns are relative step positions, and cell shading is attention mass; each row is annotated with the entropy H and the last-position mass.](figures/attn_dist_heatmap.png)
-
-![Figure 3: Per-budget attention distribution curves. Solid lines are the learned attention with a retrained decoder, with entropy in the legend; gray dashed lines are the frozen-decoder control; shading marks the first half of the trajectory.](figures/attn_dist_curves.png)
+![Figure 2: Distribution of the learned attention. Top row (a, b): heatmap of attention mass by budget tier (rows) and relative step position (columns); each row is annotated with the entropy H and the last-position mass. Bottom row (c, d): per-budget distribution curves; solid lines are the learned attention with a retrained decoder, with entropy in the legend, gray dashed lines are the frozen-decoder control, and shading marks the first half of the trajectory.](figures/attn_dist_combined.png)
 
 ---
 
