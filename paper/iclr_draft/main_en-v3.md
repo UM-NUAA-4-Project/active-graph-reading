@@ -15,7 +15,7 @@ Graph-level prediction typically assumes access to the complete input graph. How
 
 ## 1 Introduction
 
-Graph classification supports applications from security provenance and biological network analysis to financial anti-fraud, yet the dominant paradigm trains and evaluates on fully observed graphs. The assumption fails systematically in real settings: in security provenance the discriminative signal often hides in a small subgraph [REF: evidence-concentration]; in biological networks, undiscriminating additional observation injects more noise than new information; and in financial anti-fraud, due-diligence and KYC queries are billed per call. The three scenarios share one premise: **acquiring the graph itself has a cost**. Once only part of a graph can be inspected, the order of inspection matters. A breadth-first scan squanders the budget on irrelevant neighborhoods, and degree-greedy selection ignores the task entirely; moreover, each revealed node changes what the frontier makes visible and what is worth revealing next, so where to read next is a sequential decision problem. This paper formally brings this evidence-acquisition perspective into graph classification: we study **budget-limited active graph reading** (BAGR), learning a policy that decides where to read under a budget and completes the task from the revealed subgraph alone.
+**Graph classification underpins a wide range of applications, including secure traceability, biological network analysis, and financial fraud detection, whereas most existing methods are trained and evaluated on fully observed graphs**. The assumption fails systematically in real settings, since **these methods share a common oversight: the graph itself is costly to acquire. For instance, financial due diligence and Know Your Customer (KYC) checks are charged on a per-request basis.** Once only part of a graph can be inspected, the order of inspection matters. A breadth-first scan squanders the budget on irrelevant neighborhoods, and degree-greedy selection ignores the task entirely; moreover, each revealed node changes what the frontier makes visible and what is worth revealing next, so where to read next is a sequential decision problem. This paper formally brings this evidence-acquisition perspective into graph classification: we study **budget-limited active graph reading** (BAGR), learning a policy that decides where to read under a budget and completes the task from the revealed subgraph alone.
 
 Existing lines of work each provide part of the answer but stop short of this setting: graph pooling answers "which nodes matter" on the **complete** graph [REF: graph-pooling, sagpool], graph explanation finds reasons for a prediction **after** it is made [REF: subgraphx, graph-explainability], and active learning and active feature acquisition on graphs budget training labels and node attributes respectively [REF: active-learning-graphs, feature-acquisition] (Sec. 2 discusses each in turn). What is missing is twofold: an evaluation protocol that makes partial graph observation leak-proof and reproducible, and evidence that a learned policy indeed beats fixed policies under matched budgets.
 
@@ -41,17 +41,17 @@ Our contributions unfold along three lines. **Protocol.** We formalize the above
 
 ### 3.1 Protocol
 
-The BAGR protocol fixes how the budget is accounted, what is visible at each step, and how the final judgment is made; its design goal is to rule out information leakage under partial observation. We describe these aspects in turn.
+The BAGR protocol specifies the budget accounting, step-wise visibility, and final decision rules, with the goal of preventing information leakage under partial observation. We describe each aspect below.
 
-**Budget and seed.** The budget $B$ is the number of revealed nodes, **excluding** the seed, and is reported as a fraction of the graph's node count; the main experiments use 5/10/15% and COLLAB 10/15/20%. All comparisons are made at matched budgets, averaged over multiple deterministic seeds. The seed $s_0$ is produced by a deterministic pseudo-random formula from the graph index.
+**Budget and seed.** The budget $B$ is the number of revealed nodes, **excluding** the seed, and is reported as a fraction of the graph's node count. The seed $s_0$ is produced by a deterministic pseudo-random formula from the graph index.
 
-**Revelation process.** The agent reveals step by step from the seed: at each step exactly one node from the current **frontier** may be selected for revelation, so the revealed set grows monotonically and never revisits. When the frontier is empty but budget remains, for example when the seed falls in an isolated small component, a teleport to an unrevealed node is allowed, consuming one unit of budget.
+**Revelation process.** Starting from the seed, the agent reveals nodes sequentially. At each step, it selects exactly one node from the current frontier and reveals it. The frontier is defined as the set of unrevealed nodes adjacent to at least one revealed node. Consequently, the revealed set grows monotonically, and no node is revealed more than once. If the frontier is empty while budget remains—e.g., when the seed lies in an isolated component containing no frontier nodes, the agent will randomly select an unrevealed node from the entire graph and reveal it, consuming one unit of budget. The process terminates when the budget is exhausted or all nodes have been revealed.
 
-**Visibility.** Visibility has three tiers: revealed node features, revealed edges with features, and the existence and attachment structure of the frontier (T0) are visible to all methods; the **features of frontier edges**, i.e., edges with one revealed and one unrevealed endpoint (T1), are freely queryable before revelation and consume no budget, so a policy may look at the edge first and then decide whom to reveal; all content of unvisited nodes (T2) is permanently disabled for the reader.
+**Visibility.** Visibility has three tiers:Tier T0 includes revealed node features, revealed edges with their features, and the existence and attachment structure of the frontier. Tier T1 comprises the **features of frontier edges**, i.e., edges with one revealed and one unrevealed endpoint; these can be queried freely before revelation and consume no budget, allowing a policy to inspect an edge before deciding which node to reveal. Tier T2 consists of all content of unvisited nodes, which is permanently inaccessible to the agent.
 
 ### 3.2 Problem Formalization
 
-This section writes the protocol of Sec. 3.1 as mathematical objects. Let $\omega_G=(Y,V,E,X,Z)$: $Y\in[K]$ is the graph label, $V=[n]$ a fixed vertex set, $E$ the edge set, and $X,Z$ node and edge features respectively. The revealed set starts from $S_0=\{s_0\}$; at each step an action $a_t$ is chosen from the frontier $F_t=N(S_t)\setminus S_t$, and after revelation $S_{t+1}=S_t\cup\{a_t\}$; the transition is deterministic and $|S_t|=t+1$.
+This section formalizes the protocol in Sec. 3.1 in mathematical terms. Let $\omega_G=(Y,V,E,X,Z)$: $Y\in[K]$ is the graph label, $V=[n]$ is a fixed vertex set, $E$ the edge set, and $X = \{x_v\}_{v∈V},Z = \{z_e\}_{e∈E}$ are node and edge features respectively. The revealed set is initialized as $S_0=\{s_0\}$. At round $t$, let $F_t=N(S_t)\setminus S_t$, denote the frontier.  An action $a_t$ is selected from the available set $A_t$ and after revelation $S_{t+1}=S_t\cup\{a_t\}$; the transition is deterministic and $|S_t|=t+1$.
 
 **Observation.** The protocol is given by a family of measurable maps $\Phi_t:\mathcal G\times 2^V\to\mathcal O_t$, with $o_t=\Phi_t(\omega_G,S_t)$. The observation $o_t$ consists of the ordered action history, the edges associated with $S_t$ (the structure of revealed and frontier edges), the features of revealed nodes, the features of edges with both endpoints revealed, and the frontier edge features $Z_e\ (e\in\partial_t)$, where $\partial_t$ is the frontier edge set.
 
@@ -139,8 +139,8 @@ We evaluate on three large-scale graph classification benchmarks: OGBG-PPA [REF:
 
 **Table 1: CIFAR10 superpixels, test accuracy (%).** BC and RL denote the reader after teacher behavior cloning and after reinforcement learning; the reference head is the frozen classifier on RL-revealed subgraphs.
 
-| Budget | Random | BFS   | Max-Fr.-Deg. | RW    | SAGPool | Soft-Mask | AgentNet | BC    | RL        | RL-Ref |
-| ------ | ------ | ----- | ------------ | ----- | ------- | --------- | -------- | ----- | --------- | ------ |
+| Budget | Random | BFS   | Max-Fr.-Deg. | RW    | SAGPool | Soft-Mask | AgentNet | BC    | RL              | RL-Ref |
+| ------ | ------ | ----- | ------------ | ----- | ------- | --------- | -------- | ----- | --------------- | ------ |
 | 5%     | 16.32  | 16.32 | 16.09        | 16.30 | 15.49   | 16.12     | 16.25    | 16.91 | **25.32** | 16.68  |
 | 10%    | 18.69  | 18.06 | 17.31        | 19.03 | 16.91   | 18.45     | 18.30    | 17.87 | **30.03** | 19.78  |
 | 15%    | 20.57  | 19.59 | 18.98        | 21.36 | 18.10   | 21.07     | 19.11    | 18.39 | **32.68** | 22.98  |
@@ -149,11 +149,11 @@ Full-graph classifier (upper bound) 60.5.
 
 **Table 2: COLLAB, accuracy (%), all cells validation/test.** Fixed policies and the adapted poolers are pinned at the majority-class level.
 
-| Budget | Random      | BFS         | Max-Fr.-Deg. | RW          | SAGPool     | Soft-Mask   | AgentNet    | BC          | RL              | RL-Ref      |
-| ------ | ----------- | ----------- | ------------ | ----------- | ----------- | ----------- | ----------- | ----------- | --------------- | ----------- |
-| 10%    | 15.43/15.57 | 15.53/15.57 | 15.63/15.57  | 15.43/15.57 | 15.43/15.57 | 15.43/15.57 | 52.1/51.9   | 16.78/16.42 | **52.20/51.90** | 15.88/15.72 |
-| 15%    | 15.43/15.57 | 15.73/15.57 | 15.83/15.72  | 15.43/15.57 | 15.43/15.57 | 15.43/15.57 | 52.1/51.9   | 20.24/19.96 | **54.56/53.44** | 18.09/18.21 |
-| 20%    | 15.43/15.57 | 15.98/15.72 | 16.03/15.87  | 15.43/15.57 | 15.43/15.57 | 15.48/15.57 | 52.1/51.9   | 27.56/25.60 | **58.02/55.74** | 20.64/20.26 |
+| Budget | Random      | BFS         | Max-Fr.-Deg. | RW          | SAGPool     | Soft-Mask   | AgentNet  | BC          | RL                    | RL-Ref      |
+| ------ | ----------- | ----------- | ------------ | ----------- | ----------- | ----------- | --------- | ----------- | --------------------- | ----------- |
+| 10%    | 15.43/15.57 | 15.53/15.57 | 15.63/15.57  | 15.43/15.57 | 15.43/15.57 | 15.43/15.57 | 52.1/51.9 | 16.78/16.42 | **52.20/51.90** | 15.88/15.72 |
+| 15%    | 15.43/15.57 | 15.73/15.57 | 15.83/15.72  | 15.43/15.57 | 15.43/15.57 | 15.43/15.57 | 52.1/51.9 | 20.24/19.96 | **54.56/53.44** | 18.09/18.21 |
+| 20%    | 15.43/15.57 | 15.98/15.72 | 16.03/15.87  | 15.43/15.57 | 15.43/15.57 | 15.48/15.57 | 52.1/51.9 | 27.56/25.60 | **58.02/55.74** | 20.64/20.26 |
 
 Full-graph classifier (upper bound) valid 71.54 / test 69.06.
 
@@ -169,11 +169,11 @@ On both datasets, the readout built on recurrent evidence accumulation clearly o
 
 **Table 3: OGBG-PPA, accuracy (%), all cells validation/test.** The learned policies do not yet beat the best baseline.
 
-| Budget | Random      | BFS         | Max-Fr.-Deg. | RW          | SAGPool     | Soft-Mask   | AgentNet    | BC        | RL          | RL-Ref      |
-| ------ | ----------- | ----------- | ------------ | ----------- | ----------- | ----------- | ----------- | --------- | ----------- | ----------- |
-| 5%     | 18.86/20.16 | 23.45/24.45 | 25.31/26.20  | 19.71/21.46 | 26.08/27.28 | 20.68/21.88 | 9.98/9.48   | 3.90/3.97 | 23.53/26.90 | 19.65/20.73 |
-| 10%    | 31.14/33.07 | 34.07/35.68 | 36.33/37.28  | 32.34/34.54 | 36.25/37.92 | 32.25/33.89 | 9.98/9.48   | 7.23/7.37 | 28.12/32.34 | 26.83/27.41 |
-| 15%    | 39.37/41.88 | 40.84/42.92 | 42.94/44.52  | 40.21/42.99 | 43.03/45.08 | 40.12/42.00 | 9.98/9.48   | 9.04/9.03 | 30.76/35.05 | 31.87/32.99 |
+| Budget | Random      | BFS         | Max-Fr.-Deg. | RW          | SAGPool     | Soft-Mask   | AgentNet  | BC        | RL          | RL-Ref      |
+| ------ | ----------- | ----------- | ------------ | ----------- | ----------- | ----------- | --------- | --------- | ----------- | ----------- |
+| 5%     | 18.86/20.16 | 23.45/24.45 | 25.31/26.20  | 19.71/21.46 | 26.08/27.28 | 20.68/21.88 | 9.98/9.48 | 3.90/3.97 | 23.53/26.90 | 19.65/20.73 |
+| 10%    | 31.14/33.07 | 34.07/35.68 | 36.33/37.28  | 32.34/34.54 | 36.25/37.92 | 32.25/33.89 | 9.98/9.48 | 7.23/7.37 | 28.12/32.34 | 26.83/27.41 |
+| 15%    | 39.37/41.88 | 40.84/42.92 | 42.94/44.52  | 40.21/42.99 | 43.03/45.08 | 40.12/42.00 | 9.98/9.48 | 9.04/9.03 | 30.76/35.05 | 31.87/32.99 |
 
 Full-graph classifier (upper bound) valid 64.2 / test 65.6.
 
@@ -200,13 +200,13 @@ The evidence path's two components contribute asymmetrically. The recurrent accu
 
 **Table 5: Readout decomposition ablation, test accuracy (%).** The decoder column indicates whether the terminal classifier is retrained jointly with the attention.
 
-| Temporal routing          | Decoder              | COLLAB    | CIFAR10   |
-| ------------------------- | -------------------- | --------- | --------- |
-| Last step only (terminal) | Frozen evidence head | 53.59     | 29.25     |
-| Uniform pooling           | Retrained            | 53.14     | 28.95     |
+| Temporal routing          | Decoder              | COLLAB          | CIFAR10         |
+| ------------------------- | -------------------- | --------------- | --------------- |
+| Last step only (terminal) | Frozen evidence head | 53.59           | 29.25           |
+| Uniform pooling           | Retrained            | 53.14           | 28.95           |
 | Learned attention         | Retrained            | **56.99** | **31.13** |
-| Uniform pooling           | Frozen evidence head | 52.74     | 28.14     |
-| Learned attention         | Frozen evidence head | 53.64     | 30.19     |
+| Uniform pooling           | Frozen evidence head | 52.74           | 28.14           |
+| Learned attention         | Frozen evidence head | 53.64           | 30.19           |
 
 **Attention distribution.** The learned attention concentrates its mass at the end of the trajectory, and whether this concentrated pattern translates into a gain depends on whether the decoder is trained jointly with the attention (Figures 2 and 3). On CIFAR10 the three budget tiers share one shape: the first half of the trajectory receives at most 1% of the mass, the last quartile holds a constant 87–89%, and the mass on the terminal state drops from 84% to 48% as the budget grows while the entropy rises from 0.25 to 0.43. The readout's effective memory horizon is therefore about the most recent quarter of the revelation steps, and it widens with budget. COLLAB is the extreme form of the same structure: terminal mass 90–99%, first half exactly zero. Under the frozen decoder the pattern splits: CIFAR10 keeps its recency concentration and genuinely benefits, while COLLAB drifts to near-uniform with zero per-budget gain. The learned attention entropy therefore diagnoses whether temporal reweighting has exploitable structure.
 

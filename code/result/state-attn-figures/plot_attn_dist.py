@@ -6,6 +6,7 @@ Reads eval_state_attention.json (fresh + frozen) for CIFAR10/COLLAB and renders:
                                per-row entropy and terminal-mass annotations
   attn_dist_curves.(pdf|png)   per-budget fresh distributions (solid, H in
                                legend) vs frozen-decoder distributions (dashed)
+  attn_dist_combined.(pdf|png) 2x2: heatmap row (a,b) over curves row (c,d)
 Outputs land beside this script.
 """
 import json
@@ -14,6 +15,7 @@ from pathlib import Path
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import matplotlib.transforms as mtransforms
 import numpy as np
 from matplotlib.patches import Patch
 
@@ -69,15 +71,20 @@ def draw(fig, name, exclude=()):
         exclude_axes=exclude)
 
 
+def save_all(fig, stem):
+    fig.savefig(HERE / f"{stem}.svg", bbox_inches="tight")
+    fig.savefig(HERE / f"{stem}.pdf", bbox_inches="tight")
+    fig.savefig(HERE / f"{stem}.png", dpi=600, bbox_inches="tight")
+    fig.savefig(HERE / f"{stem}.tiff", dpi=600, bbox_inches="tight")
+
+
 fresh = load("state-attn")
 frozen = load("state-attn-freeze")
-
-# ---------------- Fig 1: heatmap (fresh) ----------------
 vmax = max(max(r["dist"]) for ds, _ in DATASETS for r in fresh[ds])
-fig, axes = plt.subplots(1, 2, figsize=(7.0, 2.55),
-                         gridspec_kw={"wspace": 0.55})
-im = None
-for ax, (ds, name) in zip(axes, DATASETS):
+DS_NAME = dict(DATASETS)
+
+
+def draw_heatmap_panel(ax, ds, tag):
     rows = fresh[ds]
     mat = np.array([r["dist"] for r in rows])
     im = ax.imshow(mat, aspect="auto", cmap="Blues", vmin=0, vmax=vmax,
@@ -96,24 +103,14 @@ for ax, (ds, name) in zip(axes, DATASETS):
     ax.set_yticks(range(len(rows)))
     ax.set_yticklabels([f"{r['b']:.0%}" for r in rows], fontsize=6.5)
     ax.set_ylabel("budget ratio", fontsize=6.5)
-    style_panel(ax, "a" if ds == "cifar10" else "b", name)
+    style_panel(ax, tag, DS_NAME[ds])
     ax.set_xlim(-0.5, 19.5)
     ax.set_xticks([0.5, 5.5, 10.5, 15.5, 19.5])
     ax.set_xticklabels(["0", "0.25", "0.50", "0.75", "1.00"], fontsize=6.5)
-cbar = fig.colorbar(im, ax=axes, shrink=0.82, pad=0.015)
-cbar.set_label("attention mass", fontsize=6.5)
-cbar.ax.tick_params(labelsize=6)
-cbar.outline.set_linewidth(0.6)
-draw(fig, "attn_dist_heatmap", exclude=[cbar.ax])
-fig.savefig(HERE / "attn_dist_heatmap.svg", bbox_inches="tight")
-fig.savefig(HERE / "attn_dist_heatmap.pdf", bbox_inches="tight")
-fig.savefig(HERE / "attn_dist_heatmap.png", dpi=600, bbox_inches="tight")
-fig.savefig(HERE / "attn_dist_heatmap.tiff", dpi=600, bbox_inches="tight")
-plt.close(fig)
+    return im
 
-# ---------------- Fig 2: curves (fresh solid + frozen dashed) ----------------
-fig, axes = plt.subplots(1, 2, figsize=(7.0, 2.55))
-for ax, (ds, name) in zip(axes, DATASETS):
+
+def draw_curves_panel(ax, ds, tag):
     rows = fresh[ds]
     half = sum(sum(r["dist"][:10]) for r in rows) / len(rows)
     ax.axvspan(0, 0.5, color="0.94", lw=0, zorder=0)
@@ -135,12 +132,47 @@ for ax, (ds, name) in zip(axes, DATASETS):
     labels.append(f"first half = {half:.1%} of mass")
     ax.legend(handles, labels, loc="upper left", fontsize=5.8,
               handlelength=1.6, borderaxespad=0.2)
-    style_panel(ax, "a" if ds == "cifar10" else "b", name)
+    style_panel(ax, tag, DS_NAME[ds])
+
+
+def style_colorbar(cbar):
+    cbar.set_label("attention mass", fontsize=6.5)
+    cbar.ax.tick_params(labelsize=6)
+    cbar.outline.set_linewidth(0.6)
+
+
+# ---------------- Fig 1: heatmap (fresh) ----------------
+fig, axes = plt.subplots(1, 2, figsize=(7.0, 2.55),
+                         gridspec_kw={"wspace": 0.55})
+for ax, (ds, _) in zip(axes, DATASETS):
+    im = draw_heatmap_panel(ax, ds, "a" if ds == "cifar10" else "b")
+cbar = fig.colorbar(im, ax=axes, shrink=0.82, pad=0.015)
+style_colorbar(cbar)
+draw(fig, "attn_dist_heatmap", exclude=[cbar.ax])
+save_all(fig, "attn_dist_heatmap")
+plt.close(fig)
+
+# ---------------- Fig 2: curves (fresh solid + frozen dashed) ----------------
+fig, axes = plt.subplots(1, 2, figsize=(7.0, 2.55))
+for ax, (ds, _) in zip(axes, DATASETS):
+    draw_curves_panel(ax, ds, "a" if ds == "cifar10" else "b")
 draw(fig, "attn_dist_curves")
-fig.savefig(HERE / "attn_dist_curves.svg", bbox_inches="tight")
-fig.savefig(HERE / "attn_dist_curves.pdf", bbox_inches="tight")
-fig.savefig(HERE / "attn_dist_curves.png", dpi=600, bbox_inches="tight")
-fig.savefig(HERE / "attn_dist_curves.tiff", dpi=600, bbox_inches="tight")
+save_all(fig, "attn_dist_curves")
+plt.close(fig)
+
+# ---------------- Fig 3: combined (heatmap row + curves row) ----------------
+fig, axes = plt.subplots(2, 2, figsize=(7.0, 4.8),
+                         gridspec_kw={"wspace": 0.55, "hspace": 0.52,
+                                      "height_ratios": [1.0, 1.12]})
+for col, (ds, _) in enumerate(DATASETS):
+    im = draw_heatmap_panel(axes[0, col], ds, "ab"[col])
+    draw_curves_panel(axes[1, col], ds, "cd"[col])
+bbox = mtransforms.Bbox.union([ax.get_position() for ax in axes[0]])
+cax = fig.add_axes([bbox.x1 + 0.015, bbox.y0, 0.011, bbox.height])
+cbar = fig.colorbar(im, cax=cax)
+style_colorbar(cbar)
+draw(fig, "attn_dist_combined", exclude=[cbar.ax])
+save_all(fig, "attn_dist_combined")
 plt.close(fig)
 
 for ds, _ in DATASETS:
