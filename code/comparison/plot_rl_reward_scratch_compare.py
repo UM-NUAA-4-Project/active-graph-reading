@@ -58,10 +58,12 @@ DATASETS = {
     ),
     'collab': dict(
         title='COLLAB', ylim=(0.31, 0.62), divider_x=None,
+        # 下载时两个日志文件放反了：链的日志落在 scratch-rl 目录、
+        # scratch 的日志在 evidence1 checkpoint 里，此处对换读取（勿改文件）
         chain=[
-            (RESULT / 'collab/experiments/evidence1/evidence/rl/checkpoint_epoch10.pt', 0),
+            (RESULT / 'collab/experiments/scratch-rl/evidence/rl/training_log.json', 0),
         ],
-        scratch=RESULT / 'collab/experiments/scratch-rl/evidence/rl/training_log.json',
+        scratch=RESULT / 'collab/experiments/evidence1/evidence/rl/checkpoint_epoch10.pt',
     ),
 }
 
