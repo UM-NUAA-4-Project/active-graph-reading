@@ -6,6 +6,10 @@
 微调）画在同一条连续 epoch 轴上：曲线在阶段边界处相连，仅以分隔虚线 +
 中性的 Stage 1/Stage 2 标注区分，无底纹、无按源配色。
 
+collab 的训练奖励为 binary + 冻结分类器判定（R̄ ≡ 判定准确率，平坦
+≈0.18），图内统一改用 R = ev_acc_final − 0.1·(1−ev_acc_final) 换算
+（reward_from='ev_acc_final'），与 ppa/cifar10 的 reader 判定口径一致。
+
 奖励变换（train_reader/core/common.py::compute_reward）：
   asymmetric = 判对 +1 / 判错 -0.1（故 R̄ = 1.1·判定准确率 - 0.1）
   binary     = 判对 1 / 判错 0（故 R̄ = 判定准确率）
@@ -79,7 +83,11 @@ EXPERIMENTS = [
     dict(
         key='collab', title='COLLAB',
         out_dir=ROOT / 'collab/experiments/evidence1/evidence/rl',
-        ylim=(0.174, 0.187), ytick=0.005, yfmt='%.3f',
+        # collab 训练奖励为 binary + 冻结分类器判定（R̄ ≡ 判定准确率 ≈0.18，
+        # 平坦无信息），统一改绘 R = ev_acc_final − 0.1·(1−ev_acc_final)
+        # （= 1.1·ev_acc_final − 0.1），与 ppa/cifar10 口径一致
+        reward_from='ev_acc_final',
+        ylim=(0.30, 0.60), ytick=0.05, yfmt='%.2f',
         stages=[dict(log='training_log.json', source='classifier')],
     ),
 ]
@@ -116,7 +124,11 @@ def plot_figure(exp: dict) -> Path:
     prev_last = None
     for st, log in stages:
         epochs = [e['epoch'] + st.get('epochs_offset', 0) for e in log]
-        rewards = [e['train_avg_R'] for e in log]
+        if exp.get('reward_from') == 'ev_acc_final':
+            rewards = [e['ev_acc_final'] - 0.1 * (1 - e['ev_acc_final'])
+                       for e in log]
+        else:
+            rewards = [e['train_avg_R'] for e in log]
         color = BLUE_MAIN
         line_x, line_y = epochs, rewards
         if prev_last is not None:

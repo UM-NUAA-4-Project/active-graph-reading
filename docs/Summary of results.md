@@ -190,7 +190,7 @@ AgentNet 自身分类能力发生严重坍缩，维持在某一类
 | 10% | 7.23/7.37 | 32.50/37.45             |         | 28.12/32.34 | 26.83/27.41             |       |               |
 | 15% | 9.04/9.03 | 42.98/44.29             |         | 30.76/35.05 | 31.87/32.99             |       |               |
 
-### 2.LRGB-CIFAR10SuperPixelDataset
+### 2.CIFAR10SuperPixelDataset
 
 SuperPixel算法将像素图片转为图，其算法原理导致了每个节点的度均在{3，5，8}之间。数据间拓扑结构几乎没有区别，完全依靠节点和边特征。
 
@@ -325,7 +325,7 @@ evidence reader 依靠证据流分类，可以突破上界分类器对子图的�
 
 ## BC消融实验
 
-### 1.LRGB-CIFAR10SuperPixelDataset
+### 1.CIFAR10SuperPixelDataset
 
 |     | full  | no-pool | no-lstm | v1:no-pool-lstm |
 | --- | ----- | ------- | ------- | --------------- |
@@ -340,3 +340,54 @@ evidence reader 依靠证据流分类，可以突破上界分类器对子图的�
 | 10% | 16.42 | 15.72   | 15.72   | 15.88           |
 | 15% | 19.96 | 18.41   | 18.21   | 18.04           |
 | 20% | 25.60 | 21.11   | 20.11   | 20.64           |
+
+## 数据集引用核验（2026-09-24）
+
+来源：DeepSeek 分享对话 <https://chat.deepseek.com/share/4g8uph0i9nrr7fv4r4> 给出的 3 条数据集引用（OGBG / TUDataset / LRGB）；其中 LRGB 经查证项目并未使用（CIFAR10 超像素不属于 LRGB，见下），已于 2026-09-24 删除，换上 CIFAR10 的真实出处 Benchmarking GNNs。
+核验方式：arXiv API 逐字段比对标题与作者顺序，NeurIPS 正式出版卷页经 proceedings / ACM DL 交叉确认。
+
+**结论：实际使用的 3 条文献（OGB / TUDataset / Benchmarking GNNs）均真实存在，主字段（标题/作者/年份/卷/页码）全部无误；TUDataset 需删自动生成的 `pages={0--10}` 废字段。**
+
+| 引用 | 存在性 | 字段核验 | 状态 |
+| --- | --- | --- | --- |
+| OGB（Hu et al., NeurIPS 33:22118–22133, 2020, arXiv:2005.00687） | ✅ | 标题、8 位作者及顺序、卷 33、页 22118–22133 与官方引用逐项一致 | ✅ Verified |
+| TUDataset（Morris et al., CoRR abs/2007.08663, 2020） | ✅ | 标题、6 位作者及顺序一致；❌ `pages={0--10}` 是自动生成的废字段，CoRR 无页码，须删 | ⚠️ 需修格式 |
+| Benchmarking GNNs（Dwivedi et al., JMLR 24(43):1–48, 2023, arXiv:2003.00982） | ✅ | 标题、6 位作者及顺序经 arXiv API 复核一致；卷 24(43)、页 1–48 与 `references-draft.md` 已核记录一致 | ✅ Verified |
+
+补充说明：
+
+* 论文名为 *Open Graph Benchmark*；"ogbg" 只是其图级任务前缀（本项目 `ogbg-ppa` 即出自该基准）。
+* TUDataset 官方（chrsmrrs.github.io / graphlearning.io）建议：引用该 arXiv 文之外，同时提及 graphlearning.io 并**引用所用数据集的原始出处**（COLLAB 出自 Deep Graph Kernels, KDD 2015）。
+* ✅ **小节标题已修正（2026-09-24）**：原两处 "LRGB-CIFAR10SuperPixelDataset"（第 193/328 行）已去掉 LRGB 前缀，改为 "CIFAR10SuperPixelDataset"——LRGB 的 5 个数据集（VOC-SP、COCO-SP、PCQM-Contact、Peptides-func/struct）**不含 CIFAR10**，其引用已从本清单删除；CIFAR10 超像素真实出处为 *Benchmarking Graph Neural Networks*（Dwivedi et al., JMLR 24(43):1–48, 2023，arXiv:2003.00982），论文引用见 `paper/iclr_draft/references-draft.md`。
+
+修正后的三条 BibTeX（可直接粘贴）：
+
+```bibtex
+@inproceedings{hu2020ogb,
+  title     = {Open Graph Benchmark: Datasets for Machine Learning on Graphs},
+  author    = {Hu, Weihua and Fey, Matthias and Zitnik, Marinka and Dong, Yuxiao and Ren, Hongyu and Liu, Bowen and Catasta, Michele and Leskovec, Jure},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume    = {33},
+  pages     = {22118--22133},
+  year      = {2020},
+  note      = {arXiv:2005.00687}
+}
+
+@article{morris2020tudataset,
+  title   = {TUDataset: A collection of benchmark datasets for learning with graphs},
+  author  = {Morris, Christopher and Kriege, Nils M. and Bause, Franka and Kersting, Kristian and Mutzel, Petra and Neumann, Marion},
+  journal = {arXiv preprint arXiv:2007.08663},
+  year    = {2020}
+}
+
+@article{dwivedi2023benchmarking,
+  title   = {Benchmarking Graph Neural Networks},
+  author  = {Dwivedi, Vijay Prakash and Joshi, Chaitanya K. and Luu, Anh Tuan and Laurent, Thomas and Bengio, Yoshua and Bresson, Xavier},
+  journal = {Journal of Machine Learning Research},
+  volume  = {24},
+  number  = {43},
+  pages   = {1--48},
+  year    = {2023},
+  note    = {arXiv:2003.00982}
+}
+```
