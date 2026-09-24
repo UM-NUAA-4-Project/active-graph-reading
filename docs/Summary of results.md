@@ -190,18 +190,6 @@ AgentNet 自身分类能力发生严重坍缩，维持在某一类
 | 10% | 7.23/7.37 | 32.50/37.45             |         | 28.12/32.34 | 26.83/27.41             |       |               |
 | 15% | 9.04/9.03 | 42.98/44.29             |         | 30.76/35.05 | 31.87/32.99             |       |               |
 
-这次试验错误：一开始就让 reader 自己分类。rl阶段的冻结分类器准确率相较bc阶段大幅下降可以看出，reader在训练集上拟合了噪声。
-
-##### new reward source Full-Graph: 64.2/65.6
-
-先使用 classifier 做奖励源收敛后，使用 soft-both 做奖励源收敛后，使用 both 做奖励源
-
-|     | BC        | BCref<br />(冻结分类器) | BC-Best | RL | RLref<br />(冻结分类器) | RL-BC | RL/Full-Graph |
-| --- | --------- | ----------------------- | ------- | -- | ----------------------- | ----- | ------------- |
-| 5%  | 3.90/3.97 | 26.17/27.11             |         |    |                         |       |               |
-| 10% | 7.23/7.37 | 32.50/37.45             |         |    |                         |       |               |
-| 15% | 9.04/9.03 | 42.98/44.29             |         |    |                         |       |               |
-
 ### 2.LRGB-CIFAR10SuperPixelDataset
 
 SuperPixel算法将像素图片转为图，其算法原理导致了每个节点的度均在{3，5，8}之间。数据间拓扑结构几乎没有区别，完全依靠节点和边特征。
@@ -222,10 +210,6 @@ SuperPixel算法将像素图片转为图，其算法原理导致了每个节点�
 
 ##### base-best
 
-code\result\cifar10\experiments\1-teacher\base\bc\eval_learnable.json
-
-code\result\cifar10\experiments\1-teacher\base\rl\eval_learnable.json
-
 |     | BC    | BCref<br />(冻结分类器) | BC-Best | RL    | RLref<br />(冻结分类器) | RL-BC | RL/Full-Graph |
 | --- | ----- | ----------------------- | ------- | ----- | ----------------------- | ----- | ------------- |
 | 5%  | 16.60 | -                       | +0.28   | 16.89 | -                       | +0.29 | 27.9%         |
@@ -240,11 +224,7 @@ code\result\cifar10\experiments\1-teacher\base\rl\eval_learnable.json
 
 ##### evidence-best： Full-Graph: 60.5
 
-code\result\cifar10\experiments\ev1\evidence\bc\eval_learnable.json
-
-code\result\cifar10\experiments\ev-R-read\evidence\rl\eval_learnable.json
-
-reward source：classifier 作为奖励源收敛后（evidence-second） reader 做奖励源
+reward source：soft-both 作为奖励源收敛后 hard-both 做奖励源，RL 6 轮
 
 |     | BC    | BCref<br />(冻结分类器) | BC-Best | RL    | RLref<br />(冻结分类器) | RL-BC  | RL/Full-Graph |
 | --- | ----- | ----------------------- | ------- | ----- | ----------------------- | ------ | ------------- |
@@ -252,11 +232,17 @@ reward source：classifier 作为奖励源收敛后（evidence-second） reader 
 | 10% | 17.87 | 17.82                   | −1.16  | 30.03 | 19.78                   | +12.43 | 50.1%         |
 | 15% | 18.39 | 19.44                   | −2.97  | 32.68 | 22.98                   | +14.29 | 54.0%         |
 
+补训：checkpoint_epoch3 断点续训 3 轮，评估 checkpoint_epoch6
+
+|     | RL（自带头终判） | RLref<br />(冻结分类器) | RL/Full-Graph | 较 3 轮 |
+| --- | ---------------- | ----------------------- | ------------- | ------- |
+| 5%  | 27.79            | 15.50                   | 45.9%         | +2.47   |
+| 10% | 33.84            | 16.76                   | 55.9%         | +3.81   |
+| 15% | 36.55            | 18.66                   | 60.4%         | +3.87   |
+
+公平训练量下 BC 热启动的价值显现。
+
 ##### evidence-second： Full-Graph: 60.5
-
-code\result\cifar10\experiments\ev1\evidence\bc\eval_learnable.json
-
-code\result\cifar10\experiments\default\evidence\rl\eval_learnable.json
 
 reward source：classifier 作为奖励源收敛
 
@@ -268,15 +254,25 @@ reward source：classifier 作为奖励源收敛
 
 ##### evidence-third：使用性能次一级的分类器做奖励源 Full-Graph: 55.73
 
-code\result\cifar10\experiments\ev1\evidence\bc\eval_learnable.json
-
-code\result\cifar10\experiments\ev1\evidence\rl\eval_heldout_test_reader.json
-
 |     | BC    | BCref<br />(冻结分类器) | BC-Best | RL    | RLref<br />(冻结分类器) | RL-BC | RL/Full-Graph |
 | --- | ----- | ----------------------- | ------- | ----- | ----------------------- | ----- | ------------- |
 | 5%  | 16.91 | 16.08                   | +0.59   | 20.68 | 15.34                   | +3.77 | 37.1%         |
 | 10% | 17.87 | 17.82                   | -1.16   | 23.59 | 20.95                   | +5.72 | 42.3%         |
 | 15% | 18.39 | 19.44                   | -2.97   | 25.35 | 23.66                   | +6.96 | 45.5%         |
+
+##### scratch-RL：从零直连 RL（无 BC 起点） Full-Graph: 60.5
+
+evidence reader 从零初始化直接 RL，无 BC/bootstrap 与教师轨迹；奖励源 soft-both；hard-both；batch 32 图 × 2 seeds，共 15 轮。
+
+|     | RL（自带头终判） | RLref<br />(冻结分类器) | RL/Full-Graph |
+| --- | ---------------- | ----------------------- | ------------- |
+| 5%  | 27.11            | 15.49                   | 44.8%         |
+| 10% | 32.30            | 16.79                   | 53.4%         |
+| 15% | 34.79            | 18.55                   | 57.5%         |
+
+分析：
+
+* 冷起点 15 轮收敛速度慢，初始奖励低，但是初期上升快。同等训练量下，略逊于有bc预热的reader
 
 ### 3.TUDataset-COLLAB
 
@@ -294,8 +290,6 @@ code\result\cifar10\experiments\ev1\evidence\rl\eval_heldout_test_reader.json
 
 #### Base Reader BC-RL: valid/test   Full-Graph: 71.54/69.06
 
-code\result\collab\experiments\ex2\base\bc\eval_learnable.json
-
 rl暂无：严重坍缩
 
 |     | BC          | BCref<br />(冻结分类器) | BC-Best     | RL | RLref<br />(冻结分类器) | RL-BC | RL/Full-Graph |
@@ -306,10 +300,6 @@ rl暂无：严重坍缩
 
 #### Evidence Reader BC-RL: valid/test   Full-Graph: 71.54/69.06
 
-code\result\collab\experiments\evidence1\evidence\bc\eval_learnable.json
-
-code\result\collab\experiments\evidence1\evidence\rl\eval_learnable.json
-
 |     | BC          | BCref<br />(冻结分类器) | BC-Best      | RL          | RLref<br />(冻结分类器) | RL-BC         | RL/Full-Graph |
 | --- | ----------- | ----------------------- | ------------ | ----------- | ----------------------- | ------------- | ------------- |
 | 10% | 16.78/16.42 | 15.88/15.72             | +1.15/+0.85  | 52.20/51.90 | 15.88/15.72             | +35.42/+35.48 | 72.97/75.15   |
@@ -317,6 +307,21 @@ code\result\collab\experiments\evidence1\evidence\rl\eval_learnable.json
 | 20% | 27.56/25.60 | 20.64/20.26             | +11.53/+9.73 | 58.02/55.74 | 20.64/20.26             | +30.46/+30.14 | 81.10/80.71   |
 
 evidence reader 依靠证据流分类，可以突破上界分类器对子图的限制
+
+#### Evidence Reader scratch-RL: valid/test   Full-Graph: 71.54/69.06
+
+|     | RL（自带头终判） | RLref<br />(冻结分类器) | RL/Full-Graph |
+| --- | ---------------- | ----------------------- | ------------- |
+| 10% | 52.05/52.25      | 15.43/15.57             | 72.8%/75.7%   |
+| 15% | 51.65/51.10      | 15.43/15.57             | 72.2%/74.0%   |
+| 20% | 50.50/48.05      | 15.43/15.57             | 70.6%/69.6%   |
+
+分析：
+
+* 10 轮即收敛到约 51% ≈ 多数类水平（~52%），与 AgentNet 自带头终判（52.1/51.9）同档；10% 档与两阶段 evidence reader（52.20/51.90）基本持平；
+* 预算增大不升反降（test 52.25→48.05），读多读少不影响判定，类水平判定为主；clf 参照恒为 15.43/15.57（少数类水平），与 COLLAB 子图塌缩口径一致；
+* 训练/测试落差：训练 rollout ev_acc_final 峰值 0.637，held-out 整体仅 0.505（valid 0.514 / test 0.505），训练集上超出类先验的信号不迁移；
+* 对比两阶段：两阶段 RL 随预算增长（valid 52.20→58.02），直连 RL 停在类水平不随预算增长，BC 热启动对 COLLAB 的预算扩展仍有贡献。
 
 ## BC消融实验
 

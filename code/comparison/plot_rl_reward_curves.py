@@ -1,12 +1,10 @@
 """RL 主结果实验奖励曲线（evidence reader，三数据集各一张 Nature 风格单面板）。
 
 只画 evidence reader 主结果的 RL 训练奖励曲线（train_avg_R：每条轨迹奖励
-的 epoch 均值），奖励判定源（reward source）用统一颜色语言跨图区分：
-  - 蓝 = reader 自身证据头终判（reward-source reader）
-  - 灰 = 冻结上界分类器判定（reward-source classifier，旧 schema 缺省）
-分阶段切换奖励源的实验（cifar10：先 classifier 判定收敛，再 reader 判定
-微调）画在同一条连续 epoch 轴上：曲线在阶段边界处相连（用户要求节点
-连贯），颜色在分隔虚线处切换，边界点标记保留上一阶段颜色。
+的 epoch 均值）。图内不标注奖励源与奖励变换式（用户要求，后文交代），
+线条统一蓝色；cifar10 两阶段（先 classifier 判定收敛、再 reader 判定
+微调）画在同一条连续 epoch 轴上：曲线在阶段边界处相连，仅以分隔虚线 +
+中性的 Stage 1/Stage 2 标注区分，无底纹、无按源配色。
 
 奖励变换（train_reader/core/common.py::compute_reward）：
   asymmetric = 判对 +1 / 判错 -0.1（故 R̄ = 1.1·判定准确率 - 0.1）
@@ -46,8 +44,7 @@ mpl_rc = {
     'pdf.fonttype': 42,
 }
 
-BLUE_MAIN = '#0F4D92'      # reader 证据头判定（主结果信号色）
-NEUTRAL_MID = '#767676'    # 冻结分类器判定（中性参照色）
+BLUE_MAIN = '#0F4D92'      # 奖励曲线统一色
 NEUTRAL_DARK = '#4D4D4D'
 DIVIDER_GRAY = '#9A9A9A'
 
@@ -61,36 +58,31 @@ EXPERIMENTS = [
     dict(
         key='ppa', title='PPA',
         out_dir=ROOT / 'ppa/experiments/ev256/evidence/rl',
-        subtitle='Asymmetric reward (+1 / -0.1) · reader-judged',
         ylim=(0.17, 0.40), ytick=0.05, yfmt='%.2f',
         stages=[dict(log='training_log.json', source='reader')],
     ),
     dict(
         key='cifar10', title='CIFAR10',
         out_dir=ROOT / 'cifar10/experiments/ev-R-read/evidence/rl',
-        subtitle='Asymmetric reward (+1 / -0.1)',
         ylim=(0.09, 0.28), ytick=0.05, yfmt='%.2f',
         # 主结果链：先 classifier 判定收敛（default 实验，9 轮），
         # 再从其 epoch9 checkpoint 续训 reader 判定（ev-R-read，3 轮）
         stages=[
             dict(log=ROOT / 'cifar10/experiments/default/evidence/rl/training_log.json',
                  source='classifier', epochs_offset=0,
-                 label='Stage 1\nclassifier-judged', label_x=5.0),
+                 label='Stage 1', label_x=5.0),
             dict(log='training_log.json', source='reader', epochs_offset=9,
-                 label='Stage 2\nreader-judged', label_x=10.9),
+                 label='Stage 2', label_x=10.9),
         ],
-        divider_x=9.5, span=(9.5, 12.5),
+        divider_x=9.5,
     ),
     dict(
         key='collab', title='COLLAB',
         out_dir=ROOT / 'collab/experiments/evidence1/evidence/rl',
-        subtitle='Binary reward (1 / 0) · classifier-judged',
         ylim=(0.174, 0.187), ytick=0.005, yfmt='%.3f',
         stages=[dict(log='training_log.json', source='classifier')],
     ),
 ]
-
-SOURCE_COLOR = {'reader': BLUE_MAIN, 'classifier': NEUTRAL_MID}
 
 
 def load_log(path: Path) -> list:
@@ -113,17 +105,19 @@ def plot_figure(exp: dict) -> Path:
             st_path = exp['out_dir'] / st_path
         stages.append((st, load_log(st_path)))
 
-    if exp.get('span'):
-        ax.axvspan(*exp['span'], color=BLUE_MAIN, alpha=0.05, zorder=0, lw=0)
     if exp.get('divider_x'):
         ax.axvline(exp['divider_x'], ls=(0, (3, 2)), lw=0.7,
                    color=DIVIDER_GRAY, zorder=1)
+        for st in exp['stages']:
+            ax.text(st['label_x'], 0.95, st['label'],
+                    transform=ax.get_xaxis_transform(),
+                    ha='center', va='top', fontsize=6.5, color=NEUTRAL_DARK)
 
     prev_last = None
     for st, log in stages:
         epochs = [e['epoch'] + st.get('epochs_offset', 0) for e in log]
         rewards = [e['train_avg_R'] for e in log]
-        color = SOURCE_COLOR[st['source']]
+        color = BLUE_MAIN
         line_x, line_y = epochs, rewards
         if prev_last is not None:
             # 阶段边界处曲线相连：从前一阶段最后一点接入；
@@ -157,9 +151,7 @@ def plot_figure(exp: dict) -> Path:
     ax.tick_params(labelsize=6)
 
     ax.set_title(exp['title'], loc='left', fontsize=8, fontweight='bold',
-                 pad=11)
-    ax.text(0.0, 1.03, exp['subtitle'], transform=ax.transAxes,
-            fontsize=6, color=NEUTRAL_DARK, ha='left', va='bottom')
+                 pad=7)
 
     # ---- 渲染时对齐门禁（单面板 → NOT APPLICABLE 记录留档） ----
     try:
