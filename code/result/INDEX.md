@@ -78,3 +78,22 @@ config.full_graph_ref       # 分类器全图 acc（现场评估），plot_three
 被合并的旧文件默认保留原位，勿再作为绘图输入。已知遗留：collab fixed 评估
 用预算档 0.05/0.10/0.15 而 reader 用 0.10/0.15/0.20，三阶段图 `--budgets`
 需取交集。
+
+## 跨数据集联合图（2026-09-25 新增，同日分子文件夹重组）
+
+`result/cross-dataset-figures/` 按分析类型分子文件夹收录 cifar10 + COLLAB
+联合分析图（单数据集图仍在各自目录）：
+
+- `behavior/choice_behavior_1x4.*`（1×4 单行行为分析合并图，a/b=CIFAR10、
+  c/d=COLLAB；CIFAR10 数据自 SVG 提取、口径=epoch3，注意 epoch6 行为反转）
+- `reward-curves/rl_reward_curves_1x4.*`（1×4 单行 RL 奖励曲线：a/b=scratch-RL
+  对比（图例 BC warm-start vs scratch-RL），c/d=奖励源切换链，矢量拼接）
+- `state-attention/attn_dist_*`（state-attention 读出注意力分布重绘版：
+  曲线面板改结尾对齐绝对步长坐标（0, …, last-15, …, last-1 + terminal），
+  移除 frozen decoder；数据=100 图×4 seeds 重采（2026-09-25），旧
+  `state-attn-figures/` 与旧归一化分箱 eval JSON 已按用户指令清理）
+
+生成脚本：`code/comparison/plot_choice_behavior_1x4.py`、
+`code/comparison/merge_reward_svgs_1x4.py`、`code/comparison/plot_attn_dist.py`
+（评估端 `code/train_reader/eval_state_attention.py` 新增 attn_dist_last）；
+细节见目录内 README.md。

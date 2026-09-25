@@ -1,26 +1,25 @@
 """读者选择行为画像图（cifar10 主结果 evidence reader，B=10%）——直观版。
 
-数据：analyze_choice_behavior.py 产出的 choice_behavior_b10.json
-（10,000 张测试图、113,007 步 argmax 选择的逐步教师指标画像）。
+数据：analyze_choice_behavior.py 产出的 choice_behavior_b10_g100s4.json
+（test 前 100 图 × 4 seeds 重采口径，2026-09-25；原 10k 全量 JSON 已删）。
 
 图级主张：reader 只偏好高前沿度数节点（偏好转弱随进度衰减），不追
-梯度归因，与信息增益的关系随读入进度由弱跟随转为回避；终判正误两组
-行为无差。四面板全部直接编码：
+梯度归因，chosen 节点真实信息增益早正晚负（第 1 步无定义）；终判正误
+两组行为无差。四面板全部直接编码：
   a. 三指标"被选节点平均排名分位"柱：1=总挑排名最靠前的候选，
      0.5=随机（虚线）——柱子过线即偏好（hero）
   b. 前沿度数：被选节点 vs 可选候选的平均度数（逐步两线对比：
      第 1–10 步逐步，≥11 步并入末桶）
-  c. IG 排名逐步：0.5=无偏好，>0.5 偏好降熵节点，<0.5 回避
-     （IG 自第 2 步起有定义，G0 按 teacher 约定跳过）
+  c. chosen 节点真实信息增益（nats）逐步：0 线=揭示不带来熵减
   d. 终判正误分组的同一柱状（与 a 同尺度）：两组几乎等高 = 行为与
      结果无关
 不确定性统一为按图聚类 bootstrap（2,000 次重采样）的 95% CI。
 
-产物（写入 JSON 同目录）：choice_behavior_b10.pdf/.svg/.tiff/.png
+产物（写入 JSON 同目录）：<JSON stem>.pdf/.svg/.tiff/.png
 + alignment / collision 审计 JSON。
 
 用法:
-  python code/comparison/plot_choice_behavior.py [--json <choice_behavior_b10.json>]
+  python code/comparison/plot_choice_behavior.py [--json <choice_behavior.json>]
 """
 
 import argparse
@@ -89,7 +88,7 @@ def main():
         '--json', default=str(Path(__file__).resolve().parents[1] / 'result' /
                                'cifar10' / 'experiments' / 'ev-R-read' /
                                'evidence' / 'rl' / 'behavior-analysis' /
-                               'choice_behavior_b10.json'))
+                               'choice_behavior_b10_g100s4.json'))
     parser.add_argument('--output-prefix', default='')
     args = parser.parse_args()
 
@@ -109,7 +108,7 @@ def main():
         ch_deg = [0.0] * N_STEP_BUCKETS
         av_deg = [0.0] * N_STEP_BUCKETS
         n_q = [0] * N_STEP_BUCKETS
-        ig_rank = [0.0] * N_STEP_BUCKETS
+        ig_val = [0.0] * N_STEP_BUCKETS
         n_ig = [0] * N_STEP_BUCKETS
         for r in g['steps']:
             if r.get('teleport'):
@@ -118,8 +117,8 @@ def main():
             n_q[b] += 1
             ch_deg[b] += r['frontier_degree']
             av_deg[b] += r.get('cand_degree_mean', 0.0)
-            if r.get('ig_rank_frac') is not None:
-                ig_rank[b] += r['ig_rank_frac']
+            if r.get('info_gain') is not None:
+                ig_val[b] += r['info_gain']
                 n_ig[b] += 1
             for k in keys:
                 rf = r.get(FIELD[k])
@@ -128,7 +127,7 @@ def main():
                 rank_sums[k] += rf
                 rank_ns[k] += 1
         per_graph.append((rank_sums, rank_ns, ch_deg, av_deg, n_q,
-                          ig_rank, n_ig, g['ev_correct']))
+                          ig_val, n_ig, g['ev_correct']))
 
     n_g = len(per_graph)
     ev_ok = np.array([p[7] for p in per_graph])
@@ -222,25 +221,27 @@ def main():
               transform=ax_b.transAxes, fontsize=5.6, color=GRAY,
               ha='left', va='top')
 
-    # c) IG 排名逐步漂移（第 1 步 IG 无定义，从第 2 步起画）
+    # c) chosen 节点真实信息增益（第 1 步 IG 无定义，从第 2 步起画）
     xs_ig = xs_b[1:]
     ms = [x[0] for x in ig_line[1:]]
     lo = [x[1] for x in ig_line[1:]]
     hi = [x[2] for x in ig_line[1:]]
     ax_c.fill_between(xs_ig, lo, hi, color=ORANGE, alpha=0.18, lw=0)
     ax_c.plot(xs_ig, ms, color=ORANGE, lw=1.4, marker='o', ms=2.4)
-    ax_c.axhline(0.5, color=DARK, lw=0.9, ls=(0, (3, 2)))
-    ax_c.text(xs_ig[-1], 0.5 + 0.006, '0.5 = indifferent', ha='right',
+    ax_c.axhline(0, color=DARK, lw=0.9, ls=(0, (3, 2)))
+    ax_c.text(xs_ig[-1], 0, '0 = no entropy reduction', ha='right',
               va='bottom', fontsize=6.0, color=DARK)
-    ax_c.annotate('early: slightly follows', xy=(1.7, hi[0] + 0.010),
+    ax_c.annotate('early: positive', xy=(1.7, hi[0] + 0.010),
                   fontsize=5.8, color=DARK, va='bottom', ha='left')
-    ax_c.annotate('late: avoids', xy=(xs_ig[-2], lo[-2] - 0.010),
+    ax_c.annotate('late: negative', xy=(xs_ig[-2], lo[-2] - 0.010),
                   ha='center', va='top', fontsize=5.8, color=DARK)
     ax_c.set_xticks(xs_b)
     ax_c.set_xticklabels(tick_lbls, fontsize=5.8)
     ax_c.set_xlabel('Reveal step (≥11 pooled; IG defined from step 2)')
-    ax_c.set_ylabel('Info-gain rank percentile of chosen node')
-    c_ylims = (min(0.5, min(lo)) - 0.085, max(0.5, max(hi)) + 0.055)
+    ax_c.set_ylabel('Info gain of chosen node (nats)')
+    span = max(0.0, max(hi)) - min(0.0, min(lo))
+    c_ylims = (min(0.0, min(lo)) - 0.30 * span,
+               max(0.0, max(hi)) + 0.45 * span)
     ax_c.set_ylim(*c_ylims)
 
     # d) 读对 vs 读错：同一柱状（与 a 同尺度）

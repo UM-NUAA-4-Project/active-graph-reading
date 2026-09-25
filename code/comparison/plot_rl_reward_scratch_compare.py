@@ -49,7 +49,7 @@ RESULT = CODE_DIR / 'result'
 
 DATASETS = {
     'cifar10': dict(
-        title='CIFAR10', ylim=(0.10, 0.27), divider_x=9.5,
+        title='CIFAR10', ylim=(0.10, 0.27), divider_x=None,
         chain=[
             (RESULT / 'cifar10/experiments/default/evidence/rl/training_log.json', 0),
             (RESULT / 'cifar10/experiments/ev-R-read/evidence/rl/checkpoint_epoch6.pt', 9),
@@ -84,8 +84,10 @@ def main():
     cfg = DATASETS[ds]
 
     plt.rcParams.update(mpl_rc)
-    fig, ax = plt.subplots(figsize=(89 / 25.4, 58 / 25.4))
-    fig.subplots_adjust(left=0.145, right=0.965, bottom=0.165, top=0.90)
+    # 画布与 rl_reward_switch 系列一致（tight 裁边后 253.10×149.85pt），
+    # 保证四图在 1×4 合并时长宽统一（figsize 按 tight 裁边/外溢规律补偿）
+    fig, ax = plt.subplots(figsize=(255.46 / 72, 143.87 / 72))
+    fig.subplots_adjust(left=0.145, right=0.965, bottom=0.187, top=0.885)
 
     if cfg['divider_x'] is not None:
         ax.axvline(cfg['divider_x'], ls=(0, (3, 2)), lw=0.7,
@@ -97,7 +99,8 @@ def main():
             epochs.append(e['epoch'] + offset)
             rewards.append(reward(e['ev_acc_final']))
     ax.plot(epochs, rewards, color=BLUE_MAIN, lw=1.2, marker='o', ms=2.6,
-            mfc=BLUE_MAIN, mec='white', mew=0.4, zorder=3, label='ev-R-read')
+            mfc=BLUE_MAIN, mec='white', mew=0.4, zorder=3,
+            label='BC warm-start')
 
     log = load_log(cfg['scratch'])
     ax.plot([e['epoch'] for e in log], [reward(e['ev_acc_final']) for e in log],
@@ -120,13 +123,14 @@ def main():
     ax.set_title(cfg['title'], loc='left', fontsize=8, fontweight='bold',
                  pad=7)
 
-    out_dir = RESULT / ds / 'comparison'
+    out_dir = RESULT / ds / 'comparison' / 'scratch-rl'
     out_dir.mkdir(parents=True, exist_ok=True)
     base = out_dir / 'rl_reward_scratch_vs_evR'
     fig.savefig(f'{base}.pdf', bbox_inches='tight')
+    fig.savefig(f'{base}.svg', bbox_inches='tight')
     fig.savefig(f'{base}.png', dpi=600, bbox_inches='tight')
     plt.close(fig)
-    print(f'saved: {base}.png / .pdf')
+    print(f'saved: {base}.png / .pdf / .svg')
 
 
 if __name__ == '__main__':

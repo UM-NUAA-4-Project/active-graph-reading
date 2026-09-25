@@ -1,18 +1,18 @@
 """COLLAB 切换奖励函数对比图（evidence reader，单面板 Nature 风格）。
 
 数据来源为用户手工整理的 result/collab/experiments/history.json（14 轮）：
-第 1–6 轮 asymmetric + 冻结分类器判定（train_avg_R = 1.1·train_acc − 0.1，
-平台 ≈0.075）；第 7 轮起切换为 reader 自带头终判，日志记录的 train_avg_R
-为 reader 原始口径（= ev_acc_final），统一乘 1.1 减 0.1 折算为 asymmetric
-形式后与第一阶段同轴。
+第 1–6 轮 asymmetric + soft-both 判定（平台 ≈0.075）；第 7 轮起切换为
+reader 自带头终判。
 
-图式与 cifar10 切换图（plot_cifar10_reward_switch.py）一致：左轴蓝色
-训练平均奖励，右轴橙色最终判别精度 ev_acc_final，虚线（切换后曲线段）
-+ 阴影（切换后背景区域 axvspan）标记奖励源更换。
+2026-09-25 起图规格（跨数据集 1×1 版，供 reward-curves/ 拼图与单独引用，
+与 plot_cifar10_reward_switch.py 同款）：只绘制最终判别精度 ev_acc_final
+曲线（奖励源量纲不同不再同轴画奖励）；阴影（切换后区域，blue 0.07，以
+cross-dataset-figures/reward-curves/rl_reward_curves_1x4.svg 存档版为准）
+标记奖励源更换；切换点处把前一阶段收敛末值以水平虚线延伸到图右端。
 
-产物（写入 result/collab/comparison/）：
-  rl_reward_switch.pdf / .svg / .tiff(600dpi) / .png(600dpi)
-  rl_reward_switch.alignment.json（单面板 → NOT APPLICABLE 记录）
+产物（写入 result/cross-dataset-figures/reward-curves/）：
+  rl_reward_switch_collab.pdf / .png(600dpi) / .svg
+  rl_reward_switch_collab.alignment.json（单面板 → NOT APPLICABLE 记录）
 
 用法:
   python code/comparison/plot_collab_reward_switch.py
@@ -42,26 +42,27 @@ mpl_rc = {
 }
 
 BLUE_MAIN = '#0F4D92'
-ACC_COLOR = '#D55E00'   # 最终判别精度曲线（右轴）
 NEUTRAL_DARK = '#4D4D4D'
+# 阴影 = BLUE_MAIN 7% 白底预混实色（视觉同 rgba(15,77,146,0.07)）。
+# 不用 CSS opacity：PyMuPDF 等渲染器对 opacity 元素会整组渲染坏。
+SHADE_COLOR = '#EEF2F8'
 
 FIG_W_IN, FIG_H_IN = 89 / 25.4, 58 / 25.4   # Nature 单栏 89mm
 DPI = 600
 
 ROOT = Path(__file__).resolve().parents[1] / 'result'
-OUT_DIR = ROOT / 'collab/comparison'
+OUT_DIR = ROOT / 'cross-dataset-figures/reward-curves'
 LOG = ROOT / 'collab/experiments/history.json'
 
-SWITCH_EPOCH = 7         # 第 7 轮起 reader 源原始口径，需折算
-READER_TO_ASYMMETRIC = lambda r: r * 1.1 - 0.1
+SWITCH_EPOCH = 7         # 第 7 轮起 reader 源（日志 epoch 连续，无需 offset）
 
-# ---- 两阶段链（offset 排到连续轴） ----
+# ---- 两阶段链 ----
 STAGES = [
     dict(offset=0, dashed=False, label='soft-both', label_x=3.5),
-    dict(offset=0, dashed=True, label='Reader', label_x=9.0),  # epoch 本身连续，无需 offset
+    dict(offset=0, dashed=True, label='Reader', label_x=9.0),  # epoch 连续
 ]
 SWITCH_X = 6.5           # 奖励源更换边界（阶段 6 轮之后）
-SHADE_SPAN = (6.5, 14.5)  # 阴影标记切换后的奖励源区域
+SHADE_SPAN = (6.5, 14.5)  # 阴影标记切换后的奖励源区域（同 1×4 存档版）
 
 
 def in_stage2(epoch: int) -> bool:
@@ -79,12 +80,10 @@ def load_log() -> list:
 def plot_figure(log: list) -> Path:
     plt.rcParams.update(mpl_rc)
     fig, ax = plt.subplots(figsize=(FIG_W_IN, FIG_H_IN))
-    fig.subplots_adjust(left=0.145, right=0.86, bottom=0.165, top=0.775)
-    ax2 = ax.twinx()
-    ax2.spines['right'].set_visible(True)
+    fig.subplots_adjust(left=0.135, right=0.965, bottom=0.165, top=0.775)
 
     # 阴影：切换后的奖励源区域（置于曲线下层）
-    ax.axvspan(*SHADE_SPAN, color=BLUE_MAIN, alpha=0.07, lw=0, zorder=0)
+    ax.axvspan(*SHADE_SPAN, color=SHADE_COLOR, lw=0, zorder=0)
 
     # 奖励源标注：各阶段区域顶部居中
     for st in STAGES:
@@ -92,64 +91,36 @@ def plot_figure(log: list) -> Path:
                 transform=ax.get_xaxis_transform(),
                 ha='center', va='top', fontsize=6.5, color=NEUTRAL_DARK)
 
-    def join_prev(prev_last, xs, ys):
-        if prev_last is None:
-            return xs, ys
-        # 阶段边界处曲线相连：从前一阶段最后一点接入
-        return [prev_last[0]] + xs, [prev_last[1]] + ys
+    # 切换点水平虚线：前一阶段收敛末值延伸到图右端作对比基准
+    n_epochs = max(e['epoch'] for e in log)
+    accs_prev = [e['ev_acc_final'] for e in log if not in_stage2(e['epoch'])]
+    ax.axhline(accs_prev[-1], xmin=(SWITCH_X - 0.5) / n_epochs,
+               color=NEUTRAL_DARK, lw=0.8, ls=(0, (3, 2)), zorder=2)
 
-    # 左轴：训练平均奖励（第 7 轮起折算为 asymmetric 形式）
-    prev_last = None
-    for st in STAGES:
-        seg = [e for e in log if in_stage2(e['epoch']) == st['dashed']]
-        epochs = [e['epoch'] + st['offset'] for e in seg]
-        rewards = [e['train_avg_R'] if not st['dashed']
-                   else READER_TO_ASYMMETRIC(e['train_avg_R']) for e in seg]
-        line_x, line_y = join_prev(prev_last, epochs, rewards)
-        ax.plot(line_x, line_y, color=BLUE_MAIN, lw=1.2, zorder=3,
-                ls=(0, (3, 2)) if st['dashed'] else '-')
-        ax.plot(epochs, rewards, 'o', color=BLUE_MAIN, ms=2.6,
-                mfc=BLUE_MAIN, mec='white', mew=0.4, ls='none', zorder=4)
-        prev_last = (epochs[-1], rewards[-1])
-
-    # 右轴：最终判别精度（reader 自带头终判；切换后虚线，与奖励曲线同式）
     prev_last = None
     for st in STAGES:
         seg = [e for e in log if in_stage2(e['epoch']) == st['dashed']]
         epochs = [e['epoch'] + st['offset'] for e in seg]
         accs = [e['ev_acc_final'] for e in seg]
-        line_x, line_y = join_prev(prev_last, epochs, accs)
-        ax2.plot(line_x, line_y, color=ACC_COLOR, lw=1.2, zorder=3,
-                 ls=(0, (3, 2)) if st['dashed'] else '-')
-        ax2.plot(epochs, accs, 'o', color=ACC_COLOR, ms=2.6,
-                 mfc=ACC_COLOR, mec='white', mew=0.4, ls='none', zorder=4)
+        line_x, line_y = epochs, accs
+        if prev_last is not None:
+            # 阶段边界处曲线相连：从前一阶段最后一点接入
+            line_x = [prev_last[0]] + line_x
+            line_y = [prev_last[1]] + line_y
+        ax.plot(line_x, line_y, color=BLUE_MAIN, lw=1.2, zorder=3,
+                ls=(0, (3, 2)) if st['dashed'] else '-')
+        ax.plot(epochs, accs, 'o', color=BLUE_MAIN, ms=2.6,
+                mfc=BLUE_MAIN, mec='white', mew=0.4, ls='none', zorder=4)
         prev_last = (epochs[-1], accs[-1])
 
     ax.set_xlabel('RL epoch', fontsize=6.5)
-    ax.set_ylabel('Mean training reward', fontsize=7)
-    ax.set_ylim(0.05, 0.70)
-    ax.yaxis.set_major_locator(MultipleLocator(0.1))
+    ax.set_ylabel('Final accuracy', fontsize=7)
+    ax.set_ylim(0.45, 0.68)
+    ax.yaxis.set_major_locator(MultipleLocator(0.05))
     ax.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
-    # 右轴与左轴同量程：reader 源 asymmetric 奖励(1.1a-0.1)恒低于 acc，
-    # 同量程保证 ev_acc_final 曲线始终画在奖励曲线上方，避免双轴误导
-    ax2.set_ylabel('Final accuracy', fontsize=7)
-    ax2.set_ylim(0.05, 0.70)
-    ax2.yaxis.set_major_locator(MultipleLocator(0.1))
-    ax2.yaxis.set_major_formatter(FormatStrFormatter('%.2f'))
-    n_epochs = max(epochs)
     ax.set_xlim(0.5, n_epochs + 0.5)
     ax.xaxis.set_major_locator(MultipleLocator(1))
     ax.tick_params(labelsize=6)
-    ax2.tick_params(labelsize=6)
-
-    handles = [
-        plt.Line2D([], [], color=BLUE_MAIN, lw=1.2, marker='o', ms=2.6,
-                   mec='white', mew=0.4, label='Mean training reward'),
-        plt.Line2D([], [], color=ACC_COLOR, lw=1.2, marker='o', ms=2.6,
-                   mec='white', mew=0.4, label='Final accuracy'),
-    ]
-    ax2.legend(handles=handles, loc='lower right', fontsize=5.5,
-               handlelength=1.6, borderaxespad=0.3)
 
     ax.set_title('COLLAB', loc='left', fontsize=8, fontweight='bold', pad=7)
 
@@ -159,15 +130,14 @@ def plot_figure(log: list) -> Path:
         sys.path.insert(0, str(SKILL_SCRIPTS))
         from audit_panel_alignment import require_matplotlib_panel_alignment
         require_matplotlib_panel_alignment(
-            fig, json_out=str(OUT_DIR / 'rl_reward_switch.alignment.json'),
+            fig, json_out=str(OUT_DIR / 'rl_reward_switch_collab.alignment.json'),
             tolerance_pt=1.5, gutter_tolerance_pt=1.5, strict=True)
     except ImportError:
         print('  [warn] audit_panel_alignment 不可用，跳过对齐记录')
 
-    base = OUT_DIR / 'rl_reward_switch'
+    base = OUT_DIR / 'rl_reward_switch_collab'
     fig.savefig(f'{base}.svg', bbox_inches='tight')
     fig.savefig(f'{base}.pdf', bbox_inches='tight')
-    fig.savefig(f'{base}.tiff', dpi=DPI, bbox_inches='tight')
     fig.savefig(f'{base}.png', dpi=DPI, bbox_inches='tight')
     plt.close(fig)
     return base
@@ -176,7 +146,7 @@ def plot_figure(log: list) -> Path:
 def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     base = plot_figure(load_log())
-    print(f'[collab] saved: {base}.png/.pdf/.svg/.tiff')
+    print(f'[collab] saved: {base}.png/.pdf/.svg')
 
 
 if __name__ == '__main__':

@@ -1,0 +1,23 @@
+% Dataset statistics table. Standalone file: \input or paste into the main tex.
+% Requires booktabs + graphicx (both loaded in main-v3.tex).
+% Sources: code/data/ppa/dataset-distrbution/ppa_analysis_report.txt (whole dataset);
+%          cifar10 / collab pooled to the whole dataset from the per-split
+%          *_analysis_stats.json (min of mins, max of maxes, n-weighted means;
+%          imbalance from pooled class counts: cifar10 6000/class -> 1.00,
+%          collab 2600/775 -> 3.35, PPA 16000/1100 -> 14.55).
+\begin{table}[!htb]
+\centering
+\caption{Dataset statistics. Node/edge counts are min--max with means in parentheses; feature columns give dimensionalities (``--'': absent); the imbalance ratio is max/min class frequency.}
+\label{tab:datasets}
+\resizebox{\linewidth}{!}{%
+\begin{tabular}{lccccccc}
+\toprule
+Dataset & \#Graphs & \#Classes & \#Nodes & \#Edges & Node feats & Edge feats & Imbalance \\
+\midrule
+CIFAR10 superpixels & 60,000  & 10 & 85--150 (117.6) & 680--1,200 (941.1)       & 5  & 1 & 1.00 \\
+COLLAB              & 5,000   & 3  & 32--492 (74.5)  & 240--160,476 (9,828.9)   & -- & 1 & 3.35 \\
+OGBG-PPA            & 158,100 & 37 & 50--300 (243.4) & 54--18,069 (2,266.1)     & -- & 7 & 14.55 \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}

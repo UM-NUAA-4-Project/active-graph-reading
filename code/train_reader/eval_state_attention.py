@@ -218,6 +218,30 @@ def attn_dist(rows, ratio: float, n_bins: int = 20):
             'n_episodes': used}
 
 
+def attn_dist_last(rows, x_last: int = 16):
+    """结尾对齐的注意力分布（绝对步长口径）：alpha 末位（e=0）为终局补充
+    前向状态（记 "last"），e=k 为倒数第 k 个揭示状态（"last-k"）。只分箱
+    最后 x_last 个位置；更早的步位不参与分箱（图中以 "0 ⋯" 省略区表示，
+    其质量 = 1 − 本分布之和）。"""
+    acc = [0.0] * x_last
+    used = 0
+    for r in rows:
+        alpha = r.get('alpha')
+        if not alpha:
+            continue
+        T = len(alpha) - 1
+        for p, w in enumerate(alpha):
+            e = T - p
+            if 0 <= e < x_last:
+                acc[e] += w
+        used += 1
+    if not used:
+        return None
+    labels = ['last'] + [f'last-{k}' for k in range(1, x_last)]
+    return {'x_last': x_last, 'labels': labels,
+            'dist': [round(a / used, 6) for a in acc], 'n_episodes': used}
+
+
 def summarize(rows):
     s = {'n': len(rows)}
     for k in ('ok_learned', 'ok_uniform', 'ok_terminal',
@@ -343,6 +367,7 @@ def main():
                               [rec_e[i] for i in idxs])
             by_budget[key] = summarize(rows)
             by_budget[key]['attn_dist'] = attn_dist(rows, float(key))
+            by_budget[key]['attn_dist_last'] = attn_dist_last(rows)
         overall = summarize(build_rows(eps, rec_l, rec_u, rec_e))
         mismatch = sum(1 for m in rec_e if m[2])
         print_table(split, by_budget, overall)

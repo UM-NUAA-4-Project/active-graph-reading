@@ -52,3 +52,9 @@ paper/iclr_draft/README.md
 paper/iclr_draft/*_render*/
 paper/*/*.py
 
+
+# 绘图产物（图像文件）不入库；配套 JSON 已由 code/result/**/*.json 覆盖
+code/result/**/*.png
+code/result/**/*.pdf
+code/result/**/*.svg
+code/result/**/*.tiff

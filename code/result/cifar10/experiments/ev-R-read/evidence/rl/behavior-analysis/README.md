@@ -35,6 +35,12 @@
 
 ## 产物与 QA
 
+> **2026-09-25 更新**：原 10k 全量 JSON 已删且两台服务器未找回；现以
+> `choice_behavior_b10_g100s4.json`（test 前 100 图 × 4 seeds，同协议重采，
+> ev_acc 0.3375）为准重出 IG 真实值图（`choice_behavior_b10_g100s4.*`，
+> panel c 改 chosen 节点真实 IG nats：step2 +0.044 → step5 起 ≈−0.02）；
+> 排名分位结论（grad 0.51 / IG 0.50 / deg 0.62）在重采样本中复现。
+
 `choice_behavior_b10.json`（逐步记录+summary，含 v2 新增的度数排名/候选度数字段）、`.pdf/.svg/.tiff/.png`（图）、`.log`（运行日志）、`*.alignment.json` / `*.collision-audit.json`（审计）。
 源码：`code/diagnosis/analyze_choice_behavior.py`（数据）、`code/comparison/plot_choice_behavior.py`（图）。
 QA：源预检 READY；面板对齐 PASS（1.5pt strict）；PDF 字号最小 5.6pt PASS；碰撞 0 fail + 4 WARN（均为灰字说明压到 fill_between 置信带**包围盒**的误报，终尺寸目检无墨迹接触，已记录）；视觉判决 PASS。
