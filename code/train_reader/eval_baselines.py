@@ -69,6 +69,10 @@ def main():
     parser.add_argument('--strategy-ckpt', default='',
                         help='sagpool scorer checkpoint'
                              '（默认 baseline/artifacts/{ds}/sagpool.pt）')
+    parser.add_argument('--judge', default='clf', choices=['clf', 'own'],
+                        help='终判口径：clf=冻结上界分类器（默认，P5 协议）；'
+                             'own=策略自带头（仅 sagpool/softmask/agentnet，'
+                             '冻结分类器改记 acc_clf_* 参照）')
     parser.add_argument('--search-rollouts', type=int, default=20,
                         help='subgraphx MCTS rollout 数（对齐官方默认 20）')
     parser.add_argument('--search-expand', type=int, default=12,
@@ -91,6 +95,12 @@ def main():
     builder = SubgraphBuilder()
 
     print(f"Strategies: {' '.join(args.strategy)}")
+    if args.judge == 'own':
+        own_capable = {'sagpool', 'softmask', 'agentnet'}
+        bad = [s for s in args.strategy if s not in own_capable]
+        if bad:
+            raise SystemExit(f"--judge own 需要自带头策略，不含: {' '.join(bad)}"
+                             "（可选 sagpool/softmask/agentnet）")
     if any(s in ('random-walk', 'sagpool', 'subgraphx',
                  'softmask', 'agentnet') for s in args.strategy):
         # baseline/ 位于仓库根：注册协议适配基线策略
@@ -164,6 +174,7 @@ def main():
         'n_seeds': args.n_seeds,
         'argmax': args.argmax,
         'seed_method': SEED_METHOD_STR,
+        'judge': args.judge,
         'full_graph_ref': {},    # 逐 split 累积
     }
 
@@ -171,7 +182,8 @@ def main():
         for strategy, agent in zip(args.strategy, agents):
             results = evaluate_fixed(None, classifier, builder, graphs, labels,
                                      budget_options, device, args.argmax,
-                                     args.n_seeds, agent=agent)
+                                     args.n_seeds, agent=agent,
+                                     judge=args.judge)
             yield strategy, results
 
     run_split_eval(args, classifier, budget_options, config, out_path,

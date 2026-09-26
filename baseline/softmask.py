@@ -199,3 +199,22 @@ class SoftmaskStrategy(BaseReader):
         score_of = {old: float(s) for old, s in zip(ids, scores.tolist())}
         # 分数最高者优先；平分取小 id（确定性）
         return max(frontier_nodes, key=lambda v: (score_of[v], -v))
+
+    @torch.no_grad()
+    def own_predict_batch(self, subgraphs, seed_rows, steps):
+        """自带头终判：SMG 分类头对最终揭示子图逐图前向（掩码逐层链式传递）。
+
+        供 evaluate_fixed 的 acc_own_*（judge='clf'）或 judge='own' 主判；
+        seed_rows/steps 为统一批量接口的占位参数（本头不依赖）。
+        """
+        outs = []
+        for g in subgraphs:
+            g = dgl.add_self_loop(dgl.remove_self_loop(g))
+            if self._model.edge_feat_dim > 0 and 'feat' not in g.edata:
+                g.edata['feat'] = torch.zeros(g.num_edges(),
+                                              self._model.edge_feat_dim)
+            if self._model.node_feat_dim > 0 and 'feat' not in g.ndata:
+                g.ndata['feat'] = torch.zeros(g.num_nodes(),
+                                              self._model.node_feat_dim)
+            outs.append(self._model(g.to(self._device)))
+        return torch.cat(outs, dim=0)

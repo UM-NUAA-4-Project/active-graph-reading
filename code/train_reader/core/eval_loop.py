@@ -221,12 +221,18 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
 
 @torch.no_grad()
 def evaluate_fixed(strategy, classifier, builder, graphs, labels,
-                   budget_options, device, argmax=True, n_seeds=4, agent=None):
+                   budget_options, device, argmax=True, n_seeds=4, agent=None,
+                   judge='clf'):
     """固定策略（random/bfs/max_degree）评估，统计口径与 evaluate_reader 一致。
 
     agent 可传入外部策略实例（baseline/ 协议适配基线，如 sagpool——需加载
     scorer checkpoint，无法经 create_fixed_reader 无参构造）；此时 strategy
     仅作日志/注册名，允许为 None。
+
+    judge='clf'（默认）：冻结上界分类器终判（P5 协议口径）；自带读出头的
+    策略另记 acc_own_*（参照）。judge='own'：策略自带头终判（acc_*），
+    冻结分类器对同一批揭示子图的判定改记 acc_clf_*（参照）——对齐原方法
+    论文的"自分类精度"口径。judge='own' 要求 agent 有 own_predict。
     """
     from active_graph_reader.reader.fixed import create_fixed_reader
     if agent is None:
@@ -237,13 +243,20 @@ def evaluate_fixed(strategy, classifier, builder, graphs, labels,
     per_seed_outcomes = {i: defaultdict(list) for i in range(n_seeds)}
     per_seed_per_class = {i: defaultdict(lambda: defaultdict(list))
                           for i in range(n_seeds)}
-    # 自带读出头的策略（agentnet）：额外记录自身头对同一揭示子图的判定。
-    # 优先用批量接口 own_predict_batch（批图 lockstep 游走），无则逐个回退
+    # 自带读出头的策略（agentnet/sagpool/softmask）：额外记录自身头对同一
+    # 揭示子图的判定。优先用批量接口 own_predict_batch，无则逐图回退
+    # own_predict（两接口任一即可）
     own_fn = getattr(agent, 'own_predict', None)
-    own_batch_fn = getattr(agent, 'own_predict_batch', None) \
-        if own_fn is not None else None
+    own_batch_fn = getattr(agent, 'own_predict_batch', None)
+    if judge == 'own' and own_fn is None and own_batch_fn is None:
+        raise ValueError(f"策略 {strategy or getattr(agent, 'name', '?')} "
+                         "无自带头（own_predict/own_predict_batch），"
+                         "不支持 judge='own'")
+    own_any = own_fn is not None or own_batch_fn is not None
     per_budget_own_correct = defaultdict(int)
     per_budget_own_outcomes = defaultdict(list)
+    per_budget_clf_correct = defaultdict(int)
+    per_budget_clf_outcomes = defaultdict(list)
     all_subgraphs, all_labels, all_budgets, all_seed_ids = [], [], [], []
     all_seed_rows, all_steps = [], []
     for local_i in tqdm(range(len(graphs)), desc="  Rolling"):
@@ -278,27 +291,43 @@ def evaluate_fixed(strategy, classifier, builder, graphs, labels,
         for j, (y, label) in enumerate(all_labels[i:i + 512]):
             budget = all_budgets[i + j]
             seed_i = all_seed_ids[i + j]
-            correct = 1.0 if logits[j].argmax(dim=-1).item() == label else 0.0
-            per_budget_correct[budget] += correct
-            per_budget_total[budget] += 1
-            per_budget_outcomes[budget].append(correct)
-            per_seed_outcomes[seed_i][budget].append(correct)
-            per_seed_per_class[seed_i][budget][label].append(correct)
-            if own_fn is not None:
+            clf_ok = 1.0 if logits[j].argmax(dim=-1).item() == label else 0.0
+            own_ok = None
+            if own_any:
                 if own_logits is not None:
                     own_pred = own_logits[j].argmax(dim=-1).item()
                 else:
                     own_pred = own_fn(chunk_sub[j], all_seed_rows[i + j],
                                       all_steps[i + j]).argmax(dim=-1).item()
-                own_correct = 1.0 if own_pred == label else 0.0
-                per_budget_own_correct[budget] += own_correct
-                per_budget_own_outcomes[budget].append(own_correct)
+                own_ok = 1.0 if own_pred == label else 0.0
+            if judge == 'own':
+                main_ok, per_budget_clf_correct[budget] = \
+                    own_ok, per_budget_clf_correct[budget] + clf_ok
+                per_budget_clf_outcomes[budget].append(clf_ok)
+            else:
+                main_ok = clf_ok
+            per_budget_correct[budget] += main_ok
+            per_budget_total[budget] += 1
+            per_budget_outcomes[budget].append(main_ok)
+            per_seed_outcomes[seed_i][budget].append(main_ok)
+            per_seed_per_class[seed_i][budget][label].append(main_ok)
+            if own_any and judge == 'clf':
+                per_budget_own_correct[budget] += own_ok
+                per_budget_own_outcomes[budget].append(own_ok)
 
     return _summarize(budget_options, graphs, per_budget_correct,
                       per_budget_total, per_budget_outcomes,
                       per_seed_outcomes, per_seed_per_class,
-                      own_correct=(per_budget_own_correct if own_fn is not None else None),
-                      own_outcomes=(per_budget_own_outcomes if own_fn is not None else None))
+                      clf_correct=(per_budget_clf_correct
+                                   if judge == 'own' else None),
+                      clf_outcomes=(per_budget_clf_outcomes
+                                    if judge == 'own' else None),
+                      own_correct=(per_budget_own_correct
+                                   if own_any and judge == 'clf'
+                                   else None),
+                      own_outcomes=(per_budget_own_outcomes
+                                    if own_any and judge == 'clf'
+                                    else None))
 
 
 def _summarize(budget_options, graphs, per_budget_correct, per_budget_total,
