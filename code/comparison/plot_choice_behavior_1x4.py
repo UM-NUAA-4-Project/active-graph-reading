@@ -23,6 +23,7 @@ x 刻度隔步标注（1,3,5,7,9,≥11），y 轴标题与说明文字用短版�
 """
 
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -61,10 +62,11 @@ TICK_LABELS = ['1', '3', '5', '7', '9', '≥11']
 
 BASE = Path(__file__).resolve().parents[1] / 'result'
 CIF_JSON = BASE / 'cifar10' / 'experiments' / 'ev-R-read' / 'evidence' / 'rl' \
-    / 'behavior-analysis' / 'choice_behavior_b10_g100s4.json'
+    / 'behavior-analysis' / 'choice' / 'choice_behavior_b10_g100s4.json'
 COL_JSON = BASE / 'collab' / 'experiments' / 'evidence1' / 'evidence' / 'rl' \
-    / 'behavior-analysis' / 'choice_behavior_b10.json'
-OUT_PREFIX = BASE / 'cross-dataset-figures' / 'behavior' / 'choice_behavior_1x4'
+    / 'behavior-analysis' / 'choice' / 'choice_behavior_b10.json'
+OUT_PREFIX = BASE / 'cross-dataset-figures' / 'behavior' / 'choice' \
+    / 'choice_behavior_1x4'
 
 
 def boot_ci(num, den, rng, reps=BOOT_REPS):
@@ -121,55 +123,67 @@ def aggregate(path, name):
         return ([x[0] for x in lines], [x[1] for x in lines],
                 [x[2] for x in lines])
     ch, av, ig = unzip(ch_line), unzip(av_line), unzip(ig_line)
+
+    # 桶 1（x=1）：种子信息增益 = ln k − G_0 初始 belief 熵（按图聚类）。
+    # 旧 JSON 无 init_entropy 字段时留空，面板自动退回"从 step 2 起"
+    if graphs and all(g.get('init_entropy') is not None for g in graphs):
+        by_graph = defaultdict(lambda: [0.0, 0])
+        for g in graphs:
+            v = math.log(g['n_classes']) - g['init_entropy']
+            by_graph[g['graph_idx']][0] += v
+            by_graph[g['graph_idx']][1] += 1
+        nums = np.array([v[0] for v in by_graph.values()])
+        dens = np.array([v[1] for v in by_graph.values()], dtype=float)
+        ig[0] = boot_ci(nums, dens)
+
     n_steps = int(sum(sum(p[2]) for p in per_graph))
     print(f"{name}: graphs={len(per_graph)} steps={n_steps}")
     print('chosen degree:', [round(x, 3) for x in ch[0]])
     print('avail   degree:', [round(x, 3) for x in av[0]])
     print('chosen real IG:', [round(x, 4) for x in ig[0][1:]])
+    print('seed IG (x=1):', round(ig[0][0][0], 4)
+          if ig[0][0][0] == ig[0][0][0] else 'n/a')
     return {'ch': ch, 'av': av, 'ig': ig}
 
 
-def draw_degree(ax, d, dataset, with_legend, explainer):
+def draw_degree(ax, d, dataset, explainer):
+    """前沿度数：被选 vs 可选。系列标注横放在标题行（数据集名右侧），
+    不占绘图区、对两数据集几何统一。"""
     xs = np.arange(1, N_STEP_BUCKETS + 1)
     los = list(d['av'][1]) + list(d['ch'][1])
     his = list(d['av'][2]) + list(d['ch'][2])
     ax.set_ylim(0.9 * min(los), 1.06 * max(his))
-    for key, color, label, lw in (('av', GRAY, 'Available candidates', 1.0),
-                                  ('ch', TEAL, 'Chosen nodes', 1.4)):
+    for key, color, lw in (('av', GRAY, 1.0), ('ch', TEAL, 1.4)):
         m, lo, hi = d[key]
         ax.fill_between(xs, lo, hi, color=color, alpha=0.15, lw=0)
-        ax.plot(xs, m, color=color, lw=lw, marker='o', ms=2.2, label=label)
+        ax.plot(xs, m, color=color, lw=lw, marker='o', ms=2.2)
     ax.set_xticks(TICK_STEPS)
     ax.set_xticklabels(TICK_LABELS, fontsize=5.8)
     ax.set_xlabel('Reveal step (≥11 pooled)')
     ax.set_ylabel('Frontier degree (mean)')
-    if with_legend:
-        ax.legend(loc='lower right', fontsize=5.6, handlelength=1.4,
-                  labelspacing=0.3)
+    # 标题行：数据集名 + 两个彩色系列标注（同一基线）
+    ax.text(0.0, 1.0, dataset, transform=ax.transAxes, fontsize=7,
+            fontweight='bold', ha='left', va='bottom', color='#1A1A1A')
+    ax.text(0.50, 1.0, 'Chosen nodes', transform=ax.transAxes, fontsize=6.2,
+            ha='left', va='bottom', color=TEAL)
+    ax.text(0.73, 1.0, 'Available candidates', transform=ax.transAxes,
+            fontsize=6.2, ha='left', va='bottom', color=GRAY)
     ax.text(0.05, 0.975, explainer, transform=ax.transAxes, fontsize=5.4,
             color=GRAY, ha='left', va='top', linespacing=1.25)
-    ax.set_title(dataset, fontsize=7, pad=3, color='#1A1A1A')
 
 
 def draw_ig(ax, d, dataset, annotations):
-    """chosen 节点真实信息增益（nats）逐步曲线；0 线 = 揭示不带来熵减。"""
-    m, lo, hi = [v[1:] for v in d['ig']]    # 桶 1（第 1 步）IG 无定义
-    xs_ig = np.arange(2, N_STEP_BUCKETS + 1)
+    """chosen 节点信息增益（nats）逐步曲线；x=1 = 种子信息增益
+    （ln k − G_0 初始 belief 熵），0 线 = 揭示不带来熵减。"""
+    m, lo, hi = d['ig']
+    xs_ig = np.arange(1, N_STEP_BUCKETS + 1)
     ax.fill_between(xs_ig, lo, hi, color=ORANGE, alpha=0.18, lw=0)
     ax.plot(xs_ig, m, color=ORANGE, lw=1.4, marker='o', ms=2.2)
     ax.axhline(0.0, color=DARK, lw=0.9, ls=(0, (3, 2)))
-    if annotations == 'cifar10':
-        ax.text(0.97, 0.010, '0 = no entropy reduction',
-                transform=ax.get_yaxis_transform(), ha='right', va='bottom',
-                fontsize=5.6, color=DARK)
-        ax.annotate('early: positive', xy=(2, hi[0] + 0.004),
-                    fontsize=5.6, color=DARK, va='bottom', ha='left')
-        ax.annotate('late: negative', xy=(xs_ig[-2], lo[-2] - 0.004),
-                    ha='center', va='top', fontsize=5.6, color=DARK)
-    else:   # COLLAB：全程为负，0 线标签放线下右侧，注释放左上空白区
-        ax.text(0.97, 0.0055, '0 = no entropy reduction',
-                transform=ax.get_yaxis_transform(), ha='right', va='bottom',
-                fontsize=5.6, color=DARK)
+    ax.text(0.97, 0.010, '0 = no entropy reduction',
+            transform=ax.get_yaxis_transform(), ha='right', va='bottom',
+            fontsize=5.6, color=DARK)
+    if annotations != 'cifar10' and all(x < 0 for x in m):
         ax.text(0.03, 0.70, 'IG < 0 at every step', transform=ax.transAxes,
                 fontsize=5.6, color=DARK, ha='left', va='top')
     span = max(0.0, max(hi)) - min(0.0, min(lo))
@@ -177,7 +191,7 @@ def draw_ig(ax, d, dataset, annotations):
                 max(0.0, max(hi)) + 0.38 * span)
     ax.set_xticks(TICK_STEPS)
     ax.set_xticklabels(TICK_LABELS, fontsize=5.8)
-    ax.set_xlabel('Reveal step (IG from step 2)')
+    ax.set_xlabel('Reveal step (1 = seed)')
     ax.set_ylabel('Info gain (nats)')
     ax.set_title(dataset, fontsize=7, pad=3, color='#1A1A1A')
 
@@ -192,10 +206,10 @@ def main():
                         wspace=0.42)
     ax_a, ax_b, ax_c, ax_d = axs
 
-    draw_degree(ax_a, cif, 'CIFAR10', with_legend=True,
-                explainer='Better connected early;\nless connected late')
+    draw_degree(ax_a, cif, 'CIFAR10',
+                explainer='Chosen stays at degree 1;\navailable candidates grow')
     draw_ig(ax_b, cif, 'CIFAR10', 'cifar10')
-    draw_degree(ax_c, col, 'COLLAB', with_legend=False,
+    draw_degree(ax_c, col, 'COLLAB',
                 explainer='Chosen above average\nat every step')
     draw_ig(ax_d, col, 'COLLAB', 'collab')
 

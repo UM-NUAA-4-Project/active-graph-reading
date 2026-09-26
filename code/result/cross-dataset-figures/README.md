@@ -4,23 +4,33 @@ cifar10 + COLLAB 联合图（单数据集图仍在各自 `result/{ds}/` 下）�
 按分析类型分子文件夹存放，生成脚本在 `code/comparison/`。
 废弃/被替代版本统一归档在各子文件夹 `_legacy/`（不删除，留证）。
 
-## behavior/ — 行为分析图（1×4 合并 + 1×1 拆分）
+## behavior/ — 行为分析图（choice/ 子目录，1×1 单图）
 
-| 1×4 面板 | 内容 | 1×1 独立文件 |
+| 面板 | 内容 | 1×1 文件（behavior/choice/） |
 |---|---|---|
 | a | CIFAR10 前沿度数：被选 vs 可选（逐步，1–10 + ≥11 桶） | `choice_behavior_cifar10_degree.*` |
-| b | CIFAR10 chosen 节点真实信息增益（nats；0 线=揭示不带来熵减） | `choice_behavior_cifar10_ig.*` |
-| c | COLLAB 前沿度数（全程度数贪心） | `choice_behavior_collab_degree.*` |
-| d | COLLAB chosen 节点真实信息增益（全程为负） | `choice_behavior_collab_ig.*` |
+| b | CIFAR10 chosen 节点信息增益（nats；0 线=揭示不带来熵减） | `choice_behavior_cifar10_ig.*` |
+| c | COLLAB 前沿度数（同 a 编码） | `choice_behavior_collab_degree.*` |
+| d | COLLAB chosen 节点信息增益（同 b 编码） | `choice_behavior_collab_ig.*` |
 
-- 1×4 与 1×1 同数据、同编码、同聚合口径；1×1 为 89mm 单栏独立画布
-  （pdf/png/svg；无面板字母，字母带由合并图/排版侧添加）。
-- 数据：CIFAR10 侧 `choice_behavior_b10_g100s4.json`（原 10k 全量 JSON 已删，
-  本地重采 test 前 100 图 × 4 seeds，同协议 argmax rollout）；COLLAB 侧
-  `choice_behavior_b10.json`（test 501 图原 JSON，聚合同序）。
-- **口径 = epoch3 旧主结果**（epoch6 行为已反转为 fd=1 轮廓行走，引用注意）。
-- 重新生成：合并 `python code/comparison/plot_choice_behavior_1x4.py`；
-  拆分 `python code/comparison/plot_choice_behavior_1x1.py`
+- 单图 89mm 单栏（pdf/png/svg），无面板字母；系列标注横放在标题行
+  （数据集名右侧，彩色对应曲线），度数/IG 两类面板同式。
+- 数据：CIFAR10 侧 `choice_behavior_b10_g100s4.json`（test 前 100 图 ×
+  4 seeds 重采，**epoch6** checkpoint，同协议 argmax rollout）；COLLAB 侧
+  `choice_behavior_b10.json`（test 501 图，epoch6，聚合同序）。均位于各自
+  `behavior-analysis/choice/` 下。
+- **IG 口径（2026-09-25 晚起）= reader 自身证据头 belief 熵的逐步下降**
+  （沿实际轨迹相邻前向作差，零额外计算；旧冻结分类器判定口径 JSON 已加
+  `_clfigain` 后缀留档在各自 behavior-analysis/ 下）。**x=1 位置记录种子
+  信息增益 ln k − init_entropy**（G_0 仅种子时的 belief 熵相对均匀先验
+  ln k 的下降；x=2 起为各步揭示的熵减），横坐标标注 `(1 = seed)`。
+- **CIFAR10 口径注意**：epoch6 行为 = chosen 恒选前沿度 1 节点（轮廓行
+  走），面板 a 说明文字已随之更新；旧 epoch3 口径（早期偏好高度数）已
+  弃用，勿混引。
+- 重新生成：`python code/comparison/plot_choice_behavior_1x1.py`（数据读
+  behavior-analysis/choice/，产物写本目录 choice/）。
+- `_legacy/`：美化前旧版单图（epoch3 口径 + 图例版），留证勿引用。
+- mechanism 类图在各自 `behavior-analysis/mechanism/` 下，未入本目录。
 
 ## reward-curves/ — RL 奖励曲线（1×1 单图 + 2×2 合并）
 

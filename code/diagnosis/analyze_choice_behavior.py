@@ -9,8 +9,14 @@ eval_loop 一致）逐图回放 reader 的阅读过程，对每一步被选中�
   加载器补的自环）；
 - grad_score：梯度归因 teacher（GradientTeacher，全图一次反传的静态节点
   分数）在该节点的分数；
-- info_gain：InfoGainTeacher 口径的信息增益 H(current) − H(reveal v)（动态
-  逐步计算；首步 G_0 无已揭示边时按 teacher 约定记 null）；
+- info_gain：信息增益 = reader 证据头 belief 熵的逐步下降 H(b_t) − H(b_t+1)。
+  证据头预测（ev_logits）本就随每步 forward_states_evidence 返回，沿实际
+  轨迹记录各步 belief 熵、相邻两步作差，即当前所选节点带来的熵减——与
+  eval 终判同一分类头，零额外前向。每步 IG 由下一步前向回填（末步由终局
+  判定前向回填，teleport 步同理），全部 policy 步都有定义；
+- init_entropy / n_classes：G_0（仅种子、未揭示）时的证据头 belief 熵与
+  类别数。IG 面板横坐标 1 的位置记录种子信息增益 ln k − init_entropy
+  （相对均匀先验的熵减）；
 - degree_rank_frac / degree_is_max：所选节点前沿度数在前沿候选内的中间
   名次分位（并列取半份额，全并列=0.5）与是否并列最优；
 - cand_degree_mean / cand_degree_max：该步前沿候选的度数均值/最大值
@@ -49,7 +55,6 @@ sys.path = [p for p in sys.path
             if Path(p).resolve() != Path(__file__).resolve().parent]
 
 import torch  # noqa: E402
-import dgl  # noqa: E402
 from tqdm import tqdm  # noqa: E402
 
 from active_graph_reader.engine.graph_state import GraphState  # noqa: E402
@@ -61,7 +66,12 @@ from tools.seeds import deterministic_seed  # noqa: E402
 from train_reader.core import (  # noqa: E402
     load_classifier_frozen, load_reader_from_checkpoint)
 from trajectories.teachers.gradient import GradientTeacher  # noqa: E402
-from trajectories.teachers.info_gain import InfoGainTeacher  # noqa: E402
+
+
+def _entropy_of_logits(logits) -> float:
+    """类别分布的香农熵（nats）。"""
+    probs = torch.softmax(logits, dim=-1)
+    return float(-(probs * torch.log(probs + 1e-8)).sum())
 
 
 def _edge_key_to_id(g) -> dict:
@@ -158,7 +168,6 @@ def main():
 
     grad_teacher = GradientTeacher()
     builder = SubgraphBuilder()
-    ig_teacher = InfoGainTeacher(classifier, builder, device=str(device))
 
     ds = get_dataset(args.dataset, root=args.root, splits=(args.split,),
                      max_graphs=args.max_graphs, stratified=args.stratified)
@@ -188,7 +197,9 @@ def main():
             'frontier_degree': 'state.get_frontier_degree（与已揭示区的连接边数）',
             'graph_degree': '全图 in_degrees（StructuralTeacher 口径，含自环）',
             'grad_score': 'GradientTeacher 全图静态节点分数（requires_grad 反传）',
-            'info_gain': 'H(current) − H(reveal v)（InfoGainTeacher 口径；G_0 首步 null）',
+            'info_gain': 'H(b_t) − H(b_t+1)：reader 证据头 belief 熵的逐步'
+                         '下降（沿实际轨迹相邻前向作差回填，全部 policy 步'
+                         '有定义）',
         },
     }
 
@@ -225,6 +236,20 @@ def main():
 
             steps = []
             step_idx = 0
+            prev_ent = None       # 上一次前向的 belief 熵（当前步揭示前）
+            pending_idx = None    # 等待用下一步 belief 熵回填 IG 的 step 下标
+            init_ent = None       # G_0（仅种子）的 belief 熵
+            n_cls = None
+            if use_evidence:
+                # G_0 前向：初始 belief 熵（IG 面板 x=1 的种子信息增益
+                # ln k − init_entropy 由它算出），并作为首个 IG 差分的起点
+                with torch.no_grad():
+                    _, _, ev0 = reader.forward_states_evidence(
+                        [state], temperature=1.0, hc_list=hc,
+                        last_revealed=[last_revealed])
+                init_ent = _entropy_of_logits(ev0[0])
+                n_cls = int(ev0[0].shape[0])
+                prev_ent = init_ent
             while state.get_budget_used() < state._budget_limit:
                 if state.is_frontier_empty:
                     tp_node = teleport_if_stuck(state, rng=rng)
@@ -237,33 +262,17 @@ def main():
                         'info_gain': None, 'n_frontier': 0,
                         'teleport': True,
                     })
+                    pending_idx = step_idx
                     step_idx += 1
                     last_revealed = tp_node
                     continue
 
                 frontier = state.get_frontier_nodes()
                 deg_vals = [state.get_frontier_degree(v) for v in frontier]
-                # 信息增益：当前熵 − 揭示各候选后的熵（G_0 首步按 teacher 约定跳过）
-                ig_by_node = None
-                if not (len(state.V_revealed) == 1
-                        and len(state.revealed_edge_keys) == 0):
-                    cur_g, _ = builder.build(state)
-                    h_cur = ig_teacher._entropy(cur_g)
-                    cand_gs = [ig_teacher._build_candidate_subgraph(state, v)
-                               for v in frontier]
-                    batched = dgl.batch(cand_gs).to(device)
-                    nids = torch.zeros(batched.num_nodes(), dtype=torch.long,
-                                       device=device)
-                    with torch.no_grad():
-                        logits = classifier(batched, nids)
-                    probs_c = torch.softmax(logits, dim=-1)
-                    ents = -(probs_c * torch.log(probs_c + 1e-8)).sum(dim=-1)
-                    ig_by_node = {v: h_cur - float(ents[k])
-                                  for k, v in enumerate(frontier)}
 
                 with torch.no_grad():
                     if use_evidence:
-                        results, hc, _ = reader.forward_states_evidence(
+                        results, hc, ev_logits = reader.forward_states_evidence(
                             [state], temperature=1.0, hc_list=hc,
                             last_revealed=[last_revealed])
                     else:
@@ -271,6 +280,17 @@ def main():
                 _, probs, r_frontier = results[0]
                 if not r_frontier:
                     break
+
+                # 本步揭示前的 belief 熵；与上一道前向的熵作差即回填上一步
+                # 所选节点的 info_gain（H(b_t) − H(b_t+1)）
+                if use_evidence:
+                    cur_ent = _entropy_of_logits(ev_logits[0])
+                    if pending_idx is not None and prev_ent is not None:
+                        steps[pending_idx]['info_gain'] = round(
+                            prev_ent - cur_ent, 6)
+                    prev_ent = cur_ent
+                pending_idx = None
+
                 pos = (probs.argmax().item() if args.argmax
                        else torch.distributions.Categorical(probs).sample().item())
                 chosen = int(r_frontier[pos])
@@ -288,16 +308,12 @@ def main():
                     'degree_is_max': _is_max(deg_vals, cpos),
                     'cand_degree_mean': round(sum(deg_vals) / len(deg_vals), 4),
                     'cand_degree_max': int(max(deg_vals)),
-                    'info_gain': (None if ig_by_node is None
-                                  else round(ig_by_node[chosen], 6)),
+                    'info_gain': None,
                     'n_frontier': len(frontier),
                     'teleport': False,
                 }
-                if ig_by_node is not None:
-                    ig_vals = [ig_by_node[v] for v in frontier]
-                    rec['ig_rank_frac'] = round(_rank_mid_frac(ig_vals, pos), 4)
-                    rec['ig_is_max'] = _is_max(ig_vals, pos)
                 steps.append(rec)
+                pending_idx = step_idx
                 step_idx += 1
 
                 reveal_node(state, chosen)
@@ -310,6 +326,10 @@ def main():
                         [state], temperature=1.0, hc_list=hc,
                         last_revealed=[last_revealed])
                 ev_pred = int(final_ev[0].argmax(dim=-1).item())
+                # 末步所选节点的 info_gain：末步揭示前后的 belief 熵差
+                if pending_idx is not None and prev_ent is not None:
+                    steps[pending_idx]['info_gain'] = round(
+                        prev_ent - _entropy_of_logits(final_ev[0]), 6)
             else:
                 ev_pred = None
             sub_g, _ = builder.build(state)
@@ -323,6 +343,9 @@ def main():
                 'graph_idx': local_i, 'seed_i': seed_i, 'seed_node': int(seed_node),
                 'label': label, 'n_nodes': int(n_nodes), 'budget': B,
                 'n_steps': len(steps),
+                'init_entropy': (None if init_ent is None
+                                 else round(init_ent, 6)),
+                'n_classes': n_cls,
                 'ev_pred': ev_pred,
                 'ev_correct': (None if ev_pred is None else int(ev_pred == label)),
                 'clf_pred': clf_pred, 'clf_correct': int(clf_pred == label),
@@ -377,17 +400,17 @@ def summarize(records, config):
                 r['cand_degree_mean'] for r in policy_steps) / max(n, 1), 4)
         if m == 'info_gain':
             have = [r for r in policy_steps if r.get('info_gain') is not None]
-            entry['chosen_is_max_rate'] = round(sum(
-                1 for r in have if r.get('ig_is_max')) / len(have), 4) if have else None
-            entry['mean_rank_frac'] = round(sum(
-                r['ig_rank_frac'] for r in have)
-                / max(len(have), 1), 4) if have else None
             entry['coverage'] = round(len(have) / max(len(policy_steps), 1), 4)
         out[m] = entry
 
     grad_ig_corr = _pearson([r.get('grad_score') for r in policy_steps],
                             [r.get('info_gain') for r in policy_steps])
     out['pearson_grad_vs_info_gain'] = grad_ig_corr
+
+    # 种子信息增益（IG 面板 x=1）：ln k − G_0 初始 belief 熵
+    have_init = [g for g in records if g.get('init_entropy') is not None]
+    out['init_info_gain'] = _mean_std([
+        math.log(g['n_classes']) - g['init_entropy'] for g in have_init])[0]
 
     # 按读入进度分桶（step / budget 五分位）：早期 vs 后期选择偏好
     quintile = defaultdict(list)

@@ -7,10 +7,10 @@
   d = COLLAB chosen 节点真实信息增益（同 b 编码）
 差别只有画布：Nature 单栏 89mm 独立画布（合并图内每格仅 ~45mm）。合并
 图因格宽限制用的短说明文字与隔步刻度保持不变，保证单图与合并图逐要素
-一致；度数面板在单图内补上图例（合并图只在 a 格放一次）。
+一致；度数面板用曲线旁直接标注（无图例，见 draw_degree）。
 无面板字母（字母带由合并图/排版侧添加）。
 
-产物（写入 result/cross-dataset-figures/behavior/，各 pdf/png/svg）：
+产物（写入 result/cross-dataset-figures/behavior/choice/，各 pdf/png/svg）：
   choice_behavior_cifar10_degree.* / choice_behavior_cifar10_ig.*
   choice_behavior_collab_degree.*  / choice_behavior_collab_ig.*
   各 *.alignment.json（单面板 → NOT APPLICABLE 记录）
@@ -36,14 +36,14 @@ from plot_choice_behavior_1x4 import (  # noqa: E402
 )
 
 BASE = Path(__file__).resolve().parents[1] / 'result'
-OUT_DIR = BASE / 'cross-dataset-figures' / 'behavior'
+OUT_DIR = BASE / 'cross-dataset-figures' / 'behavior' / 'choice'
 
 FIG_W_IN, FIG_H_IN = 89 / 25.4, 58 / 25.4   # Nature 单栏 89mm
 DPI = 600
 
 PANELS = [
     dict(data='cif', kind='degree', stem='choice_behavior_cifar10_degree',
-         dataset='CIFAR10', explainer='Better connected early;\nless connected late'),
+         dataset='CIFAR10', explainer='Chosen stays at degree 1;\navailable candidates grow'),
     dict(data='cif', kind='ig', stem='choice_behavior_cifar10_ig',
          dataset='CIFAR10', annotations='cifar10'),
     dict(data='col', kind='degree', stem='choice_behavior_collab_degree',
@@ -63,7 +63,7 @@ def main():
         fig, ax = plt.subplots(figsize=(FIG_W_IN, FIG_H_IN))
         fig.subplots_adjust(left=0.135, right=0.97, top=0.90, bottom=0.20)
         if p['kind'] == 'degree':
-            draw_degree(ax, data[p['data']], p['dataset'], with_legend=True,
+            draw_degree(ax, data[p['data']], p['dataset'],
                         explainer=p['explainer'])
         else:
             draw_ig(ax, data[p['data']], p['dataset'], p['annotations'])

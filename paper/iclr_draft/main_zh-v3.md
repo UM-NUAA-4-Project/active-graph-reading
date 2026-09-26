@@ -132,7 +132,7 @@ $$
 
 ### 5.1 Experimental Setup
 
-我们在三个大规模图分类基准上评估：OGBG-PPA【REF：ogbg】、CIFAR10 超像素【REF：lrgb】与 COLLAB【REF：tudataset】。三者覆盖协议需要面对的不同结构形态：CIFAR10 超像素以节点特征为主、近似网格、直径有界；PPA 仅有 7 维边特征、平均 243 个节点；COLLAB 只有拓扑结构。指标为精度（%）。固定基线包括 Random、BFS、Max-Frontier-Degree、Random-Walk 四种揭示策略；适配基线包括 SAGPool、Soft-Mask 与 AgentNet，均被改造为符合协议的逐步选点器。冻结全图分类器提供每个数据集的上界，其在揭示子图上的精度作为参照头（acc_clf）报告。
+我们在三个大规模图分类基准上评估：OGBG-PPA【REF：ogbg】、CIFAR10 超像素【REF：cifar10】与 COLLAB【REF：tudataset】。三者覆盖协议需要面对的不同结构形态：CIFAR10 超像素以节点特征为主、近似网格、直径有界；PPA 仅有 7 维边特征、平均 243 个节点；COLLAB 只有拓扑结构。指标为精度（%）。固定基线包括 Random、BFS、Max-Frontier-Degree、Random-Walk 四种揭示策略；适配基线包括 SAGPool、Soft-Mask 与 AgentNet，均被改造为符合协议的逐步选点器。冻结全图分类器提供每个数据集的上界，其在揭示子图上的精度作为参照头（acc_clf）报告。
 
 **基线如何进入协议。** 四种固定策略与三个适配基线共用同一协议接口：每步只从当前前沿选一个未揭示端点，预算记账、种子公式与终判规则和学得方法完全一致，差异只在决定读取顺序的**选点规则**；SAGPool 与 Soft-Mask 的评分器被改造成逐步静态选择器，AgentNet 的游走被限制在前沿内，评测时由此产生的分布漂移是这些基线设定的一部分。完整适配细节见附录 A.2。终判口径依各方法原设计而定：固定策略与适配池化基线由冻结分类器终判；AgentNet 与本文方法一样自带分类头，按其原设计以自带读出头终判。
 
