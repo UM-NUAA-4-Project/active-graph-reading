@@ -73,6 +73,9 @@ def main():
                         help='终判口径：clf=冻结上界分类器（默认，P5 协议）；'
                              'own=策略自带头（仅 sagpool/softmask/agentnet，'
                              '冻结分类器改记 acc_clf_* 参照）')
+    parser.add_argument('--budget-ratios', type=float, nargs='+', default=None,
+                        help='预算比例档覆盖（默认用数据集 spec.budget_options；'
+                             '如 PPA 只跑 5%%：--budget-ratios 0.05）')
     parser.add_argument('--search-rollouts', type=int, default=20,
                         help='subgraphx MCTS rollout 数（对齐官方默认 20）')
     parser.add_argument('--search-expand', type=int, default=12,
@@ -88,7 +91,8 @@ def main():
     spec = get_dataset(args.dataset, root=args.root, splits=(),
                        max_graphs=args.max_graphs,
                        stratified=args.stratified).spec
-    budget_options = spec.budget_options
+    budget_options = (list(args.budget_ratios) if args.budget_ratios
+                      else spec.budget_options)
 
     classifier = load_classifier_frozen(eval_resolve(args.classifier), device)
     print(f"Classifier: {args.classifier}")
