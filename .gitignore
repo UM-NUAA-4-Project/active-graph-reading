@@ -58,3 +58,5 @@ code/result/**/*.png
 code/result/**/*.pdf
 code/result/**/*.svg
 code/result/**/*.tiff
+code/result/**/embedding_analysis/
+code/embedding_analysis/
