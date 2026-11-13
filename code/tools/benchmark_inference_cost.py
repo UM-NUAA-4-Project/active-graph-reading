@@ -2,15 +2,16 @@
 
 目的：量化预算感知采样（BAGR）相对全图分类与学习型基线的推理开销收益。
 同一评估协议（eval_loop.evaluate_fixed / evaluate_reader，与既有 eval JSON
-完全同口径）下逐系统计时 + 显存峰值采样，一次运行产出单 JSON：
+完全同口径）下逐系统计时 + 显存分解统计，一次运行产出单 JSON：
 
   code/result/{ds}/cost/benchmark_cost.json
     = {'config': {...图规模/协议参数...},
        'systems': {mode: {split: {wall_total_s, s_per_graph, s_per_rollout,
-                                  acc_*, gpu_peak_allocated_mib, rss_peak_mb,
-                                  n_params, ckpt_size_mb, ...}}},
+                                  acc_*, mem_model_mib, mem_step_*,
+                                  mem_judge_*, rss_peak_mb, n_params, ...}}},
        'comparison': {mode: {split: {time_ratio_vs_full_graph,
-                                     acc_delta_vs_full_graph, ...}}}}
+                                     acc_delta_vs_full_graph,
+                                     mem_model_ratio, mem_step_mean_ratio}}}}
 
 覆盖五类系统（--modes 任选，建议按下列顺序跑）：
 - full-graph  : 上界分类器整批前向（--classifier 即系统本体；全图上界口径）；
@@ -23,11 +24,29 @@
 - full-graph：dgl.batch + 传输 + 前向整循环（另记 forward_s 纯前向分解）；
 - 协议系统（基线/BAGR）：整次 evaluate_* 调用（rollout/lockstep + 子图
   构建 + 终判前向；BAGR 侧含冻结分类器参照前向，与现行 eval 流程一致）。
-内存口径：每系统重置 CUDA peak 统计后独立采样（allocated/reserved MiB）；
+显存口径（分解式，不报运行期总量峰值）：
+- mem_model_mib   : 模型参数+buffer 常驻显存（numel×element_size 精确累计；
+  协议系统共用的冻结分类器裁判不计入各系统，其字节数记
+  config.judge_model_mib）；
+- mem_step_*      : 每步前沿子图瞬态显存——每次步进前向内
+  (peak_allocated − 调用前已分配) 的均值/中位/最大（MiB）：基线 = select
+  内可见子图 H2D+打分前向（agentnet 首步另含 per-graph 静态缓存构建，
+  缓存之后常驻、见 mem_resident_nonmodel_mib）；BAGR = lockstep 批子图
+  前向（≤chunk_size 个子图/次）；full-graph = 整批全图 H2D+前向
+  （无前沿概念，步 = 批）；
+- mem_judge_*     : 终局分类瞬态（批量前向：BAGR 终局证据前向 + 冻结
+  分类器批；基线 = 冻结分类器批 + own 头批）；
+- mem_resident_nonmodel_mib : 评估结束仍常驻的非模型显存（agentnet 的
+  per-graph 缓存等）；
+- mem_series      : 单图单步序列（步号 = 已揭示节点数+1，JSON per_step 给
+  逐步跨图 mean/std/n）：基线在主趟 select 直接打标签；BAGR 另跑
+  chunk_size=1 序列趟（lockstep 批的瞬态无法归到单图）；full-graph 无步
+  概念，只有每图近似（整批瞬态÷批内图数）。绘图见
+  code/comparison/plot_mem_series.py。
 CPU RSS 用 psutil 后台线程 50ms 采样峰值（次要指标，缺 psutil 自动跳过）。
 
-公平性注意：协议系统按协议跑 budgets × n_seeds 个 rollout/图（默认
-3 × 4 = 12），s_per_rollout 已按 rollout 数归一，可跨系统直接比。
+公平性注意：协议系统按协议跑 budgets × n_seeds 个 rollout/图，统计口径
+3 预算档 × 1 seed；s_per_rollout 已按 rollout 数归一，可跨系统直接比。
 
 用法:
   # 冒烟（小样本 + 1 seed，验证管线）
@@ -35,13 +54,15 @@ CPU RSS 用 psutil 后台线程 50ms 采样峰值（次要指标，缺 psutil �
       --root D:\\data\\superpixels --max-graphs 40 --n-seeds 1 \
       --classifier <cls.pt> --bagr-ckpt <rl.pt>
 
-  # 正式（cifar10 全量 test）
+  # 统计口径（test 随机 1000 图 = 分层抽样、每图 1 seed）
   python code/tools/benchmark_inference_cost.py --dataset cifar10 \
-      --root D:\\data\\superpixels --classifier <cls.pt> --bagr-ckpt <rl.pt>
+      --root D:\\data\\superpixels --max-graphs 1000 --stratified \
+      --n-seeds 1 --classifier <cls.pt> --bagr-ckpt <rl.pt>
 
-  # 正式（collab：本地 8GB 卡必须调小 ref-batch/chunk，参照既有 collab eval）
+  # collab（本地 8GB 卡必须调小 ref-batch/chunk，参照既有 collab eval）
   python code/tools/benchmark_inference_cost.py --dataset collab \
-      --root D:\\data\\COLLAB --ref-batch-size 4 --chunk-size 4 \
+      --root D:\\data\\COLLAB --max-graphs 1000 --stratified --n-seeds 1 \
+      --ref-batch-size 4 --chunk-size 4 \
       --classifier <cls.pt> --bagr-ckpt <rl.pt>
 
 基线 scorer 缺省读 baseline/artifacts/{ds}/{mode}.pt（--sagpool-ckpt 等可覆盖）。
@@ -51,9 +72,11 @@ PPA 后续补跑需 --max-graphs（协议同 eval）。
 import argparse
 import gc
 import os
+import statistics
 import sys
 import threading
 import time
+from collections import defaultdict
 from pathlib import Path
 
 _CODE_DIR = Path(__file__).resolve().parents[1]
@@ -127,16 +150,166 @@ def _sync(device):
         torch.cuda.synchronize(device)
 
 
-def _gpu_reset_peak(device):
-    if device.type == 'cuda':
-        torch.cuda.reset_peak_memory_stats(device)
+class _StepMemRecorder:
+    """步进/终判前向的瞬态显存记录（分解式显存口径的核心）。
+
+    wrap() 包住每次前向入口：调用前记录 memory_allocated 并重置峰值计数
+    （计数器在调用间不残留，故本脚本不再输出总量峰值），调用后取
+    (peak − before) 为该次前向的瞬态 MiB，按 bucket 分桶累积：
+    - 'step'  : 每步前沿子图前向（基线 select / BAGR lockstep 批 /
+      full-graph 整批）；
+    - 'judge' : 终局分类批前向（冻结分类器批 / own 头批 / BAGR 终局证据
+      前向）。
+    big_threshold 不为 None 时按首个参数（states/subgraphs 列表）长度分桶
+    （> 阈值 → 'judge'）：区分 BAGR 的 lockstep 批与终局全状态批。
+    tag_fn(args, mib, rec) 不为 None 时逐调用回填单图单步序列（rec.series，
+    元素 {'step','b','mib'}；步号 = 已揭示节点数+1，可跨图对齐求均值±方差；
+    tag_fn 自行决定是否入序列，如 bagr 序列趟的终局前向不入）。
+    CPU 设备为 no-op（样本恒空）。
+    """
+
+    def __init__(self, device):
+        self.device = device
+        self.enabled = device.type == 'cuda'
+        self.samples = {'step': [], 'judge': []}
+        self.series = []          # 单图单步序列（tag_fn 回填）
+        self.terminal_n = 0       # 序列趟中判为终局的前向数（不入曲线）
+        self.batch_samples = []   # full-graph 专用：(瞬态MiB, 批内图数)
+        self.net_floor_mib = 0.0  # 序列趟固定底（如 cuDNN LSTM workspace）
+
+    def wrap(self, fn, bucket='step', big_threshold=None, tag_fn=None):
+        if not self.enabled:
+            return fn
+        device = self.device
+        rec = self
+
+        def _inner(*args, **kwargs):
+            before = torch.cuda.memory_allocated(device)
+            torch.cuda.reset_peak_memory_stats(device)
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                peak = torch.cuda.max_memory_allocated(device)
+                mib = (peak - before) / 2 ** 20
+                b = bucket
+                if big_threshold is not None and args:
+                    first = args[0]
+                    if hasattr(first, '__len__') and len(first) > big_threshold:
+                        b = 'judge'
+                rec.samples[b].append(mib)
+                if tag_fn is not None:
+                    tag_fn(args, mib, rec)
+        return _inner
+
+    def stats(self):
+        out = {}
+        for bucket, arr in self.samples.items():
+            if not arr:
+                continue
+            s = sorted(arr)
+            n = len(s)
+            out[f'mem_{bucket}_mean_mib'] = round(sum(s) / n, 2)
+            out[f'mem_{bucket}_median_mib'] = round(s[n // 2], 2)
+            out[f'mem_{bucket}_max_mib'] = round(s[-1], 2)
+            out[f'mem_{bucket}_n'] = n
+        return out
 
 
-def _gpu_peak_mib(device):
-    if device.type != 'cuda':
-        return None, None
-    return (torch.cuda.max_memory_allocated(device) / 2 ** 20,
-            torch.cuda.max_memory_reserved(device) / 2 ** 20)
+def _select_series_tag(args, mib, rec):
+    """基线 select 序列标签：args[0]=GraphState，步号 = 已揭示数+1。"""
+    st = args[0]
+    rec.series.append({'step': st.get_budget_used() + 1,
+                       'b': st._budget_limit, 'mib': round(mib, 4)})
+
+
+def _bagr_series_tag(args, mib, rec):
+    """bagr 序列趟标签：states 长度须为 1（chunk=1）；终局前向不入曲线。
+
+    mib_net = 总瞬态 − rec.net_floor_mib（实测固定底，如 cuDNN LSTM
+    每调用 workspace——与输入无关的实现开销，2026-11-13 诊断：单步
+    (1,1,hidden) 输入即占 ~8.5 MiB）。
+    """
+    states = args[0]
+    if len(states) != 1:
+        return
+    st = states[0]
+    used = st.get_budget_used()
+    if used >= st._budget_limit:
+        rec.terminal_n += 1
+        return
+    rec.series.append({'step': used + 1, 'b': st._budget_limit,
+                       'mib': round(mib, 4),
+                       'mib_net': round(max(mib - rec.net_floor_mib, 0), 4)})
+
+
+def _measure_lstm_floor(reader, device):
+    """实测证据 LSTM 的固定每调用 workspace（MiB；首调含 cuDNN 初始化，
+    取预热后稳定值；no_lstm/v1 或无 LSTM 返回 0）。"""
+    lstm = getattr(reader, 'evidence_lstm', None)
+    if lstm is None or getattr(reader, 'evidence_variant', ''
+                               ) in ('no_lstm', 'v1'):
+        return 0.0
+    d = reader.config.hidden_dim
+    x = torch.zeros(1, 1, d, device=device)
+    hx = (torch.zeros(1, 1, d, device=device),
+          torch.zeros(1, 1, d, device=device))
+    floors = []
+    with torch.no_grad():
+        for _ in range(4):
+            before = torch.cuda.memory_allocated(device)
+            torch.cuda.reset_peak_memory_stats(device)
+            lstm(x, hx)
+            floors.append((torch.cuda.max_memory_allocated(device)
+                           - before) / 2 ** 20)
+    return round(floors[-1], 3)
+
+
+def _series_stats(series, terminal_n, net_floor_mib=None):
+    """单图单步序列 → 逐步跨图统计（mean/std/n，含可选净口径）+ 预算分布。"""
+    by_step = defaultdict(list)
+    by_step_net = defaultdict(list)
+    b_count = defaultdict(int)
+    for r in series:
+        by_step[r['step']].append(r['mib'])
+        if 'mib_net' in r:
+            by_step_net[r['step']].append(r['mib_net'])
+        b_count[r['b']] += 1
+    per_step = {}
+    for t in sorted(by_step):
+        v = by_step[t]
+        e = {'mean': round(sum(v) / len(v), 3),
+             'std': round(statistics.pstdev(v), 3),
+             'n': len(v)}
+        if by_step_net:
+            vn = by_step_net[t]
+            e['mean_net'] = round(sum(vn) / len(vn), 3)
+            e['std_net'] = round(statistics.pstdev(vn), 3)
+        per_step[str(t)] = e
+    out = {'per_step': per_step,
+           'b_distribution': {str(k): v
+                              for k, v in sorted(b_count.items())},
+           'n_samples': len(series),
+           'terminal_forwards': terminal_n,
+           'note': '单图单步瞬态显存（步号=已揭示节点数+1，跨图对齐）；'
+                   'std 为跨图总体标准差'}
+    if by_step_net:
+        out['net_floor_mib'] = net_floor_mib
+        out['net_note'] = ('mean_net/std_net = 总瞬态 − 实测固定底'
+                           f'（cuDNN LSTM 每调用 workspace {net_floor_mib} MiB，'
+                           '与输入无关的实现开销，见 '
+                           'tools/benchmark_inference_cost._measure_lstm_floor）；'
+                           '基线无此底，不加扣')
+    return out
+
+
+def _model_bytes(model):
+    """模型参数+buffer 的精确字节数（常驻显存口径）。"""
+    total = 0
+    for p in model.parameters():
+        total += p.numel() * p.element_size()
+    for b in model.buffers():
+        total += b.numel() * b.element_size()
+    return total
 
 
 def _rss_now():
@@ -208,19 +381,24 @@ def _agent_model(agent):
 # ---------------------------------------------------------------- 各系统基准
 
 @torch.no_grad()
-def bench_full_graph(classifier, graphs, labels, device, batch_size):
+def bench_full_graph(classifier, graphs, labels, device, batch_size, rec):
     """全图分类器批量推理（口径同 evaluate_classifier_full + 分段计时）。
 
     返回 (acc, wall_total_s, forward_s, n_batches)：wall 含 dgl.batch/H2D
-    传输（端到端），forward_s 为纯前向分解。
+    传输（端到端），forward_s 为纯前向分解。每批的 H2D+前向瞬态记入 rec
+    的 'step' 桶（full-graph 无前沿子图概念，步 = 批，与基线 select 同级）。
     """
     classifier.eval()
     correct = total = n_batches = 0
     forward_s = 0.0
+    on_gpu = rec.enabled
     _sync(device)
     t0 = time.perf_counter()
     for start in range(0, len(graphs), batch_size):
         chunk = graphs[start:start + batch_size]
+        before = torch.cuda.memory_allocated(device) if on_gpu else 0
+        if on_gpu:
+            torch.cuda.reset_peak_memory_stats(device)
         batch_g = dgl.batch(chunk).to(device)
         nids = torch.zeros(batch_g.num_nodes(), dtype=torch.long, device=device)
         y = labels[start:start + batch_size].to(device)
@@ -229,6 +407,10 @@ def bench_full_graph(classifier, graphs, labels, device, batch_size):
         logits = classifier(batch_g, nids)
         _sync(device)
         forward_s += time.perf_counter() - tf
+        if on_gpu:
+            peak = torch.cuda.max_memory_allocated(device)
+            rec.samples['step'].append((peak - before) / 2 ** 20)
+            rec.batch_samples.append(((peak - before) / 2 ** 20, len(chunk)))
         correct += (logits.argmax(dim=-1) == y).sum().item()
         total += len(y)
         n_batches += 1
@@ -311,6 +493,15 @@ def main():
                      / 'benchmark_cost.json')
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # 冻结分类器裁判的常驻字节（各协议系统共用，单列不计入系统模型显存；
+    # CPU 加载读 numel×element_size，与 GPU 常驻字节一致）
+    _judge_clf_cpu = load_classifier_frozen(classifier_path,
+                                            torch.device('cpu'))
+    judge_model_mib = round(_model_bytes(_judge_clf_cpu) / 2 ** 20, 2)
+    judge_model_bytes = judge_model_mib * 2 ** 20
+    del _judge_clf_cpu
+    gc.collect()
+
     config = {
         'dataset': spec.name,
         'splits': list(args.splits),
@@ -336,6 +527,15 @@ def main():
         'timing_note': '协议系统 wall = 整次 evaluate_* 调用（rollout + 子图构建 '
                        '+ 终判前向，BAGR 含冻结分类器参照前向）；full-graph wall '
                        '= dgl.batch+传输+前向整循环（forward_s 为纯前向分解）',
+        'judge_model_mib': judge_model_mib,
+        'memory_note': '显存分解口径（不报总量峰值）：mem_model_mib=系统自身模型'
+                       '参数+buffer 常驻字节；mem_step_*＝每次步进前向的峰值瞬态'
+                       '（基线 select 含可见子图 H2D，agentnet 首步含 per-graph '
+                       '缓存构建；BAGR=lockstep 批 ≤chunk_size；full-graph 步=批）；'
+                       'mem_judge_*＝终局分类批前向瞬态；'
+                       'mem_resident_nonmodel_mib=结束时仍常驻的非模型显存'
+                       '（已扣除系统模型与裁判分类器字节，agentnet 缓存落在'
+                       '此列）',
     }
     json_out = {'config': config, 'systems': {}}
 
@@ -357,10 +557,10 @@ def main():
 
         for mode in args.modes:
             print(f"\n--- [{split}] {mode} ---")
-            _gpu_reset_peak(device)
             rss_before = _rss_now()
             sampler = _RssPeakSampler()
             sampler_ok = sampler.start()
+            rec = _StepMemRecorder(device)
 
             metrics = {'n_graphs': len(graphs)}
             handles = []
@@ -371,10 +571,12 @@ def main():
                     metrics['n_params'] = _n_params(clf)
                     metrics['ckpt_size_mb'] = round(
                         _ckpt_size_mb(classifier_path) or 0, 2)
+                    metrics['mem_model_mib'] = round(
+                        _model_bytes(clf) / 2 ** 20, 2)
                     _sync(device)
                     t0 = time.perf_counter()
                     acc, wall, forward_s, _ = bench_full_graph(
-                        clf, graphs, labels, device, args.ref_batch_size)
+                        clf, graphs, labels, device, args.ref_batch_size, rec)
                     wall = time.perf_counter() - t0   # 含构建/传输的端到端
                     metrics.update({'acc': round(acc, 6),
                                     'wall_total_s': round(wall, 3),
@@ -387,10 +589,20 @@ def main():
                         eval_resolve(args.bagr_ckpt), device,
                         stochastic=False, temperature=1.0)
                     handles += [clf, reader]
+                    # 步 = lockstep 批前向（≤chunk_size）；终局全状态批按
+                    # 长度归 judge 桶；冻结分类器参照批 = judge
+                    reader.forward_states_evidence = rec.wrap(
+                        reader.forward_states_evidence,
+                        big_threshold=args.chunk_size)
+                    reader.forward_states = rec.wrap(
+                        reader.forward_states, big_threshold=args.chunk_size)
+                    clf.forward = rec.wrap(clf.forward, bucket='judge')
                     metrics['n_params'] = _n_params(reader)
                     metrics['ckpt_size_mb'] = round(
                         _ckpt_size_mb(eval_resolve(args.bagr_ckpt)) or 0, 2)
                     metrics['reader_kind'] = reader.config.kind
+                    metrics['mem_model_mib'] = round(
+                        _model_bytes(reader) / 2 ** 20, 2)
                     _sync(device)
                     t0 = time.perf_counter()
                     results = evaluate_reader(
@@ -413,9 +625,22 @@ def main():
                     clf = load_classifier_frozen(classifier_path, device)
                     agent = load_baseline_agent(mode, eval_resolve(ckpt), device)
                     handles += [clf, agent]
+                    # 步 = select（含可见子图 H2D+打分前向，单图/次）→
+                    # 顺带记逐步序列；终判批 = judge
+                    agent.select = rec.wrap(agent.select, bucket='step',
+                                            tag_fn=_select_series_tag)
+                    clf.forward = rec.wrap(clf.forward, bucket='judge')
+                    if hasattr(agent, 'own_predict_batch'):
+                        agent.own_predict_batch = rec.wrap(
+                            agent.own_predict_batch, bucket='judge')
+                    elif hasattr(agent, 'own_predict'):
+                        agent.own_predict = rec.wrap(
+                            agent.own_predict, bucket='judge')
                     am = _agent_model(agent)
                     if am is not None:
                         metrics['n_params'] = _n_params(am)
+                        metrics['mem_model_mib'] = round(
+                            _model_bytes(am) / 2 ** 20, 2)
                     metrics['ckpt_size_mb'] = round(_ckpt_size_mb(ckpt) or 0, 2)
                     _sync(device)
                     t0 = time.perf_counter()
@@ -434,11 +659,26 @@ def main():
                                        for k, v in acc_keys.items()}})
 
                 wall = metrics['wall_total_s']
-                alloc_mib, reserved_mib = _gpu_peak_mib(device)
-                metrics['gpu_peak_allocated_mib'] = (round(alloc_mib, 1)
-                                                     if alloc_mib else None)
-                metrics['gpu_peak_reserved_mib'] = (round(reserved_mib, 1)
-                                                    if reserved_mib else None)
+                if rec.enabled:
+                    resident_after = torch.cuda.memory_allocated(device)
+                    model_bytes = metrics.get('mem_model_mib', 0) * 2 ** 20
+                    nonmodel = resident_after - model_bytes - judge_model_bytes
+                    metrics['mem_resident_nonmodel_mib'] = round(
+                        max(nonmodel, 0) / 2 ** 20, 2)
+                metrics.update(rec.stats())
+                if rec.series:
+                    metrics['mem_series'] = _series_stats(rec.series,
+                                                          rec.terminal_n)
+                if rec.batch_samples:
+                    per_graph = [m / n for m, n in rec.batch_samples]
+                    metrics['mem_per_graph_batch_mean_mib'] = round(
+                        sum(per_graph) / len(per_graph), 2)
+                    metrics['mem_per_graph_batch_std_mib'] = round(
+                        statistics.pstdev(per_graph), 2)
+                    metrics['mem_per_graph_batch_n'] = len(per_graph)
+                    metrics['mem_per_graph_batch_approx'] = (
+                        '整批瞬态÷批内图数的每图近似（批前向含固定开销，'
+                        '非严格线性）')
                 metrics['rss_before_mb'] = (round(rss_before, 1)
                                             if rss_before else None)
                 rss_peak = sampler.stop()
@@ -455,11 +695,48 @@ def main():
                       f"({metrics['s_per_graph'] * 1000:.1f} ms/图"
                       + (f", {metrics['s_per_rollout'] * 1000:.1f} ms/rollout"
                          if metrics['s_per_rollout'] else '')
-                      + f")  gpu_peak={metrics['gpu_peak_allocated_mib']}MiB"
+                      + f")  模型={metrics.get('mem_model_mib')}MiB"
+                      f" 步均={metrics.get('mem_step_mean_mib')}MiB"
+                      f" 终判均={metrics.get('mem_judge_mean_mib')}MiB"
                       f"  params={metrics.get('n_params')}")
             finally:
                 _cleanup(device, *handles)
                 sampler.stop()
+
+        # ---- BAGR 单图序列趟（chunk=1）：每图逐步前沿子图显存曲线 ----
+        # 时间/精度口径以主趟为准；本趟只补单图单步序列——lockstep 批的
+        # 瞬态无法归到单图（各步批大小不同），须逐图前向重采
+        if ('bagr' in args.modes
+                and json_out['systems'].get('bagr', {}).get(split)
+                and device.type == 'cuda'):
+            print(f"\n--- [{split}] bagr 序列趟（chunk_size=1，单图逐步曲线）---")
+            rec_s = _StepMemRecorder(device)
+            clf = load_classifier_frozen(classifier_path, device)
+            reader = load_reader_from_checkpoint(
+                eval_resolve(args.bagr_ckpt), device,
+                stochastic=False, temperature=1.0)
+            reader.forward_states_evidence = rec_s.wrap(
+                reader.forward_states_evidence, tag_fn=_bagr_series_tag)
+            reader.forward_states = rec_s.wrap(
+                reader.forward_states, tag_fn=_bagr_series_tag)
+            rec_s.net_floor_mib = _measure_lstm_floor(reader, device)
+            try:
+                evaluate_reader(reader, clf, builder, graphs, labels,
+                                budget_options, device, args.argmax,
+                                chunk_size=1, n_seeds=args.n_seeds)
+            finally:
+                _cleanup(device, clf, reader)
+            if rec_s.series:
+                json_out['systems']['bagr'][split]['mem_series'] = \
+                    _series_stats(rec_s.series, rec_s.terminal_n,
+                                  rec_s.net_floor_mib)
+                save_json(json_out, out_path)
+                steps = sorted(
+                    int(t) for t in
+                    json_out['systems']['bagr'][split]['mem_series']['per_step'])
+                print(f"[{split}] bagr 序列: {len(rec_s.series)} 样本, "
+                      f"步号 1..{steps[-1]}, "
+                      f"终局前向 {rec_s.terminal_n} 个（不入曲线）")
 
         release_dataset(ds)
         gc.collect()
@@ -481,9 +758,13 @@ def main():
                 'time_ratio_vs_full_graph': round(
                     m['s_per_graph'] / ref['s_per_graph'], 3),
                 'acc_delta_vs_full_graph': round(acc_m - ref['acc'], 6),
-                'gpu_mem_ratio_vs_full_graph': round(
-                    m['gpu_peak_allocated_mib'] / ref['gpu_peak_allocated_mib'], 3)
-                if m['gpu_peak_allocated_mib'] and ref['gpu_peak_allocated_mib']
+                'mem_model_ratio_vs_full_graph': round(
+                    m['mem_model_mib'] / ref['mem_model_mib'], 3)
+                if m.get('mem_model_mib') and ref.get('mem_model_mib')
+                else None,
+                'mem_step_mean_ratio_vs_full_graph': round(
+                    m['mem_step_mean_mib'] / ref['mem_step_mean_mib'], 3)
+                if m.get('mem_step_mean_mib') and ref.get('mem_step_mean_mib')
                 else None,
             }
     json_out['comparison'] = comparison
@@ -496,18 +777,27 @@ def main():
         if not rows:
             continue
         print(f"\n==== 推理成本汇总 [{split}] ====")
-        print(f"{'mode':<12}{'acc':>8}{'ms/图':>10}{'ms/rollout':>12}"
-              f"{'gpu_peak(MiB)':>15}{'params':>12}{'ckpt(MB)':>10}")
+        print(f"{'mode':<12}{'acc':>8}{'ms/图':>9}{'ms/rollout':>12}"
+              f"{'模型MiB':>9}{'步均MiB':>9}{'终判MiB':>9}"
+              f"{'params':>10}{'ckpt(MB)':>10}")
         for mode, m in rows:
             acc = m.get('acc', m.get('acc_overall'))
             acc_s = f"{acc:.4f}" if acc is not None else '-'
             msr = (f"{m['s_per_rollout'] * 1000:.1f}"
                    if m.get('s_per_rollout') else '-')
+            mm = m.get('mem_model_mib')
+            mm_s = f"{mm:.1f}" if mm is not None else '-'
+            ms_ = m.get('mem_step_mean_mib')
+            ms_s = f"{ms_:.2f}" if ms_ is not None else '-'
+            mj = m.get('mem_judge_mean_mib')
+            mj_s = f"{mj:.2f}" if mj is not None else '-'
             params = m.get('n_params')
             params_s = f"{params / 1e6:.2f}M" if params else '-'
-            print(f"{mode:<12}{acc_s:>8}{m['s_per_graph'] * 1000:>10.1f}"
-                  f"{msr:>12}{str(m['gpu_peak_allocated_mib']):>15}"
-                  f"{params_s:>12}{str(m.get('ckpt_size_mb')):>10}")
+            ckpt = m.get('ckpt_size_mb')
+            ckpt_s = f"{ckpt:.2f}" if ckpt is not None else '-'
+            print(f"{mode:<12}{acc_s:>8}{m['s_per_graph'] * 1000:>9.1f}"
+                  f"{msr:>12}{mm_s:>9}{ms_s:>9}{mj_s:>9}"
+                  f"{params_s:>10}{ckpt_s:>10}")
         if comparison:
             print("\n-- vs full-graph（同 split）--")
             for mode, per in comparison.items():
@@ -515,7 +805,8 @@ def main():
                     c = per[split]
                     print(f"{mode:<12} 时间×{c['time_ratio_vs_full_graph']}"
                           f"  acc{c['acc_delta_vs_full_graph']:+.4f}"
-                          f"  显存×{c['gpu_mem_ratio_vs_full_graph']}")
+                          f"  模型显存×{c['mem_model_ratio_vs_full_graph']}"
+                          f"  步均显存×{c['mem_step_mean_ratio_vs_full_graph']}")
 
     print(f"\nJSON saved to {out_path}")
 

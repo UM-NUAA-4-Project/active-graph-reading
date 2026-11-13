@@ -60,3 +60,4 @@ code/result/**/*.svg
 code/result/**/*.tiff
 code/result/**/embedding_analysis/
 code/embedding_analysis/
+*.csv
