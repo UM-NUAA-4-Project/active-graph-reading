@@ -4,9 +4,9 @@
 #
 # 执行内容:
 #   1. Ubuntu apt 换源 (阿里云, 自动识别版本代号)
-#   2. 安装 tmux
-#   3. pip 换源 (清华)
-#   4. conda 换源 (清华)
+#   2. 安装 tmux + curl
+#   3. pip 换源 (阿里云)
+#   4. conda 换源 (运行时探测可达镜像: NJU/USTC/SJTU/TUNA, 并同步 environment-linux.yml)
 #   5. 创建 conda 环境 gnn (code/environment-linux.yml)
 #   6. 验证环境 (import torch / dgl / ogb / torch_geometric)
 #
@@ -56,19 +56,19 @@ info "apt-get update ..."
 sudo apt-get update
 log "apt 源更新完成"
 
-# ---- 2. 安装 tmux ----
-info "安装 tmux ..."
-sudo apt-get install -y tmux
-log "tmux 安装完成"
+# ---- 2. 安装 tmux + curl ----
+info "安装 tmux curl ..."
+sudo apt-get install -y tmux curl
+log "tmux/curl 安装完成"
 
-# ---- 3. pip 换源（清华）----
+# ---- 3. pip 换源（阿里云；清华源在部分机房不可达，与 apt/conda 源保持同家）----
 mkdir -p "$HOME/.config/pip"
 cat > "$HOME/.config/pip/pip.conf" <<'EOF'
 [global]
-index-url = https://pypi.tuna.tsinghua.edu.cn/simple
-trusted-host = pypi.tuna.tsinghua.edu.cn
+index-url = https://mirrors.aliyun.com/pypi/simple/
+trusted-host = mirrors.aliyun.com
 EOF
-log "pip 源已设为清华 ($HOME/.config/pip/pip.conf)"
+log "pip 源已设为阿里云 ($HOME/.config/pip/pip.conf)"
 
 # ---- 4. 定位 conda ----
 CONDA_ROOT=""
@@ -84,28 +84,76 @@ if [[ -z "$CONDA_ROOT" ]]; then
         fi
     done
 fi
-[[ -n "$CONDA_ROOT" ]] || die "未找到 conda。请先安装 Miniconda（清华镜像: https://mirrors.tuna.tsinghua.edu.cn/anaconda/miniconda/）"
+[[ -n "$CONDA_ROOT" ]] || die "未找到 conda。请先安装 Miniconda（阿里云镜像: https://mirrors.aliyun.com/anaconda/miniconda/）"
 source "$CONDA_ROOT/etc/profile.d/conda.sh" 2>/dev/null || die "无法加载 $CONDA_ROOT/etc/profile.d/conda.sh"
 command -v conda >/dev/null 2>&1 || die "conda 加载失败"
 log "conda 根目录: $CONDA_ROOT"
 
-# ---- 5. conda 换源（清华）----
-info "配置 conda 清华源 ..."
+# ---- 5. conda 换源（运行时探测可达镜像）----
+# 背景：conda env create -f 会把 .condarc 与 yml 的 channels 取并集，任何一路
+# 不可达（HTTP 000，机房差异：如阿里云 anaconda 树已下线、BFSU 重定向回清华、
+# 部分主机连不上清华）整个 solve 即失败；具名源（pytorch/conda-forge/defaults）
+# 还会走 repo.anaconda.com 外网。因此：探测选一个本机可达的镜像 base，.condarc
+# 与 yml（临时副本）统一换成同一套 URL。
+# 候选序 = 实测直连性（NJU 全直连 > USTC conda-forge 直连/另两路 302→NJU >
+# SJTU 302→jcloud OSS > TUNA；BFSU 302→TUNA 与清华同命，不列）。
+pick_conda_mirror() {
+    local base cf main
+    for base in \
+        https://mirror.nju.edu.cn/anaconda \
+        https://mirrors.ustc.edu.cn/anaconda \
+        https://mirror.sjtu.edu.cn/anaconda \
+        https://mirrors.tuna.tsinghua.edu.cn/anaconda; do
+        cf=$(curl -sL -o /dev/null -w '%{http_code}' -r 0-99 -m 10 \
+             "$base/cloud/conda-forge/noarch/repodata.json" 2>/dev/null || echo 000)
+        main=$(curl -sL -o /dev/null -w '%{http_code}' -r 0-99 -m 10 \
+               "$base/pkgs/main/noarch/repodata.json" 2>/dev/null || echo 000)
+        if [[ "$cf" == 20* && "$main" == 20* ]]; then
+            echo "$base"; return 0
+        fi
+        info "镜像不可达，换下一个: $base (conda-forge=$cf pkgs/main=$main)"
+    done
+    return 1
+}
+
+info "探测可用的 conda 镜像 ..."
+MIRROR_BASE="$(pick_conda_mirror)" \
+    || die "所有候选 conda 镜像均不可达。请手动配置 ~/.condarc（三路 channels：任一可达镜像的 /cloud/pytorch、/cloud/conda-forge、/pkgs/main）后重跑"
+log "conda 镜像选定: $MIRROR_BASE"
+
+info "配置 conda 源 ..."
 conda config --remove-key channels 2>/dev/null || true  # 先清空，重复执行不产生重复条目
-conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/pkgs/main/
-conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/
-conda config --add channels https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/pytorch/
+conda config --add channels "$MIRROR_BASE/pkgs/main/"
+conda config --add channels "$MIRROR_BASE/cloud/conda-forge/"
+conda config --add channels "$MIRROR_BASE/cloud/pytorch/"
 conda config --set show_channel_urls yes
-log "conda 源已配置（优先级: pytorch > conda-forge > free > main）"
+log "conda 源已配置（优先级: pytorch > conda-forge > main，base=$MIRROR_BASE）"
 
 # ---- 6. 创建 conda 环境 ----
 [[ -f "$ENV_YML" ]] || die "环境文件不存在: $ENV_YML"
 if conda env list | awk '{print $1}' | grep -qx 'gnn'; then
     log "环境 gnn 已存在，跳过创建（如需重建: conda env remove -n gnn 后重跑本脚本）"
 else
+    # yml 缺省 base（NJU）与探测结果不一致时生成临时副本替换，确保 env create
+    # 用的三路 channel 与 .condarc 完全一致（避免并集拉到不可达源）
+    ENV_YML_USE="$ENV_YML"
+    YML_DEFAULT_BASE="https://mirror.nju.edu.cn/anaconda"
+    if [[ "$MIRROR_BASE" != "$YML_DEFAULT_BASE" ]]; then
+        ENV_YML_USE="$(mktemp --suffix=.yml)"
+        sed "s|$YML_DEFAULT_BASE|$MIRROR_BASE|g" "$ENV_YML" > "$ENV_YML_USE"
+        log "yml channels 已替换为 $MIRROR_BASE（临时副本: $ENV_YML_USE）"
+    fi
+    # pip 侧外源可达性预检（torch+cu121 / dgl / pyg 轮子只在官方源，无国内镜像）
+    for h in https://download.pytorch.org/whl/cu121/ \
+             https://data.dgl.ai/wheels/torch-2.3/cu121/repo.html \
+             https://data.pyg.org/whl/torch-2.3.0+cu121.html; do
+        curl -fsSL -o /dev/null -m 10 "$h" 2>/dev/null \
+            || echo -e "\033[1;33m[WARN]\033[0m pip 依赖的外源不可达（环境创建会在 pip 段失败）: $h"
+    done
     info "创建 conda 环境 gnn（首次下载数 GB，耗时较长）..."
-    conda env create -f "$ENV_YML"
+    conda env create -f "$ENV_YML_USE"
     log "环境 gnn 创建完成"
+    [[ "$ENV_YML_USE" == "$ENV_YML" ]] || rm -f "$ENV_YML_USE"
 fi
 
 # ---- 7. 验证环境 ----

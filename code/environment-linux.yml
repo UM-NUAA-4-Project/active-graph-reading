@@ -1,9 +1,12 @@
 name: gnn
+# channels 用镜像 URL 而非具名源（具名源走 repo.anaconda.com 外网，部分机房不可达；
+# 阿里云 anaconda 树已下线、BFSU 重定向回清华）。缺省 NJU（全直连实测可用）；
+# setup_env.sh 会运行时探测本机可达镜像并把本文件三处 URL 统一替换成同一 base。
+# 不用 defaults/nvidia：CUDA 由 pip 的 +cu121 轮子提供，不走 conda cuda 包。
 channels:
-  - pytorch
-  - nvidia
-  - conda-forge
-  - defaults
+  - https://mirror.nju.edu.cn/anaconda/cloud/pytorch/
+  - https://mirror.nju.edu.cn/anaconda/cloud/conda-forge/
+  - https://mirror.nju.edu.cn/anaconda/pkgs/main/
 dependencies:
   - python=3.10
   - pip
@@ -23,7 +26,6 @@ dependencies:
   - intel-openmp=2021.4.0
   - pydantic=2.13.4
   - pip:
-      - --extra-index-url https://download.pytorch.org/whl/cu121
       - --extra-index-url https://download.pytorch.org/whl/cu121
       - torch==2.3.0+cu121
       - torchvision==0.18.0+cu121
