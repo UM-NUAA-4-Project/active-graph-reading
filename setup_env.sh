@@ -163,12 +163,18 @@ fi
 
 # ---- 7. 验证环境 ----
 info "验证环境（import 检查）..."
-conda run -n gnn python - <<'EOF'
+if conda run -n gnn python - <<'EOF'
 import torch, dgl, ogb, torch_geometric
 print(f"torch={torch.__version__}  cuda_available={torch.cuda.is_available()}")
 print(f"dgl={dgl.__version__}  ogb={ogb.__version__}  pyg={torch_geometric.__version__}")
 EOF
-log "环境验证通过"
+then
+    log "环境验证通过"
+else
+    die "环境验证失败。常见原因：上次创建时 pip 段失败残留了半成品环境（conda 包在、"
+        "torch/dgl 缺失），本次被「已存在，跳过创建」跳过。修复："
+        "conda env remove -n gnn -y 后重跑本脚本（pip 缓存仍在，torch 不会重下）"
+fi
 
 echo
 log "全部完成。激活环境: conda activate gnn"
