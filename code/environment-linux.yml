@@ -3,12 +3,16 @@ name: gnn
 # 阿里云 anaconda 树已下线、BFSU 重定向回清华）。缺省 NJU（全直连实测可用）；
 # setup_env.sh 会运行时探测本机可达镜像并把本文件三处 URL 统一替换成同一 base。
 # 不用 defaults/nvidia：CUDA 由 pip 的 +cu121 轮子提供，不走 conda cuda 包。
+# dgl 走官方 conda channel dglteam 的 th23_cu121 label（data.dgl.ai 对 CN 网络
+# 不可达且 PyPI 只有 ≤2.1.0 CPU 版；该包不依赖 conda pytorch，与 pip torch 共存）。
 channels:
+  - https://conda.anaconda.org/dglteam/label/th23_cu121
   - https://mirror.nju.edu.cn/anaconda/cloud/pytorch/
   - https://mirror.nju.edu.cn/anaconda/cloud/conda-forge/
   - https://mirror.nju.edu.cn/anaconda/pkgs/main/
 dependencies:
   - python=3.10
+  - dgl=2.2.1.th23.cu121
   - pip
   - numpy=1.26.4
   - scipy=1.15.3
@@ -26,19 +30,14 @@ dependencies:
   - intel-openmp=2021.4.0
   - pydantic=2.13.4
   - pip:
+      # pyg 扩展轮子（torch-scatter/sparse/cluster/spline-conv/pyg-lib，源在
+      # data.pyg.org）与 dgl 轮子源 data.dgl.ai 均已移除：前者本仓库 0 处使用，
+      # torch-geometric 本体纯 PyPI 可装；后者改走上方 conda dglteam channel
       - --extra-index-url https://download.pytorch.org/whl/cu121
       - torch==2.3.0+cu121
       - torchvision==0.18.0+cu121
       - torchaudio==2.3.0+cu121
       - torchdata==0.7.1
-      - --find-links https://data.dgl.ai/wheels/torch-2.3/cu121/repo.html
-      - dgl==2.2.1
       - ogb==1.3.6
-      - --find-links https://data.pyg.org/whl/torch-2.3.0+cu121.html
       - torch-geometric==2.7.0
-      - torch-scatter==2.1.2+pt23cu121
-      - torch-sparse==0.6.18+pt23cu121
-      - torch-cluster==1.6.3+pt23cu121
-      - torch-spline-conv==1.2.2+pt23cu121
-      - pyg-lib==0.4.0+pt23cu121
       - pytorch-lightning

@@ -143,13 +143,18 @@ else
         sed "s|$YML_DEFAULT_BASE|$MIRROR_BASE|g" "$ENV_YML" > "$ENV_YML_USE"
         log "yml channels 已替换为 $MIRROR_BASE（临时副本: $ENV_YML_USE）"
     fi
-    # pip 侧外源可达性预检（torch+cu121 / dgl / pyg 轮子只在官方源，无国内镜像）
-    for h in https://download.pytorch.org/whl/cu121/ \
-             https://data.dgl.ai/wheels/torch-2.3/cu121/repo.html \
-             https://data.pyg.org/whl/torch-2.3.0+cu121.html; do
-        curl -fsSL -o /dev/null -m 10 "$h" 2>/dev/null \
-            || echo -e "\033[1;33m[WARN]\033[0m pip 依赖的外源不可达（环境创建会在 pip 段失败）: $h"
-    done
+    # 外源可达性预检：pip 只剩 download.pytorch.org（torch+cu121 轮子）；
+    # dgl 走 conda dglteam/label/th23_cu121（data.dgl.ai 对 CN 网络不可达）
+    curl -fsSL -o /dev/null -m 10 "https://download.pytorch.org/whl/cu121/" 2>/dev/null \
+        || echo -e "\033[1;33m[WARN]\033[0m download.pytorch.org 不可达（pip 装 torch+cu121 会失败）"
+    curl -fsSL -o /dev/null -m 15 \
+        "https://conda.anaconda.org/dglteam/label/th23_cu121/linux-64/repodata.json" 2>/dev/null \
+        || cat <<'WEOF'
+[WARN] conda.anaconda.org/dglteam 不可达：dgl==2.2.1 将安装失败。
+       离线兜底：任一可达机器执行
+         curl -LO https://conda.anaconda.org/dglteam/label/th23_cu121/linux-64/dgl-2.2.1.th23.cu121-py310_0.tar.bz2
+       scp 到服务器后：conda install -n gnn ./dgl-2.2.1.th23.cu121-py310_0.tar.bz2
+WEOF
     info "创建 conda 环境 gnn（首次下载数 GB，耗时较长）..."
     conda env create -f "$ENV_YML_USE"
     log "环境 gnn 创建完成"
