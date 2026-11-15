@@ -31,7 +31,8 @@ def train_one_epoch(reader, classifier, builder, optimizer,
                     neg_scale: float,
                     evidence_lambda: float = 0.0,
                     adv_normalize: bool = True,
-                    reward_source: str = 'classifier') -> Dict:
+                    reward_source: str = 'classifier',
+                    rl_lambda: float = 1.0) -> Dict:
     """单轮 REINFORCE（self-sampled）。
 
     Loss = mean_i(-A_i · Σ_t log π_t(a_t))；A 为 batch 优势归一化
@@ -44,7 +45,15 @@ def train_one_epoch(reader, classifier, builder, optimizer,
       （仅 evidence kind；忽略 reward_type 变换）。
     evidence_lambda: >0 且 reader 含证据流时加 λ·L_ev（逐步图类别监督 CE，
     不进策略梯度），总损失 = L_RL + λ·L_ev。
+    rl_lambda: 策略梯度项权重，总损失 = rl_lambda·L_RL + λ·L_ev。
+    rl_lambda=0 即 CE-only 消融（两阶段 RL 受控对照）：自采样轨迹上只用
+    交叉熵更新预测头、不给选点头传策略梯度——奖励照常计算（avg_R/acc
+    指标可用），但 log π 项权重为零。要求 evidence 流（否则无损失可回传）。
     """
+    if rl_lambda == 0 and not (evidence_lambda > 0
+                               and hasattr(reader, 'forward_states_evidence')):
+        raise ValueError("rl_lambda=0（CE-only）需要 evidence reader 且 "
+                         "evidence_lambda > 0（否则无损失可回传）")
     if reward_source in ('reader', 'both', 'soft-both') \
             and not hasattr(reader, 'forward_states_evidence'):
         raise ValueError(
@@ -209,13 +218,18 @@ def train_one_epoch(reader, classifier, builder, optimizer,
         advs = normalize_advantages(raw_rewards, neg_scale) \
             if adv_normalize else list(raw_rewards)
 
-        batch_losses = []
-        for k in range(len(final_states)):
-            sum_log_prob = torch.stack(final_log_probs[k]).sum()
-            batch_losses.append(-advs[k] * sum_log_prob)
-        batch_loss = torch.stack(batch_losses).mean()
+        # rl_lambda=0（CE-only）时跳过策略梯度项：log π 仍随采样记录
+        # （final_states 的入围判定依赖它），但权重为零不产生梯度
+        batch_loss = None
+        if rl_lambda != 0:
+            batch_losses = []
+            for k in range(len(final_states)):
+                sum_log_prob = torch.stack(final_log_probs[k]).sum()
+                batch_losses.append(-advs[k] * sum_log_prob)
+            batch_loss = rl_lambda * torch.stack(batch_losses).mean()
         if ev_losses:
-            batch_loss = batch_loss + evidence_lambda * torch.stack(ev_losses).mean()
+            ev_term = evidence_lambda * torch.stack(ev_losses).mean()
+            batch_loss = ev_term if batch_loss is None else batch_loss + ev_term
         batch_loss.backward()
         optimizer.step()
         optimizer.zero_grad()

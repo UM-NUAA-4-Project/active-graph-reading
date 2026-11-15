@@ -28,17 +28,22 @@ from tools.seeds import deterministic_seed
 
 
 @torch.no_grad()
-def rollout_strategy(agent, state):
+def rollout_strategy(agent, state, step_hook=None):
     """单图 rollout：agent.select 直到预算耗尽或 frontier 为空。
 
     有状态策略（如 BFS 的 FIFO 队列）依赖 reset/on_new_frontier 接线：
     每个 rollout 独立，重置内部状态并以初始前沿播种。
+
+    step_hook(state) 不为 None 时在每次 select 前以当前已揭示状态调用
+    （推理成本统计用：逐步累计可见边数，见 _vis_edge_count）。
     """
     agent.reset()
     initial_frontier = list(state._initial_frontier)
     if initial_frontier:
         agent.on_new_frontier(initial_frontier)
     while not state.is_frontier_empty and state.get_budget_used() < state._budget_limit:
+        if step_hook is not None:
+            step_hook(state)
         v = agent.select(state)
         if v is None:
             break
@@ -66,11 +71,36 @@ def _edge_key_to_id(g) -> dict:
     return out
 
 
+def _vis_edge_count(state):
+    """步 t 编码时协议可见的边数：已揭示边 + frontier one-ended 边（P4）。
+
+    硬件无关计算量口径（benchmark_inference_cost 用）：不含构图自环、
+    不含特征查询成本；与全图分类器消息传递边数 L_clf·|E| 同用加载图
+    原始边计数作分母。
+    """
+    return len(state._revealed_edge_ids) + len(state.frontier_edges)
+
+
+def _init_cost_stats(cost_stats_out, budget_options):
+    """cost_stats_out 容器初始化（evaluate_reader / evaluate_fixed 共用）。
+
+    键（均为 {budget_ratio: 累计值}）：vis_edges=逐步编码可见边数之和
+    Σ_t|E_vis(t)|；full_edges/n_nodes=每 rollout 的全图边数/节点数；
+    revealed=每 rollout 实际揭示节点数（不含 seed，协议口径）；
+    rollouts=rollout 计数。
+    """
+    if cost_stats_out is not None:
+        for key in ('vis_edges', 'full_edges', 'revealed', 'n_nodes',
+                    'rollouts'):
+            cost_stats_out.setdefault(key, defaultdict(int))
+    return cost_stats_out
+
+
 @torch.no_grad()  # 必需：evidence 的 (h,c) 跨 lockstep 步携带 grad_fn，开梯度会链式
                   # 保留整个 chunk 的全部前向图 → 24G OOM（2026-09-12 PPA 全量 valid）
 def evaluate_reader(reader, classifier, builder, graphs, labels,
                     budget_options, device, argmax=True, chunk_size=32,
-                    n_seeds=4, confidence_out=None):
+                    n_seeds=4, confidence_out=None, cost_stats_out=None):
     """learnable reader 评估：跨图 lockstep + 批量分类器 + 多预算/多 seed 统计。
 
     evidence reader：终判由自身证据头给出（读满后补充前向的 ev_logits
@@ -80,8 +110,22 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
     confidence_out 不为 None 时（校准分析，预测 5.3c），按预算档收集逐样本
     [最大类置信度(4位舍入), 是否正确]：ev = 证据头终判（仅 evidence），
     clf = 冻结分类器对同一揭示子图的判定。
+
+    classifier=None（纯部署口径，evidence 专用）：跳过终局子图构建与冻结
+    分类器前向——BAGR 实际部署只用自身证据头，不加载全图分类器；base
+    reader 的终判即冻结分类器，传 None 报错。
+
+    cost_stats_out 不为 None 时按预算档累计硬件无关计算量（见
+    _init_cost_stats；逐步可见边数在每次 lockstep 选点前向处累计，
+    Σ_{t=1}^{B}|E_vis(t)| 口径不含终局补充前向）。
     """
     reader.eval()
+    use_evidence = (getattr(reader, 'config', None) is not None
+                    and getattr(reader.config, 'kind', '') == 'evidence')
+    if classifier is None and not use_evidence:
+        raise ValueError("classifier=None（纯部署口径）仅支持 evidence reader："
+                         "base reader 的终判即冻结分类器")
+    cs = _init_cost_stats(cost_stats_out, budget_options)
     per_budget_correct = defaultdict(int)
     per_budget_total = defaultdict(int)
     per_budget_outcomes = defaultdict(list)
@@ -90,8 +134,6 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
                           for i in range(n_seeds)}
     per_budget_clf_correct = defaultdict(int)
     per_budget_clf_outcomes = defaultdict(list)
-    use_evidence = (getattr(reader, 'config', None) is not None
-                    and getattr(reader.config, 'kind', '') == 'evidence')
 
     for chunk_start in tqdm(range(0, len(graphs), chunk_size), desc="  Revealing"):
         chunk_end = min(chunk_start + chunk_size, len(graphs))
@@ -139,6 +181,11 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
                           if active[j] and not all_states[j].is_frontier_empty]
             if not active_idx:
                 break
+            if cs is not None:
+                # Σ_t|E_vis(t)|：每次选点前向时的可见边数（已揭示+frontier）
+                for j in active_idx:
+                    cs['vis_edges'][state_info[j][2]] += \
+                        _vis_edge_count(all_states[j])
             if use_evidence:
                 batch_results, active_hc, _ = reader.forward_states_evidence(
                     [all_states[j] for j in active_idx], temperature=1.0,
@@ -169,6 +216,27 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
             _, _, final_ev = reader.forward_states_evidence(
                 all_states, temperature=1.0, hc_list=all_hc,
                 last_revealed=last_revealed)
+
+        if cs is not None:
+            for j in range(n_total):
+                b = state_info[j][2]
+                cs['revealed'][b] += all_states[j].get_budget_used()
+                cs['n_nodes'][b] += all_states[j].g.num_nodes()
+                cs['full_edges'][b] += all_states[j].g.num_edges()
+                cs['rollouts'][b] += 1
+
+        if classifier is None:
+            # 纯部署口径：无冻结分类器，跳过终局子图构建与 clf 前向，
+            # 证据头终判直接收账
+            for j in range(n_total):
+                y, label, budget, seed_i = state_info[j]
+                correct = 1.0 if final_ev[j].argmax(dim=-1).item() == label else 0.0
+                per_budget_correct[budget] += correct
+                per_budget_total[budget] += 1
+                per_budget_outcomes[budget].append(correct)
+                per_seed_outcomes[seed_i][budget].append(correct)
+                per_seed_per_class[seed_i][budget][label].append(correct)
+            continue
 
         all_subgraphs_out, all_labels_out, all_budgets_out, all_seed_ids_out = \
             [], [], [], []
@@ -215,14 +283,18 @@ def evaluate_reader(reader, classifier, builder, graphs, labels,
     return _summarize(budget_options, graphs, per_budget_correct,
                       per_budget_total, per_budget_outcomes,
                       per_seed_outcomes, per_seed_per_class,
-                      clf_correct=(per_budget_clf_correct if use_evidence else None),
-                      clf_outcomes=(per_budget_clf_outcomes if use_evidence else None))
+                      clf_correct=(per_budget_clf_correct
+                                   if use_evidence and classifier is not None
+                                   else None),
+                      clf_outcomes=(per_budget_clf_outcomes
+                                    if use_evidence and classifier is not None
+                                    else None))
 
 
 @torch.no_grad()
 def evaluate_fixed(strategy, classifier, builder, graphs, labels,
                    budget_options, device, argmax=True, n_seeds=4, agent=None,
-                   judge='clf'):
+                   judge='clf', cost_stats_out=None):
     """固定策略（random/bfs/max_degree）评估，统计口径与 evaluate_reader 一致。
 
     agent 可传入外部策略实例（baseline/ 协议适配基线，如 sagpool——需加载
@@ -233,10 +305,15 @@ def evaluate_fixed(strategy, classifier, builder, graphs, labels,
     策略另记 acc_own_*（参照）。judge='own'：策略自带头终判（acc_*），
     冻结分类器对同一批揭示子图的判定改记 acc_clf_*（参照）——对齐原方法
     论文的"自分类精度"口径。judge='own' 要求 agent 有 own_predict。
+
+    cost_stats_out 不为 None 时按预算档累计硬件无关计算量（同
+    evaluate_reader；固定策略按 rollout 契约不瞬移，frontier 空即止，
+    revealed 可能小于预算）。
     """
     from active_graph_reader.reader.fixed import create_fixed_reader
     if agent is None:
         agent = create_fixed_reader(strategy)
+    cs = _init_cost_stats(cost_stats_out, budget_options)
     per_budget_correct = defaultdict(int)
     per_budget_total = defaultdict(int)
     per_budget_outcomes = defaultdict(list)
@@ -272,7 +349,16 @@ def evaluate_fixed(strategy, classifier, builder, graphs, labels,
                 state = GraphState(g_raw, seed_node=seed_node,
                                    edge_key_to_id=ek2id)
                 state._budget_limit = B
-                rollout_strategy(agent, state)
+                if cs is not None:
+                    def _hook(st, _b=budget_ratio, _cs=cs):
+                        _cs['vis_edges'][_b] += _vis_edge_count(st)
+                    rollout_strategy(agent, state, step_hook=_hook)
+                    cs['revealed'][budget_ratio] += state.get_budget_used()
+                    cs['n_nodes'][budget_ratio] += n_nodes
+                    cs['full_edges'][budget_ratio] += g_raw.num_edges()
+                    cs['rollouts'][budget_ratio] += 1
+                else:
+                    rollout_strategy(agent, state)
                 sub_g, sub_ids = builder.build(state)
                 all_subgraphs.append(sub_g)
                 all_labels.append((y, label))

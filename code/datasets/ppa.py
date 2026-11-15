@@ -79,7 +79,7 @@ def load_ppa(spec: DatasetSpec) -> Dataset:
     if not spec.root:
         raise ValueError(
             f"数据集 '{spec.name}' 数据目录未指定：必须通过 --root 传入"
-            "（如 --root D:\\ogb-master\\dataset）")
+            "（如 --root D:\\data\\ogbg_ppa）")
 
     proc_path, split_dir = _ppa_paths(spec.root)
 

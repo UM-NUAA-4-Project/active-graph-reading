@@ -102,6 +102,7 @@ class EvidenceReader(LearnableReader):
         hc_list: List[Tuple[torch.Tensor, torch.Tensor]],
         last_revealed: List[int],
         return_states: bool = False,
+        need_scores: bool = True,
     ):
         """base 选点 + 证据流，单次共享 GNN 前向。
 
@@ -112,6 +113,11 @@ class EvidenceReader(LearnableReader):
         return_states=True 时额外返回各 state 本步的 (z_t, h_t)——供冻结
         reader 的离线聚合头（train_state_attention.py）采集轨迹特征；只增
         不改，默认 False 时返回值与原签名逐字节一致。
+
+        need_scores=False 时跳过选点打分（_policy_scores：结构特征 + 打分
+        MLP，占前向 ~40%），results 各项为 (None, None, frontier_nodes)——
+        供反向评测（core/reverse_eval）等只用证据流的调用方省算；默认 True
+        与原行为逐字节一致。
 
         Returns:
             results   : List[(scores, probs, frontier_nodes)]——与 base
@@ -168,9 +174,14 @@ class EvidenceReader(LearnableReader):
             frontier_nodes = sg.frontier_original_ids
 
             if frontier_nodes:
-                scores = self._policy_scores(frontier_embeds, sg, states[k])
-                probs = _stable_probs(scores, temperature)
-                results.append((scores, probs, frontier_nodes))
+                if need_scores:
+                    scores = self._policy_scores(frontier_embeds, sg, states[k])
+                    probs = _stable_probs(scores, temperature)
+                    results.append((scores, probs, frontier_nodes))
+                else:
+                    # 反向评测等只需证据流的调用：跳过打分（结构特征 +
+                    # MLP 占前向 ~40%），占位 None 保持元组形状
+                    results.append((None, None, frontier_nodes))
             else:
                 results.append((torch.empty(0), torch.empty(0), []))
 

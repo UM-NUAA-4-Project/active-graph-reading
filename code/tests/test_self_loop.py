@@ -26,7 +26,7 @@ from active_graph_reader.gnn.frontier.graph_builder import (  # noqa: E402
 from tools.seeds import deterministic_seed  # noqa: E402
 
 DATASETS = {
-    'ppa': 'D:\\ogb-master\\dataset',
+    'ppa': 'D:\\data\\ogbg_ppa',
     'cifar10': 'D:\\data\\superpixels',
     'collab': 'D:\\data\\COLLAB',
 }

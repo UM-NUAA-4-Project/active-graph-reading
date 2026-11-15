@@ -63,6 +63,11 @@ def main():
     parser.add_argument('--evidence-lambda', type=float, default=1.0,
                         help='evidence reader 的 L_ev 权重（L = L_RL + λ·L_ev；'
                              '其他 kind 忽略）')
+    parser.add_argument('--rl-lambda', type=float, default=1.0,
+                        help='策略梯度项权重（L = rl_lambda·L_RL + λ·L_ev）。'
+                             '=0 即 CE-only 消融：自采样轨迹上只用交叉熵'
+                             '更新预测头、不给选点头传策略梯度（两阶段 RL '
+                             '受控对照，需 evidence reader）')
     parser.add_argument('--bootstrap', default='',
                         help='迁移起点 reader checkpoint（与 --resume/--from-scratch 三选一）')
     parser.add_argument('--from-scratch', action='store_true',
@@ -115,6 +120,9 @@ def main():
 
     if bool(args.bootstrap) + bool(args.resume) + bool(args.from_scratch) != 1:
         raise SystemExit("--bootstrap / --resume / --from-scratch 必须三选一")
+    if args.rl_lambda == 0 and args.reader_kind != 'evidence':
+        raise SystemExit("--rl-lambda 0（CE-only）需要 --reader-kind evidence"
+                         "（base 无证据流，无损失可回传）")
 
     set_all_seeds(args.seed)
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
@@ -223,6 +231,7 @@ def main():
             'reward': args.reward,
             'reward_neg_scale': args.reward_neg_scale,
             'adv_normalize': not args.no_adv_normalize,
+            'rl_lambda': args.rl_lambda,
             'budget_options': list(budget_options),
             'epochs': args.epochs,
             'total_params': total_params,
@@ -242,7 +251,7 @@ def main():
             device, args.reward, ln_k, budget_options,
             args.reward_neg_scale, evidence_lambda=args.evidence_lambda,
             adv_normalize=not args.no_adv_normalize,
-            reward_source=args.reward_source)
+            reward_source=args.reward_source, rl_lambda=args.rl_lambda)
         print(f"  Train: loss={metrics['loss']:.4f}  "
               f"avg_R={metrics['avg_R']:.3f}  acc={metrics['acc']:.3f}"
               + (f"  ev_acc={metrics['ev_acc']:.3f}"

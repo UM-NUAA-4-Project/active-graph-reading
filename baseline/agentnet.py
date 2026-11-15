@@ -532,13 +532,13 @@ class AgentnetStrategy(BaseReader):
     """
 
     NAV_CAP_FACTOR = 4   # 已揭示区内导航步数上限 = 4 × n_nodes（对齐 random-walk）
+    _GC_CAP = 64         # 静态缓存同时保留的图数（跨图 lockstep 反向评测用）
 
     def __init__(self):
         super().__init__()
         self._model = None
         self._device = None
-        self._gc_graph = None    # 缓存对应的图对象（identity 判定换图）
-        self._gc = None          # _GraphCache
+        self._gc_map = {}         # id(g) -> (g, _GraphCache)；同图多 rollout 共享
         self._reset_walk()
 
     def _reset_walk(self):
@@ -548,7 +548,7 @@ class AgentnetStrategy(BaseReader):
         self._h_cache = {}        # orig_id → 更新后的节点嵌入
         self._agent = None
         self._nav_steps = 0
-        # 注意：不清 _gc/_gc_graph——同图多个 rollout 共享静态缓存
+        # 注意：不清 _gc_map——同图多个 rollout 共享静态缓存
 
     @property
     def name(self) -> str:
@@ -569,11 +569,22 @@ class AgentnetStrategy(BaseReader):
         model.load_state_dict(ckpt['model_state_dict'], strict=True)
         self._device = torch.device(device)
         self._model = model.to(self._device).eval()
-        self._gc_graph = None   # 权重变了，静态缓存失效
-        self._gc = None
+        self._gc_map = {}   # 权重变了，静态缓存失效
 
     def reset(self) -> None:
         self._reset_walk()
+
+    def clone_walk(self) -> 'AgentnetStrategy':
+        """新游走状态副本：共享 _model/_device/_gc_map（权重与同图静态缓存），
+        独立维护 _pos/_visit/_h_cache/_agent/_nav_steps。
+
+        供跨图 lockstep 的反向评测（eval_reverse_reader）把同一图的多条
+        rollout 交错推进——每条 rollout 一份游走状态，缓存/模型只建一份。
+        """
+        other = object.__new__(type(self))
+        other.__dict__.update(self.__dict__)
+        other._reset_walk()   # 重建可变游走状态，_gc_map 仍与本实例同引用
+        return other
 
     def own_predict(self, sub_g, seed_row=None, steps=None):
         """自身读出头对揭示子图的分类（评测双口径记录，对齐 evidence 的
@@ -651,10 +662,16 @@ class AgentnetStrategy(BaseReader):
             self.on_new_frontier(sorted(frontier))
 
         m = self._model
-        if self._gc_graph is not graph_state.g:
-            self._gc_graph = graph_state.g
-            self._gc = _GraphCache(m, graph_state, self._device)
-        cache = self._gc
+        key = id(graph_state.g)
+        ent = self._gc_map.get(key)
+        if ent is None or ent[0] is not graph_state.g:
+            # 换图（或 id 复用）重建；跨图 lockstep 下多图共存，超上限整体
+            # 清空（chunk ≤ _GC_CAP 时每图每 chunk 恰建一次）
+            if len(self._gc_map) >= self._GC_CAP:
+                self._gc_map.clear()
+            ent = (graph_state.g, _GraphCache(m, graph_state, self._device))
+            self._gc_map[key] = ent
+        cache = ent[1]
 
         # 可见表征行序与 build_visible_graph 一致：revealed 升序在前、
         # frontier 升序在后。h 初始行 = 全图编码按行 gather（frontier 行
