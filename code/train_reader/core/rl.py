@@ -227,13 +227,17 @@ def train_one_epoch(reader, classifier, builder, optimizer,
                 sum_log_prob = torch.stack(final_log_probs[k]).sum()
                 batch_losses.append(-advs[k] * sum_log_prob)
             batch_loss = rl_lambda * torch.stack(batch_losses).mean()
+            n_weighted = len(batch_losses)
+        else:
+            # CE-only：batch_loss 只含 ev 项，按其轨迹数加权
+            n_weighted = len(ev_losses) or len(final_states)
         if ev_losses:
             ev_term = evidence_lambda * torch.stack(ev_losses).mean()
             batch_loss = ev_term if batch_loss is None else batch_loss + ev_term
         batch_loss.backward()
         optimizer.step()
         optimizer.zero_grad()
-        total_loss += batch_loss.item() * len(batch_losses)
+        total_loss += batch_loss.item() * n_weighted
 
         n = max(total_trajs, 1)
         postfix = {
