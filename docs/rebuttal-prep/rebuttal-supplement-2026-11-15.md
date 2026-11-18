@@ -1,6 +1,6 @@
 # Rebuttal 补充数据表（2026-11-15）
 
-> 对应 `rebuttal-checklist-2026-11-15.md` 四项任务。任务 2 已回填；任务 3 COLLAB 侧组 1/2/3 已回填，CIFAR10 侧组 1/2 训练中（11-18 齐），组 4 与 CIFAR10 侧组 3 于 11-17 取消。其余数字源 = `docs/Summary of results.md`（test 口径）。
+> 对应 `rebuttal-checklist-2026-11-15.md` 四项任务。任务 2 已回填；任务 3 已回填齐（11-18：组 1/2 双数据集 + 组 3 COLLAB），组 4 与 CIFAR10 侧组 3 于 11-17 取消。其余数字源 = `docs/Summary of results.md`（test 口径）。
 
 ---
 
@@ -152,12 +152,12 @@ OGBG-PPA：
 | 组                | CIFAR10 own           | CIFAR10 clf           | COLLAB own                             | COLLAB clf            |
 | :---------------- | :-------------------- | :-------------------- | :------------------------------------- | :-------------------- |
 | 1 Classifier-only | 25.43/29.35/31.34     | 16.98/20.45/23.82     | **55.99 / 54.84 / 57.39**（ep4） | 15.72 / 18.26 / 20.31 |
-| 2 Reader-only     |                       |                       | **55.99 / 54.69 / 56.89**（ep3） | 15.72 / 18.21 / 20.36 |
+| 2 Reader-only     | 29.16/35.60/39.20     | 15.61/16.95/18.86     | **55.99 / 54.69 / 56.89**（ep3） | 15.72 / 18.21 / 20.36 |
 | 3 Soft-both only  | —（11-17 取消）      | —                    | **55.64 / 55.84 / 54.44**（ep5） | 15.72 / 18.21 / 20.21 |
 | 4 CE-only         | —（11-17 决定取消）  | —                    | —（取消；结果滞留已关机的 24428）     | —                    |
 | 5**Ours**   | 27.79 / 33.84 / 36.55 | 15.50 / 16.76 / 18.66 | 51.90 / 53.44 / 55.74                  | 15.72 / 18.21 / 20.26 |
 
-产物：`result/{ds}/experiments/rl-w3-*/evidence/rl/{config.json, training_log.json, eval_learnable.json}`。
+产物：`result/{ds}/experiments/rl-w3-*/evidence/rl/{config.json, training_log.json, eval_learnable.json}`。注（11-18）：CIFAR10 等总轮数（15）下组 2 reader-only 单阶段 own **反超** Ours 两阶段（@10% 35.60 vs 33.84），组 1 classifier-only 最低但 clf 参照最高（16.98/20.45/23.82）= 奖励源偏向哪个裁判、哪个裁判受益；COLLAB 侧组 1/2/3 与 Ours 同带（52–57%）= 奖励源不敏感。
 
 ---
 
